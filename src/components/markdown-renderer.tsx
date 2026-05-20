@@ -29,7 +29,7 @@ const components: Components = {
   },
   pre: ({ children, ...props }) => (
     <pre
-      className="bg-[#1c1c1c] text-[#f5f5f0] rounded-lg p-4 overflow-x-auto text-[14px] leading-relaxed my-3"
+      className="bg-[#1c1c1c] text-[#f5f5f0] rounded-lg p-4 overflow-x-auto text-[12px] leading-relaxed my-3"
       {...props}
     >
       {children}
@@ -37,7 +37,7 @@ const components: Components = {
   ),
   table: ({ children, ...props }) => (
     <div className="overflow-x-auto my-3">
-      <table className="border-collapse text-[15px]" {...props}>
+      <table className="border-collapse text-[13px]" {...props}>
         {children}
       </table>
     </div>
@@ -56,7 +56,7 @@ const components: Components = {
 
 export function MarkdownRenderer({ content }: { content: string }) {
   return (
-    <div className="prose prose-stone max-w-none text-[18px] leading-relaxed">
+    <div className="prose prose-stone max-w-none text-[14px] leading-relaxed">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>

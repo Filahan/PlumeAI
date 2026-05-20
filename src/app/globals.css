@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @import "shadcn/tailwind.css";
 
+html {
+  /* Reserve scrollbar space at all times so the body width stays identical across
+     Chrome and Safari, and doesn't jump when content grows past the viewport. */
+  scrollbar-gutter: stable;
+  /* Belt-and-suspenders against any descendant accidentally creating horizontal scroll. */
+  overflow-x: hidden;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

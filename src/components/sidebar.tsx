@@ -38,13 +38,7 @@ interface SidebarProps {
   onSettingsOpenChange: (open: boolean) => void;
 }
 
-const AppLogo = (
-  <svg width="32" height="32" viewBox="0 0 36 36" fill="none">
-    <rect x="2" y="2" width="32" height="32" rx="9" fill="#111111" />
-    <circle cx="18" cy="18" r="10" fill="#F5C518" />
-    <path d="M20 11l-5 7h4l-1 7 5-7h-4l1-7z" fill="#111111" stroke="#111111" strokeWidth="1" strokeLinejoin="round" />
-  </svg>
-);
+const BRAND_NAME = 'PlumeAI';
 
 interface NavItemProps {
   icon: LucideIcon;
@@ -59,12 +53,12 @@ function NavItem({ icon: Icon, label, open, onClick }: NavItemProps) {
       type="button"
       onClick={onClick}
       aria-label={label}
-      className={`flex items-center rounded-xl text-[16px] text-[#1c1c1c] hover:bg-[#EEEEEE] transition-colors ${
-        open ? 'w-full pr-3' : 'w-10 h-10'
+      className={`flex items-center rounded-lg text-[13px] text-[#1c1c1c] hover:bg-[#EEEEEE] transition-colors ${
+        open ? 'w-full pr-3' : 'w-9 h-9'
       }`}
     >
-      <span className="w-10 h-10 flex items-center justify-center shrink-0 text-[#5a5a5a]">
-        <Icon size={20} strokeWidth={2} />
+      <span className="w-9 h-9 flex items-center justify-center shrink-0 text-[#5a5a5a]">
+        <Icon size={16} strokeWidth={1.75} />
       </span>
       {open && <span className="truncate text-left">{label}</span>}
     </button>
@@ -78,9 +72,9 @@ function NavItem({ icon: Icon, label, open, onClick }: NavItemProps) {
           type="button"
           onClick={onClick}
           aria-label={label}
-          className="w-10 h-10 rounded-xl flex items-center justify-center text-[#5a5a5a] hover:bg-[#EAEAEA] hover:text-[#1c1c1c] transition-colors"
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-[#5a5a5a] hover:bg-[#EAEAEA] hover:text-[#1c1c1c] transition-colors"
         >
-          <Icon size={20} strokeWidth={2} />
+          <Icon size={16} strokeWidth={1.75} />
         </button>
       )} />
       <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent>
@@ -102,24 +96,26 @@ export default function Sidebar({
         type="button"
         onClick={onToggle}
         aria-label={open ? 'Collapse sidebar' : 'Open sidebar'}
-        className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[#EAEAEA] transition-colors shrink-0"
+        className="h-9 px-2 rounded-lg flex items-center hover:bg-[#EEEEEE] transition-colors shrink-0"
       >
-        {AppLogo}
+        <span className="text-[15px] font-semibold tracking-tight ">
+          {open ? BRAND_NAME : BRAND_NAME.charAt(0)}
+        </span>
       </button>
       {open && (
         <button
           type="button"
           onClick={onToggle}
           aria-label="Collapse sidebar"
-          className="w-10 h-10 rounded-xl flex items-center justify-center text-[#8e8e8e] hover:bg-[#EAEAEA] hover:text-[#1c1c1c] transition-colors"
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-[#8e8e8e] hover:bg-[#EAEAEA] hover:text-[#1c1c1c] transition-colors"
         >
-          <PanelLeftClose size={22} strokeWidth={2} />
+          <PanelLeftClose size={16} strokeWidth={1.75} />
         </button>
       )}
     </div>
   );
 
-  const sectionLabelClass = 'px-4 mb-1 text-[12px] font-semibold text-[#a8a8a8] tracking-[0.08em] uppercase';
+  const sectionLabelClass = 'px-4 mb-1 text-[11px] font-semibold text-[#a8a8a8] tracking-[0.08em] uppercase';
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden">
@@ -143,7 +139,7 @@ export default function Sidebar({
             <p className={sectionLabelClass}>Recent</p>
             <div className="flex-1 overflow-y-auto space-y-0.5 pr-1 -mr-1 pb-3">
               {!ready ? null : conversations.length === 0 ? (
-                <p className="px-4 py-2 text-[14px] text-[#a8a8a8]">No conversations yet</p>
+                <p className="px-4 py-2 text-[12px] text-[#a8a8a8]">No conversations yet</p>
               ) : (
                 conversations.map((conv) => {
                   const isActive = conv.id === currentId;
@@ -157,7 +153,7 @@ export default function Sidebar({
                       <button
                         type="button"
                         onClick={() => onSelect(conv.id)}
-                        className={`w-full text-left truncate text-[16px] text-[#1c1c1c] px-4 py-2 pr-9 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1c1c1c]/20 ${
+                        className={`w-full text-left truncate text-[13px] text-[#1c1c1c] px-4 py-2 pr-9 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1c1c1c]/20 ${
                           isActive ? 'font-medium' : ''
                         }`}
                       >
@@ -169,7 +165,7 @@ export default function Sidebar({
                         className="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center rounded-md text-[#9b9b9b] hover:bg-[#EEEEEE] hover:text-[#D43A3A] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D43A3A]/30 transition"
                         aria-label={`Delete conversation: ${conv.title}`}
                       >
-                        <Trash2 size={15} strokeWidth={2} />
+                        <Trash2 size={13} strokeWidth={1.75} />
                       </button>
                     </div>
                   );
@@ -195,7 +191,7 @@ export default function Sidebar({
                   <span className="absolute h-1.5 w-1.5 rounded-full bg-emerald-500/40 animate-ping" />
                   <span className="relative h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 </span>
-                <span className="text-[12px] font-semibold text-[#1c1c1c] tracking-tight">Usage</span>
+                <span className="text-[11px] font-semibold text-[#1c1c1c] tracking-tight">Usage</span>
               </div>
               <div className="flex items-center gap-1 text-emerald-600/80">
                 <Activity size={13} strokeWidth={2.25} />
@@ -211,12 +207,12 @@ export default function Sidebar({
                   </div>
                   <div className="flex items-baseline justify-between gap-3">
                     <div className="flex items-baseline gap-1">
-                      <span className="text-[17px] font-semibold text-[#1c1c1c] tabular-nums leading-none">
+                      <span className="text-[15px] font-semibold text-[#1c1c1c] tabular-nums leading-none">
                         {formatTokens(conversationUsage.tokens)}
                       </span>
                       <span className="text-[11px] text-[#9b9b9b]">tok</span>
                     </div>
-                    <span className="text-[17px] font-semibold text-emerald-700 tabular-nums leading-none">
+                    <span className="text-[15px] font-semibold text-emerald-700 tabular-nums leading-none">
                       {formatCost(conversationUsage.cost)}
                     </span>
                   </div>
@@ -253,12 +249,12 @@ export default function Sidebar({
               </div>
               <div className="flex items-baseline justify-between gap-3">
                 <div className="flex items-baseline gap-1">
-                  <span className="text-[17px] font-semibold text-[#1c1c1c] tabular-nums leading-none">
+                  <span className="text-[15px] font-semibold text-[#1c1c1c] tabular-nums leading-none">
                     {formatTokens(usage.tokens)}
                   </span>
                   <span className="text-[11px] text-[#9b9b9b]">tok</span>
                 </div>
-                <span className="text-[17px] font-semibold text-emerald-700 tabular-nums leading-none">
+                <span className="text-[15px] font-semibold text-emerald-700 tabular-nums leading-none">
                   {formatCost(usage.cost)}
                 </span>
               </div>
@@ -275,8 +271,8 @@ export default function Sidebar({
       <Dialog open={settingsOpen} onOpenChange={onSettingsOpenChange}>
         <DialogContent className="sm:max-w-[520px] rounded-[24px] bg-white border-black/[0.06] shadow-2xl p-6 max-h-[85vh] overflow-y-auto">
           <DialogHeader className="space-y-1.5 pb-1">
-            <DialogTitle className="text-[20px] font-semibold tracking-tight text-[#1c1c1c]">Settings</DialogTitle>
-            <DialogDescription className="text-[14px] text-[#8e8e8e]">
+            <DialogTitle className="text-[17px] font-semibold tracking-tight text-[#1c1c1c]">Settings</DialogTitle>
+            <DialogDescription className="text-[13px] text-[#8e8e8e]">
               Configure your LLM providers and pick a default model.
             </DialogDescription>
           </DialogHeader>
@@ -288,7 +284,7 @@ export default function Sidebar({
           <DialogFooter className="gap-2 pt-3 border-t border-black/[0.06]">
             <Button
               onClick={() => onSettingsOpenChange(false)}
-              className="h-10 px-5 rounded-xl bg-[#1c1c1c] text-white text-[14px] font-medium hover:bg-[#333]"
+              className="h-9 px-4 rounded-xl bg-[#1c1c1c] text-white text-[13px] font-medium hover:bg-[#333]"
             >
               Done
             </Button>

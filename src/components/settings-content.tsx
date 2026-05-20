@@ -29,7 +29,7 @@ function ProviderForm({
     <div className="rounded-xl border border-black/[0.08] bg-white p-3 space-y-3">
       <div className="grid grid-cols-2 gap-2">
         <Select value={provider} onValueChange={(v) => v && onProviderChange(v as Provider)}>
-          <SelectTrigger className="h-10 rounded-lg border-black/[0.08] bg-[#FAFAFA] text-[14px]">
+          <SelectTrigger className="h-10 rounded-lg border-black/[0.08] bg-[#FAFAFA] text-[13px] md:text-[13px]">
             <span className="flex items-center gap-2 truncate">
               <ProviderLogo provider={provider} size={14} className={PROVIDER_ACCENT[provider]} />
               {PROVIDER_NAMES[provider]}
@@ -37,7 +37,7 @@ function ProviderForm({
           </SelectTrigger>
           <SelectContent className="rounded-xl border-black/[0.06] shadow-lg">
             {(Object.keys(PROVIDER_MODELS) as Provider[]).map((p) => (
-              <SelectItem key={p} value={p} className="text-[14px] py-2">
+              <SelectItem key={p} value={p} className="text-[13px] py-2">
                 <span className="flex items-center gap-2">
                   <ProviderLogo provider={p} size={14} className={PROVIDER_ACCENT[p]} />
                   {PROVIDER_NAMES[p]}
@@ -50,7 +50,7 @@ function ProviderForm({
           value={label}
           onChange={(e) => onLabelChange(e.target.value)}
           placeholder={`Label e.g. "${PROVIDER_NAMES[provider]}"`}
-          className="h-10 rounded-lg border-black/[0.08] bg-[#FAFAFA] text-[14px]"
+          className="h-10 rounded-lg border-black/[0.08] bg-[#FAFAFA] text-[13px] md:text-[13px]"
         />
       </div>
       <Input
@@ -58,7 +58,7 @@ function ProviderForm({
         value={apiKey}
         onChange={(e) => onApiKeyChange(e.target.value)}
         placeholder="API key (sk-...)"
-        className="h-10 rounded-lg border-black/[0.08] bg-[#FAFAFA] text-[14px] font-mono"
+        className="h-10 rounded-lg border-black/[0.08] bg-[#FAFAFA] text-[13px] md:text-[13px] font-mono"
         autoComplete="off"
       />
       <div className="flex justify-end gap-2 pt-1">
@@ -179,7 +179,7 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Key size={15} strokeWidth={2} className="text-[#8e8e8e] shrink-0" />
-          <h3 className="text-[14px] font-medium text-[#1c1c1c]">Providers</h3>
+          <h3 className="text-[13px] font-medium text-[#1c1c1c]">Providers</h3>
         </div>
 
         {settings.providers.length === 0 && !showAddForm && (
@@ -208,8 +208,8 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
                 <ProviderLogo provider={p.provider} size={18} />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-[14px] font-medium text-[#1c1c1c] truncate">{p.label}</div>
-                <div className="text-[12px] text-[#8e8e8e] truncate font-mono">
+                <div className="text-[13px] font-medium text-[#1c1c1c] truncate">{p.label}</div>
+                <div className="text-[11px] text-[#8e8e8e] truncate font-mono">
                   {PROVIDER_NAMES[p.provider]} · {maskKey(p.apiKey)}
                 </div>
               </div>
@@ -251,7 +251,7 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
           <button
             type="button"
             onClick={startAddProvider}
-            className="w-full flex items-center justify-center gap-2 h-11 rounded-xl border border-dashed border-black/[0.12] text-[14px] font-medium text-[#5a5a5a] hover:bg-[#FAFAFA] hover:text-[#1c1c1c] transition"
+            className="w-full flex items-center justify-center gap-2 h-11 rounded-xl border border-dashed border-black/[0.12] text-[13px] font-medium text-[#5a5a5a] hover:bg-[#FAFAFA] hover:text-[#1c1c1c] transition"
           >
             <Plus size={16} strokeWidth={2} />
             Add provider
@@ -264,17 +264,17 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
         <section className="space-y-2">
           <div className="flex items-center gap-2">
             <Bot size={15} strokeWidth={2} className="text-[#8e8e8e] shrink-0" />
-            <h3 className="text-[14px] font-medium text-[#1c1c1c]">Default model</h3>
+            <h3 className="text-[13px] font-medium text-[#1c1c1c]">Default model</h3>
           </div>
           <Select value={defaultModelValue} onValueChange={setDefaultModelValue}>
-            <SelectTrigger className="w-full h-11 rounded-xl border-black/[0.08] bg-[#FAFAFA] hover:bg-[#F5F5F5] transition-colors text-[15px]">
+            <SelectTrigger className="w-full h-11 rounded-xl border-black/[0.08] bg-[#FAFAFA] hover:bg-[#F5F5F5] transition-colors text-[13px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="rounded-xl border-black/[0.06] shadow-lg">
               {defaultModelOptions.map((o) => {
                 const optionProvider = o.value.split(':')[0] as Provider;
                 return (
-                  <SelectItem key={o.value} value={o.value} className="text-[15px] py-2">
+                  <SelectItem key={o.value} value={o.value} className="text-[13px] py-2">
                     <span className="flex items-center gap-2">
                       <ProviderLogo provider={optionProvider} size={14} className={PROVIDER_ACCENT[optionProvider]} />
                       {o.label}
@@ -284,13 +284,13 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
               })}
             </SelectContent>
           </Select>
-          <p className="text-[12px] text-[#a8a8a8] leading-relaxed">
+          <p className="text-[11px] text-[#a8a8a8] leading-relaxed">
             Used for new conversations. You can change it per-conversation from the chat input.
           </p>
         </section>
       )}
 
-      <p className="text-[12px] text-[#a8a8a8] leading-relaxed pt-1 border-t border-black/[0.05]">
+      <p className="text-[11px] text-[#a8a8a8] leading-relaxed pt-1 border-t border-black/[0.05]">
         <Sparkles size={11} className="inline mr-1 -mt-0.5" strokeWidth={2} />
         API keys are stored only in your browser&apos;s local storage. They never reach our servers.
       </p>

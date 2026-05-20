@@ -380,7 +380,7 @@ export default function ChatView({
         onPaste={handlePaste}
         placeholder="Ask anything"
         rows={1}
-        className="w-full resize-none bg-transparent text-[17px] text-[#1c1c1c] placeholder:text-[#b4b4b4] outline-none min-h-[28px] max-h-[200px] leading-relaxed"
+        className="w-full resize-none bg-transparent text-[14px] text-[#1c1c1c] placeholder:text-[#b4b4b4] outline-none min-h-[24px] max-h-[200px] leading-relaxed"
         disabled={isLoading}
       />
 
@@ -468,7 +468,7 @@ export default function ChatView({
         <div className="fixed inset-0 z-[55] bg-emerald-500/10 border-4 border-dashed border-emerald-500 flex items-center justify-center pointer-events-none">
           <div className="rounded-2xl bg-white px-6 py-4 shadow-xl flex items-center gap-3 text-[#1c1c1c]">
             <ImagePlus size={20} strokeWidth={2} className="text-emerald-600" />
-            <span className="text-[15px] font-medium">Drop images to attach</span>
+            <span className="text-[13px] font-medium">Drop images to attach</span>
           </div>
         </div>
       )}
@@ -493,7 +493,7 @@ export default function ChatView({
                       </div>
                     )}
                     {msg.content && (
-                      <div className="max-w-[80%] bg-[#F0EAEA] rounded-[20px] px-4 py-2.5 text-[18px] leading-relaxed text-[#1c1c1c] whitespace-pre-wrap break-words">
+                      <div className="max-w-[80%] bg-[#F0EAEA] rounded-[20px] px-4 py-2.5 text-[14px] leading-relaxed text-[#1c1c1c] whitespace-pre-wrap break-words">
                         {msg.content}
                       </div>
                     )}
@@ -508,7 +508,7 @@ export default function ChatView({
                   </div>
                 ) : (
                   <div key={msg.id} className="group">
-                    <div className="text-[18px] leading-relaxed text-[#1c1c1c] pr-8">
+                    <div className="text-[14px] leading-relaxed text-[#1c1c1c] pr-8">
                       {msg.content ? (
                         <MarkdownRenderer content={msg.content} />
                       ) : (
@@ -553,7 +553,7 @@ export default function ChatView({
           <div className="sticky bottom-0 z-10 bg-white px-4 pb-3 pt-2 shrink-0">
             <div className="max-w-[768px] mx-auto">
               {InputBox}
-              <p className="text-[13px] text-[#b4b4b4] text-center mt-2">
+              <p className="text-[12px] text-[#b4b4b4] text-center mt-2">
                 AI can make mistakes. Please double-check responses.
               </p>
             </div>
@@ -569,10 +569,10 @@ export default function ChatView({
                 <ProviderLogo provider="anthropic" size={22} className={PROVIDER_ACCENT.anthropic} />
                 <ProviderLogo provider="openrouter" size={22} className={PROVIDER_ACCENT.openrouter} />
               </div>
-              <h1 className="text-[30px] font-semibold text-[#1c1c1c] mb-2 tracking-tight">
+              <h1 className="text-[22px] font-semibold text-[#1c1c1c] mb-2 tracking-tight">
                 Connect a provider
               </h1>
-              <p className="text-[15px] text-[#5a5a5a] leading-relaxed">
+              <p className="text-[13px] text-[#5a5a5a] leading-relaxed">
                 Add one or more API keys to get started. They stay in your browser.
               </p>
             </div>
@@ -583,7 +583,7 @@ export default function ChatView({
               type="button"
               onClick={() => setHasStarted(true)}
               disabled={settings.providers.length === 0}
-              className="mt-6 w-full inline-flex items-center justify-center gap-2 h-12 rounded-full bg-[#1c1c1c] text-white text-[15px] font-semibold hover:bg-[#333] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="mt-6 w-full inline-flex items-center justify-center gap-2 h-11 rounded-full bg-[#1c1c1c] text-white text-[13px] font-semibold hover:bg-[#333] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               Start chatting
               <ArrowRight size={16} strokeWidth={2.5} />
@@ -594,11 +594,11 @@ export default function ChatView({
         /* Empty state: heading + input vertically centered */
         <div className="flex-1 flex flex-col items-center justify-center px-6 pb-6">
           <div className="w-full max-w-[768px]">
-            <h1 className="text-[36px] font-semibold text-[#1c1c1c] mb-8 tracking-tight text-center">
+            <h1 className="text-[28px] font-semibold text-[#1c1c1c] mb-6 tracking-tight text-center">
               What can I help with?
             </h1>
             {InputBox}
-            <p className="text-[13px] text-[#b4b4b4] text-center mt-4">
+            <p className="text-[12px] text-[#b4b4b4] text-center mt-4">
               AI can make mistakes. Please double-check responses.
             </p>
           </div>

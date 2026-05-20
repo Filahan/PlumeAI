@@ -35,8 +35,8 @@ export default function AppShell({ currentId, children }: AppShellProps) {
       suppressHydrationWarning
     >
       <aside
-        className={`fixed top-2 left-2 bottom-2 z-20 rounded-2xl overflow-hidden bg-[#F5F5F5] border border-black/[0.08] transition-[width] duration-300 ease-out ${
-          sidebarOpen ? 'w-[300px]' : 'w-[72px]'
+        className={`fixed top-2 left-2 bottom-2 z-20 rounded-2xl overflow-hidden bg-[#FAFAFA] border border-black/[0.08] transition-[width] duration-300 ease-out ${
+          sidebarOpen ? 'w-[268px]' : 'w-[72px]'
         }`}
       >
         <Sidebar
@@ -59,9 +59,16 @@ export default function AppShell({ currentId, children }: AppShellProps) {
         />
       </aside>
 
+      {/*
+        Width is intentionally NOT set: a block element with margin-left and width:auto
+        sizes to (parent content width − margin), which is identical in Chrome and Safari.
+        Using `w-[calc(100vw-X)]` here caused ~15px drift because `100vw` doesn't subtract
+        the scrollbar width in Chrome. If we ever reintroduce the document panel, shrink
+        the main with `mr-[528px]` rather than another viewport-width calc.
+      */}
       <main
-        className={`min-h-screen flex flex-col transition-[margin-left,width] duration-300 ease-out ${
-          sidebarOpen ? 'ml-[316px] w-[calc(100vw-316px)]' : 'ml-[88px] w-[calc(100vw-88px)]'
+        className={`min-h-screen flex flex-col transition-[margin-left] duration-300 ease-out ${
+          sidebarOpen ? 'ml-[284px]' : 'ml-[88px]'
         }`}
       >
         {children}
