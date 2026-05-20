@@ -1,6 +1,31 @@
-import { Provider, PROVIDER_BASE_URLS, Message } from './types';
+import { Provider, PROVIDER_BASE_URLS } from './types';
 
-type ChatMessage = Pick<Message, 'role' | 'content'>;
+export type TextPart = { type: 'text'; text: string };
+export type ImagePart = { type: 'image'; mime: string; base64: string };
+export type ChatContent = string | Array<TextPart | ImagePart>;
+export type ChatMessage = { role: 'user' | 'assistant'; content: ChatContent };
+
+function mapPartsForOpenAI(content: ChatContent) {
+  if (typeof content === 'string') return content;
+  return content.map((p) =>
+    p.type === 'text'
+      ? { type: 'text', text: p.text }
+      : { type: 'image_url', image_url: { url: `data:${p.mime};base64,${p.base64}`, detail: 'auto' } }
+  );
+}
+
+function mapPartsForAnthropic(content: ChatContent) {
+  if (typeof content === 'string') return content;
+  return content.map((p) =>
+    p.type === 'text'
+      ? { type: 'text', text: p.text }
+      : { type: 'image', source: { type: 'base64', media_type: p.mime, data: p.base64 } }
+  );
+}
+
+function hasImages(messages: ChatMessage[]): boolean {
+  return messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image'));
+}
 
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BUFFER_BYTES = 1_000_000;
@@ -45,17 +70,21 @@ async function streamAnthropic(
   signal: AbortSignal,
   onUsage?: (usage: Usage) => void
 ) {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+    'anthropic-version': ANTHROPIC_VERSION,
+  };
+  // Image attachments require the browser-access header.
+  if (hasImages(messages)) headers['anthropic-dangerous-direct-browser-access'] = 'true';
+
   const res = await fetch(`${PROVIDER_BASE_URLS.anthropic}/messages`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-    },
+    headers,
     body: JSON.stringify({
       model,
       max_tokens: 4096,
-      messages,
+      messages: messages.map((m) => ({ role: m.role, content: mapPartsForAnthropic(m.content) })),
       stream: true,
     }),
     signal,
@@ -98,7 +127,7 @@ async function streamOpenAICompatible(
     },
     body: JSON.stringify({
       model,
-      messages,
+      messages: messages.map((m) => ({ role: m.role, content: mapPartsForOpenAI(m.content) })),
       stream: true,
       stream_options: { include_usage: true },
     }),

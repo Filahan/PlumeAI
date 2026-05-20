@@ -1,10 +1,19 @@
 export type Provider = 'openai' | 'anthropic' | 'openrouter';
 
+export interface AttachmentRef {
+  id: string;        // blob-store key (uuid)
+  mime: string;      // 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
+  width: number;
+  height: number;
+  size: number;      // bytes, post-resize
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  attachments?: AttachmentRef[];
 }
 
 export interface Conversation {
@@ -31,6 +40,15 @@ export interface Settings {
 
 export function findApiKey(settings: Settings, provider: Provider): string {
   return settings.providers.find((p) => p.provider === provider)?.apiKey ?? '';
+}
+
+export function supportsVision(provider: Provider, model: string): boolean {
+  if (provider === 'openai') return /^gpt-4o|^gpt-4\.1|^o\d/.test(model);
+  if (provider === 'anthropic') return /^claude-3/.test(model);
+  if (provider === 'openrouter') {
+    return /^openai\/gpt-4o|^anthropic\/claude-3|^google\/gemini/.test(model);
+  }
+  return false;
 }
 
 export interface UsageEntry {

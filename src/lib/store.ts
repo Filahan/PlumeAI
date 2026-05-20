@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Conversation, Message, Settings, ProviderConfig, UsageEntry, PROVIDER_NAMES, Provider } from '@/lib/types';
+import { deleteBlobs } from '@/lib/blob-store';
 import { getCost, PricingMap } from '@/lib/pricing';
 
 export type UsageWindow = '30m' | '1h' | '6h' | '24h';
@@ -166,7 +167,17 @@ export function useConversations() {
   );
 
   const deleteConversation = useCallback((id: string) => {
-    setConversations((prev) => prev.filter((c) => c.id !== id));
+    setConversations((prev) => {
+      const target = prev.find((c) => c.id === id);
+      if (target) {
+        const blobIds = target.messages.flatMap((m) => m.attachments?.map((a) => a.id) ?? []);
+        if (blobIds.length > 0) {
+          // Fire-and-forget — blob cleanup is best-effort.
+          deleteBlobs(blobIds).catch(() => {});
+        }
+      }
+      return prev.filter((c) => c.id !== id);
+    });
   }, []);
 
   const renameConversation = useCallback((id: string, title: string) => {
