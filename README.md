@@ -5,20 +5,21 @@ Minimal BYOK chat UI for OpenAI, Anthropic and OpenRouter with usage analytics. 
 ## Quick start
 
 ```bash
-cp .env.example .env
-# fill in DB_PASSWORD, AUTH_SECRET, ENCRYPTION_KEY, ADMIN_PASSWORD_HASH (see below)
 docker compose up -d
 open http://localhost:3000
+# login with the default password: admin
 ```
 
-Generate secrets:
+That's it. Compose ships with safe-for-dev defaults baked in.
+
+**Before exposing to the internet**, override the secrets:
 
 ```bash
-# AUTH_SECRET and ENCRYPTION_KEY (32 random bytes, base64)
-openssl rand -base64 32
-
-# ADMIN_PASSWORD_HASH (SHA-256 hex of your admin password)
-echo -n 'YourStrongPassword' | shasum -a 256 | awk '{print $1}'
+cp .env.example .env
+# Then edit .env — generate fresh values with:
+#   AUTH_SECRET / ENCRYPTION_KEY   →  openssl rand -base64 32
+#   ADMIN_PASSWORD_HASH            →  echo -n 'YourPassword' | shasum -a 256 | awk '{print $1}'
+docker compose up -d
 ```
 
 ## Stack
