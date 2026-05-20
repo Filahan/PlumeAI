@@ -350,6 +350,11 @@ export default function ChatView({
         <div className="flex-1 flex flex-col items-center justify-center px-6 py-10">
           <div className="w-full max-w-[520px]">
             <div className="text-center mb-8">
+              <div className="inline-flex items-center justify-center gap-2 mb-4">
+                <ProviderLogo provider="openai" size={22} className={PROVIDER_ACCENT.openai} />
+                <ProviderLogo provider="anthropic" size={22} className={PROVIDER_ACCENT.anthropic} />
+                <ProviderLogo provider="openrouter" size={22} className={PROVIDER_ACCENT.openrouter} />
+              </div>
               <h1 className="text-[30px] font-semibold text-[#1c1c1c] mb-2 tracking-tight">
                 Connect a provider
               </h1>

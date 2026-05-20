@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback } from 'react';
+import Link from 'next/link';
 import { Conversation, Settings } from '@/lib/types';
 import { formatTokens, formatCost } from '@/lib/pricing';
 import { USAGE_WINDOWS, type UsageWindow } from '@/lib/store';
@@ -13,7 +14,7 @@ import {
 import { Button } from '@/components/ui/button';
 import SettingsContent from '@/components/settings-content';
 import {
-  SquarePen, SearchIcon, BookMarked, Trash2, PanelLeftClose, Activity,
+  SquarePen, SearchIcon, BookMarked, Trash2, PanelLeftClose, Activity, ArrowUpRight,
   Settings as SettingsIcon,
   type LucideIcon,
 } from 'lucide-react';
@@ -39,9 +40,9 @@ interface SidebarProps {
 
 const AppLogo = (
   <svg width="32" height="32" viewBox="0 0 36 36" fill="none">
-    <rect x="2" y="2" width="32" height="32" rx="9" fill="#111111"/>
-    <circle cx="18" cy="18" r="10" fill="#F5C518"/>
-    <path d="M20 11l-5 7h4l-1 7 5-7h-4l1-7z" fill="#111111" stroke="#111111" strokeWidth="1" strokeLinejoin="round"/>
+    <rect x="2" y="2" width="32" height="32" rx="9" fill="#111111" />
+    <circle cx="18" cy="18" r="10" fill="#F5C518" />
+    <path d="M20 11l-5 7h4l-1 7 5-7h-4l1-7z" fill="#111111" stroke="#111111" strokeWidth="1" strokeLinejoin="round" />
   </svg>
 );
 
@@ -93,10 +94,7 @@ export default function Sidebar({
   settingsOpen, onSettingsOpenChange,
 }: SidebarProps) {
   const showConversationUsage = currentId !== null;
-
-  const handleOpenSettings = useCallback(() => {
-    onSettingsOpenChange(true);
-  }, [onSettingsOpenChange]);
+  const handleOpenSettings = useCallback(() => onSettingsOpenChange(true), [onSettingsOpenChange]);
 
   const Header = (
     <div className="flex items-center justify-between shrink-0 px-4 pt-3 pb-3">
@@ -124,9 +122,7 @@ export default function Sidebar({
   const sectionLabelClass = 'px-4 mb-1 text-[12px] font-semibold text-[#a8a8a8] tracking-[0.08em] uppercase';
 
   return (
-    <div
-      className="flex flex-col h-full w-full overflow-hidden"
-    >
+    <div className="flex flex-col h-full w-full overflow-hidden">
       {Header}
 
       {/* Menu */}
@@ -186,11 +182,13 @@ export default function Sidebar({
         <div className="flex-1" />
       )}
 
-      {/* Usage card — visible when expanded */}
+      {/* Usage card — visible when expanded, links to /usage */}
       {open && ready && (
         <div className="shrink-0 px-3 pb-2">
-          <div className="rounded-2xl bg-white/70 border border-black/[0.05] overflow-hidden">
-            {/* Header */}
+          <Link
+            href="/usage"
+            className="group block rounded-2xl bg-white/70 hover:bg-white border border-black/[0.05] hover:border-black/[0.08] overflow-hidden transition-colors"
+          >
             <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
               <div className="flex items-center gap-1.5">
                 <span className="relative flex items-center justify-center">
@@ -199,10 +197,12 @@ export default function Sidebar({
                 </span>
                 <span className="text-[12px] font-semibold text-[#1c1c1c] tracking-tight">Usage</span>
               </div>
-              <Activity size={13} strokeWidth={2.25} className="text-emerald-600/80" />
+              <div className="flex items-center gap-1 text-emerald-600/80">
+                <Activity size={13} strokeWidth={2.25} />
+                <ArrowUpRight size={13} strokeWidth={2.25} className="opacity-0 group-hover:opacity-100 transition-opacity text-[#5a5a5a]" />
+              </div>
             </div>
 
-            {/* Current chat */}
             {showConversationUsage && (
               <>
                 <div className="px-3.5 pb-3">
@@ -225,7 +225,6 @@ export default function Sidebar({
               </>
             )}
 
-            {/* Time-windowed usage */}
             <div className="px-3.5 pt-2.5 pb-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-medium text-[#9b9b9b] uppercase tracking-[0.08em]">
@@ -238,7 +237,7 @@ export default function Sidebar({
                       <button
                         key={w.id}
                         type="button"
-                        onClick={() => onUsageWindowChange(w.id)}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onUsageWindowChange(w.id); }}
                         aria-pressed={active}
                         className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium tabular-nums transition-colors ${
                           active
@@ -264,7 +263,7 @@ export default function Sidebar({
                 </span>
               </div>
             </div>
-          </div>
+          </Link>
         </div>
       )}
 

@@ -271,7 +271,7 @@ export function useUsage() {
     [usageLog, pricing]
   );
 
-  return { recordUsage, recentUsage, usageForConversation, window, setWindow, loaded };
+  return { recordUsage, recentUsage, usageForConversation, window, setWindow, usageLog, pricing, loaded };
 }
 
 const DEFAULT_SETTINGS: Settings = {
