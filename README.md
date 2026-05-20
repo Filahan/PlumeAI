@@ -1,44 +1,43 @@
-# WebUI
+# PlumeAI
 
-A simple, clean chat interface for LLMs — inspired by Apple's minimal design language. Built with Next.js 15, TypeScript, Tailwind CSS, and shadcn/ui.
+Minimal BYOK chat UI for OpenAI, Anthropic and OpenRouter with usage analytics. Self-hosted via Docker.
 
-## Features
+## Quick start
 
-- **Multi-provider**: OpenAI, Anthropic, OpenRouter
-- **Client-side**: API keys stored in localStorage, calls made directly from browser
-- **Streaming**: Real-time token streaming for all providers
-- **Markdown**: Rich text rendering with code blocks
-- **Conversation history**: Persistent across sessions via localStorage
-- **Collapsible sidebar**: Clean navigation with conversation list
-- **Stop generation**: Abort ongoing requests instantly
+```bash
+cp .env.example .env
+# fill in DB_PASSWORD, AUTH_SECRET, ENCRYPTION_KEY, ADMIN_PASSWORD_HASH (see below)
+docker compose up -d
+open http://localhost:3000
+```
 
-## Getting Started
+Generate secrets:
+
+```bash
+# AUTH_SECRET and ENCRYPTION_KEY (32 random bytes, base64)
+openssl rand -base64 32
+
+# ADMIN_PASSWORD_HASH (SHA-256 hex of your admin password)
+echo -n 'YourStrongPassword' | shasum -a 256 | awk '{print $1}'
+```
+
+## Stack
+
+Next.js 16, Tailwind v4, Drizzle ORM, Postgres 16, JWT cookie auth (`jose`), AES-GCM encryption for API keys at rest. LLM calls happen client-side — keys are decrypted on read and sent to the browser, never proxied.
+
+## Local development
 
 ```bash
 npm install
+DATABASE_URL=postgres://plumeai:dev@localhost:5432/plumeai \
+AUTH_SECRET=$(openssl rand -base64 32) \
+ENCRYPTION_KEY=$(openssl rand -base64 32) \
+ADMIN_PASSWORD_HASH=$(echo -n 'dev' | shasum -a 256 | awk '{print $1}') \
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
-
-## Configuration
-
-1. Open **Settings** from the sidebar
-2. Select your provider and model
-3. Paste your API key
-4. Start chatting
-
-Your API key is stored **locally** in your browser — it never hits our servers.
-
-## Tech Stack
-
-- Next.js 15 (App Router)
-- TypeScript
-- Tailwind CSS v4
-- shadcn/ui
-- Lucide icons
+You still need a Postgres running locally (or `docker compose up -d db` for just the database).
 
 ## License
 
 MIT
-# Plume

@@ -1,9 +1,26 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Conversation, Message, Settings, ProviderConfig, UsageEntry, PROVIDER_NAMES, Provider } from '@/lib/types';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Conversation, Message, Settings, UsageEntry, Provider } from '@/lib/types';
 import { deleteBlobs } from '@/lib/blob-store';
 import { getCost, PricingMap } from '@/lib/pricing';
+import {
+  listConversations as listConversationsAction,
+  createConversation as createConversationAction,
+  addMessage as addMessageAction,
+  updateMessage as updateMessageAction,
+  renameConversation as renameConversationAction,
+  setConversationModel as setConversationModelAction,
+  deleteConversation as deleteConversationAction,
+} from '@/lib/actions/conversations';
+import {
+  getSettings as getSettingsAction,
+  updateSettings as updateSettingsAction,
+} from '@/lib/actions/settings';
+import {
+  listUsage as listUsageAction,
+  recordUsage as recordUsageAction,
+} from '@/lib/actions/usage';
 
 export type UsageWindow = '30m' | '1h' | '6h' | '24h';
 export const USAGE_WINDOWS: { id: UsageWindow; label: string; ms: number }[] = [
@@ -18,7 +35,6 @@ const PRICING_CACHE_KEY = 'webui-pricing-cache';
 const PRICING_TTL_MS = 9 * 60 * 60 * 1000;
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 
-// OpenRouter exposes Anthropic under simplified ids; map back to the SDK ids we send to Anthropic directly.
 const ANTHROPIC_ALIAS: Record<string, string> = {
   'anthropic/claude-3.7-sonnet': 'claude-3-7-sonnet-20250219',
   'anthropic/claude-3.5-sonnet': 'claude-3-5-sonnet-20241022',
@@ -60,9 +76,7 @@ function usePricing(): PricingMap {
         setPricing(map);
         localStorage.setItem(PRICING_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: map }));
       })
-      .catch(() => {
-        // network or CORS error — pricing stays empty until next attempt
-      });
+      .catch(() => {});
 
     return () => controller.abort();
   }, []);
@@ -70,28 +84,8 @@ function usePricing(): PricingMap {
   return pricing;
 }
 
-const STORAGE_DEBOUNCE_MS = 250;
-
 function newId(): string {
   return crypto.randomUUID();
-}
-
-function getDefaultTitle(content: string): string {
-  return content.slice(0, 40) + (content.length > 40 ? '...' : '');
-}
-
-function useDebouncedPersist<T>(key: string, value: T, enabled: boolean) {
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      localStorage.setItem(key, JSON.stringify(value));
-    }, STORAGE_DEBOUNCE_MS);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [key, value, enabled]);
 }
 
 export function useConversations() {
@@ -99,38 +93,51 @@ export function useConversations() {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem('webui-conversations');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as Conversation[];
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setConversations(parsed);
-      } catch {
-        // corrupt payload — ignore and start fresh
-      }
-    }
-    setLoaded(true);
+    let cancelled = false;
+    listConversationsAction()
+      .then((rows) => {
+        if (cancelled) return;
+        setConversations(rows);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  useDebouncedPersist('webui-conversations', conversations, loaded);
-
   const createConversation = useCallback((provider: Provider, model: string) => {
+    const id = newId();
+    const now = Date.now();
     const conv: Conversation = {
-      id: newId(),
+      id,
       title: 'Nouvelle conversation',
       messages: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       provider,
       model,
     };
+    // Optimistic insert; server will assign its own id, so we replace the optimistic record on response.
     setConversations((prev) => [conv, ...prev]);
-    return conv.id;
+    createConversationAction(provider, model)
+      .then((real) => {
+        setConversations((prev) => prev.map((c) => (c.id === id ? real : c)));
+      })
+      .catch(() => {
+        // rollback the optimistic insert on failure
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+      });
+    return id;
   }, []);
 
   const addMessage = useCallback(
     (conversationId: string, message: Omit<Message, 'id' | 'timestamp'>) => {
-      const msg: Message = { ...message, id: newId(), timestamp: Date.now() };
+      const tempId = newId();
+      const now = Date.now();
+      const msg: Message = { ...message, id: tempId, timestamp: now };
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id !== conversationId) return c;
@@ -138,12 +145,27 @@ export function useConversations() {
           return {
             ...c,
             messages: [...c.messages, msg],
-            title: isFirstUserMessage ? getDefaultTitle(msg.content) : c.title,
-            updatedAt: Date.now(),
+            title: isFirstUserMessage
+              ? message.content.slice(0, 40) + (message.content.length > 40 ? '...' : '')
+              : c.title,
+            updatedAt: now,
           };
         })
       );
-      return msg.id;
+      addMessageAction(conversationId, message)
+        .then(({ id }) => {
+          setConversations((prev) =>
+            prev.map((c) => {
+              if (c.id !== conversationId) return c;
+              return {
+                ...c,
+                messages: c.messages.map((m) => (m.id === tempId ? { ...m, id } : m)),
+              };
+            })
+          );
+        })
+        .catch(() => {});
+      return tempId;
     },
     []
   );
@@ -162,6 +184,8 @@ export function useConversations() {
           };
         })
       );
+      // Fire-and-forget streaming update; server applies the same delta.
+      updateMessageAction(conversationId, messageId, chunk, replace).catch(() => {});
     },
     []
   );
@@ -171,13 +195,11 @@ export function useConversations() {
       const target = prev.find((c) => c.id === id);
       if (target) {
         const blobIds = target.messages.flatMap((m) => m.attachments?.map((a) => a.id) ?? []);
-        if (blobIds.length > 0) {
-          // Fire-and-forget — blob cleanup is best-effort.
-          deleteBlobs(blobIds).catch(() => {});
-        }
+        if (blobIds.length > 0) deleteBlobs(blobIds).catch(() => {});
       }
       return prev.filter((c) => c.id !== id);
     });
+    deleteConversationAction(id).catch(() => {});
   }, []);
 
   const renameConversation = useCallback((id: string, title: string) => {
@@ -185,6 +207,7 @@ export function useConversations() {
     setConversations((prev) =>
       prev.map((c) => (c.id === id ? { ...c, title, updatedAt: Date.now() } : c))
     );
+    renameConversationAction(id, title).catch(() => {});
   }, []);
 
   const setConversationModel = useCallback(
@@ -192,6 +215,7 @@ export function useConversations() {
       setConversations((prev) =>
         prev.map((c) => (c.id === id ? { ...c, provider, model, updatedAt: Date.now() } : c))
       );
+      setConversationModelAction(id, provider, model).catch(() => {});
     },
     []
   );
@@ -216,27 +240,25 @@ export function useUsage() {
   const [window, setWindowState] = useState<UsageWindow>('30m');
 
   useEffect(() => {
-    const saved = localStorage.getItem('webui-usage');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as UsageEntry[];
-        // Keep enough history to satisfy the longest window we offer (24h)
-        const longest = USAGE_WINDOWS[USAGE_WINDOWS.length - 1].ms;
-        const cutoff = Date.now() - longest;
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setUsageLog(parsed.filter((e) => e.timestamp >= cutoff));
-      } catch {
-        // corrupt payload — start fresh
-      }
-    }
+    let cancelled = false;
+    listUsageAction()
+      .then((rows) => {
+        if (cancelled) return;
+        setUsageLog(rows);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoaded(true);
+      });
     const savedWindow = localStorage.getItem(USAGE_WINDOW_KEY);
     if (savedWindow && USAGE_WINDOWS.some((w) => w.id === savedWindow)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setWindowState(savedWindow as UsageWindow);
     }
-    setLoaded(true);
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
-  useDebouncedPersist('webui-usage', usageLog, loaded);
 
   useEffect(() => {
     if (!loaded) return;
@@ -249,7 +271,9 @@ export function useUsage() {
   }, []);
 
   const recordUsage = useCallback((entry: Omit<UsageEntry, 'timestamp'>) => {
-    setUsageLog((prev) => [...prev, { ...entry, timestamp: Date.now() }]);
+    const ts = Date.now();
+    setUsageLog((prev) => [...prev, { ...entry, timestamp: ts }]);
+    recordUsageAction(entry).catch(() => {});
   }, []);
 
   const setWindow = useCallback((w: UsageWindow) => setWindowState(w), []);
@@ -290,41 +314,30 @@ const DEFAULT_SETTINGS: Settings = {
   defaultModel: { provider: 'openai', model: 'gpt-4o' },
 };
 
-function migrateSettings(raw: unknown): Settings {
-  if (!raw || typeof raw !== 'object') return DEFAULT_SETTINGS;
-  const r = raw as Partial<Settings> & { provider?: Provider; model?: string; apiKey?: string };
-  // Already in new shape
-  if (Array.isArray(r.providers) && r.defaultModel) {
-    return { providers: r.providers, defaultModel: r.defaultModel };
-  }
-  // Legacy shape: { provider, model, apiKey }
-  if (r.provider && r.model) {
-    const providers: ProviderConfig[] = r.apiKey
-      ? [{ id: newId(), provider: r.provider, label: PROVIDER_NAMES[r.provider], apiKey: r.apiKey }]
-      : [];
-    return { providers, defaultModel: { provider: r.provider, model: r.model } };
-  }
-  return DEFAULT_SETTINGS;
-}
-
 export function useSettings() {
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem('webui-settings');
-    if (saved) {
-      try {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setSettings(migrateSettings(JSON.parse(saved)));
-      } catch {
-        // corrupt payload — keep defaults
-      }
-    }
-    setLoaded(true);
+    let cancelled = false;
+    getSettingsAction()
+      .then((s) => {
+        if (cancelled) return;
+        setSettingsState(s);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  useDebouncedPersist('webui-settings', settings, loaded);
+  const setSettings = useCallback((next: Settings) => {
+    setSettingsState(next);
+    updateSettingsAction(next).catch(() => {});
+  }, []);
 
   return { settings, setSettings, loaded };
 }
