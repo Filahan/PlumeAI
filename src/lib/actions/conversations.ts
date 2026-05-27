@@ -1,6 +1,6 @@
 'use server';
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, ensureMigrations } from '@/lib/db';
 import { conversations, messages } from '@/lib/db/schema';
 import { requireSession } from '@/lib/auth';
@@ -22,7 +22,7 @@ async function loadConversations(): Promise<Conversation[]> {
   const msgs = await db
     .select()
     .from(messages)
-    .where(sql`${messages.conversationId} = ANY(${ids})`)
+    .where(inArray(messages.conversationId, ids))
     .orderBy(messages.timestamp);
   const byConv = new Map<string, Message[]>();
   for (const m of msgs) {
@@ -80,10 +80,10 @@ export async function createConversation(provider: Provider, model: string): Pro
 
 export async function addMessage(
   conversationId: string,
-  message: Omit<Message, 'id' | 'timestamp'>
-): Promise<{ id: string; firstUserMessage: boolean }> {
+  message: Omit<Message, 'timestamp'>
+): Promise<{ firstUserMessage: boolean }> {
   await init();
-  const id = newId();
+  const { id } = message;
   const now = new Date();
 
   // Determine if this is the first user message (drives title auto-rename).
@@ -112,7 +112,7 @@ export async function addMessage(
     .set({ updatedAt: now, ...(title ? { title } : {}) })
     .where(eq(conversations.id, conversationId));
 
-  return { id, firstUserMessage };
+  return { firstUserMessage };
 }
 
 export async function updateMessage(

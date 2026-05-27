@@ -24,12 +24,9 @@ export default function LoginPage() {
         setError(data.error || 'Login failed');
         return;
       }
-      // Honour ?next= but never bounce back to /login.
       const params = new URLSearchParams(window.location.search);
       const raw = params.get('next') || '/';
       const dest = raw.startsWith('/') && !raw.startsWith('/login') ? raw : '/';
-      // Hard navigate so the cookie just set by the POST is sent on the next request
-      // (no client-router race with middleware).
       window.location.replace(dest);
     } catch {
       setError('Network error');
@@ -39,16 +36,16 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-6 bg-white">
+    <div className="fixed inset-0 flex items-center justify-center px-6">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-2xl border border-black/[0.08] bg-white p-6 space-y-4"
+        className="w-full max-w-sm rounded-3xl border border-[color:var(--border)] bg-white p-8 space-y-5"
       >
-        <div className="text-center space-y-1.5">
-          <div className="text-[20px] font-semibold tracking-tight">
-            PlumeAI
-          </div>
-          <p className="text-[13px] text-[#8e8e8e]">Enter your admin password to continue.</p>
+        <div className="text-center space-y-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="" className="h-8 w-auto mx-auto" />
+          <div className="text-[20px] font-semibold tracking-tight">Welcome to PlumeAI</div>
+          <p className="text-[13px] text-[color:var(--muted-foreground)]">Enter your admin password to continue.</p>
         </div>
 
         <input
@@ -58,7 +55,7 @@ export default function LoginPage() {
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full h-10 rounded-xl border border-black/[0.08] bg-[#FAFAFA] px-3 text-[13px] outline-none focus:bg-white focus:border-black/[0.15] transition"
+          className="w-full h-10 px-0 bg-transparent border-0 border-b border-[color:var(--border)] text-[14px] outline-none focus:border-[color:var(--foreground)] transition placeholder:text-[color:var(--muted-foreground)]"
         />
 
         {error && (
@@ -68,7 +65,7 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={loading || !password}
-          className="w-full inline-flex items-center justify-center gap-1.5 h-10 rounded-xl bg-[#1c1c1c] text-white text-[13px] font-medium hover:bg-[#333] transition disabled:opacity-30 disabled:cursor-not-allowed"
+          className="w-full inline-flex items-center justify-center gap-1.5 h-11 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-medium hover:opacity-90 transition disabled:opacity-30 disabled:cursor-not-allowed"
         >
           {loading ? 'Signing in…' : 'Sign in'}
           {!loading && <ArrowRight size={14} strokeWidth={2.5} />}

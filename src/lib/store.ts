@@ -135,9 +135,9 @@ export function useConversations() {
 
   const addMessage = useCallback(
     (conversationId: string, message: Omit<Message, 'id' | 'timestamp'>) => {
-      const tempId = newId();
+      const id = newId();
       const now = Date.now();
-      const msg: Message = { ...message, id: tempId, timestamp: now };
+      const msg: Message = { ...message, id, timestamp: now };
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id !== conversationId) return c;
@@ -152,20 +152,8 @@ export function useConversations() {
           };
         })
       );
-      addMessageAction(conversationId, message)
-        .then(({ id }) => {
-          setConversations((prev) =>
-            prev.map((c) => {
-              if (c.id !== conversationId) return c;
-              return {
-                ...c,
-                messages: c.messages.map((m) => (m.id === tempId ? { ...m, id } : m)),
-              };
-            })
-          );
-        })
-        .catch(() => {});
-      return tempId;
+      addMessageAction(conversationId, { ...message, id }).catch(() => {});
+      return id;
     },
     []
   );

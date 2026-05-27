@@ -4,8 +4,8 @@ import { useState, useEffect, useRef, useMemo, useCallback, ClipboardEvent, Drag
 import { Conversation, Message, Settings, Provider, AttachmentRef, findApiKey, supportsVision, PROVIDER_MODELS, PROVIDER_NAMES } from '@/lib/types';
 import { streamChat, generateTitle, ChatMessage, ImagePart } from '@/lib/api';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
-import { Paperclip, ArrowUp, Copy, Check, RotateCcw, ArrowRight, X, Eye, ImagePlus } from 'lucide-react';
-import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
+import { Paperclip, ArrowUp, Copy, Check, ArrowRight, X, ImagePlus } from 'lucide-react';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger } from '@/components/ui/select';
 import SettingsContent from '@/components/settings-content';
 import { ProviderLogo, PROVIDER_ACCENT } from '@/components/provider-logo';
 import ImageThumb from '@/components/image-thumb';
@@ -180,6 +180,16 @@ export default function ChatView({
     return list;
   }, [settings.providers, activeProvider, activeModel]);
 
+  const modelsByProvider = useMemo(() => {
+    const groups = new Map<Provider, typeof availableModels>();
+    for (const m of availableModels) {
+      const arr = groups.get(m.provider) ?? [];
+      arr.push(m);
+      groups.set(m.provider, arr);
+    }
+    return Array.from(groups.entries());
+  }, [availableModels]);
+
   const handleModelChange = (value: string | null) => {
     if (!value) return;
     const [provider, ...rest] = value.split(':');
@@ -303,50 +313,16 @@ export default function ChatView({
     }
   };
 
-  const handleRegenerate = async (assistantMsgId: string) => {
-    if (!conversation || isLoading) return;
-    const apiKey = findApiKey(settings, conversation.provider);
-    if (!apiKey) {
-      alert(`No API key configured for ${PROVIDER_NAMES[conversation.provider]}. Add one in Settings.`);
-      return;
-    }
-    const idx = conversation.messages.findIndex((m) => m.id === assistantMsgId);
-    if (idx <= 0) return;
-    const priorMessages = conversation.messages.slice(0, idx);
-    const history: ChatMessage[] = [];
-    for (const m of priorMessages) {
-      const parts = await messageToChatParts(m.content, m.attachments);
-      history.push({ role: m.role, content: parts });
-    }
-    onUpdateMessage(conversation.id, assistantMsgId, '', true);
-    setIsLoading(true);
-    try {
-      const { controller, done } = await streamChat(
-        conversation.provider, conversation.model, apiKey, history,
-        (chunk) => onUpdateMessage(conversation.id, assistantMsgId, chunk),
-        (usage) => onRecordUsage({ conversationId: conversation.id, provider: conversation.provider, model: conversation.model, ...usage })
-      );
-      controllerRef.current = controller;
-      await done;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      onUpdateMessage(conversation.id, assistantMsgId, 'Error: ' + message);
-    } finally {
-      setIsLoading(false);
-      controllerRef.current = null;
-    }
-  };
-
   const hasMessages = conversation && conversation.messages.length > 0;
 
   const sendDisabled = isLoading || pendingProcessing || (!input.trim() && readyAttachments.length === 0);
 
   const InputBox = (
-    <div className="bg-[#F4F4F4] rounded-[28px] px-5 pt-4 pb-3.5 transition-shadow focus-within:shadow-[0_0_0_2px_rgba(0,0,0,0.06)]">
+    <div className="bg-white rounded-2xl border border-[color:var(--border)] px-4 pt-3 pb-3 focus-within:border-[color:var(--ring)] transition-colors">
       {pendingAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {pendingAttachments.map((p) => (
-            <div key={p.localId} className="relative w-16 h-16 rounded-xl overflow-hidden bg-white border border-black/[0.06]">
+            <div key={p.localId} className="relative w-16 h-16 rounded-xl overflow-hidden bg-[color:var(--surface-muted)] border border-[color:var(--border)]">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={p.previewUrl} alt="" className="w-full h-full object-cover" />
               {p.processing && (
@@ -378,14 +354,47 @@ export default function ChatView({
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
-        placeholder="Ask anything"
+        placeholder="Message PlumeAI…"
         rows={1}
-        className="w-full resize-none bg-transparent text-[14px] text-[#1c1c1c] placeholder:text-[#b4b4b4] outline-none min-h-[24px] max-h-[200px] leading-relaxed"
+        className="w-full resize-none bg-transparent text-[14px] text-[color:var(--foreground)] placeholder:text-[color:var(--muted-foreground)] outline-none min-h-[24px] max-h-[200px] leading-relaxed"
         disabled={isLoading}
       />
 
-      <div className="flex items-center justify-between mt-2.5 gap-2">
-        <div className="flex items-center gap-1 min-w-0">
+      <div className="flex items-center justify-between mt-2 gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Select value={`${activeProvider}:${activeModel}`} onValueChange={handleModelChange}>
+            <SelectTrigger
+              aria-label="Choose model"
+              className="h-8 max-w-[240px] rounded-full border-transparent bg-transparent hover:bg-[color:var(--surface-muted)] text-[12px] font-medium text-[color:var(--foreground)] px-2.5 gap-1.5 transition-colors"
+            >
+              <span className="flex items-center gap-1.5 truncate">
+                <ProviderLogo provider={activeProvider} size={14} className={PROVIDER_ACCENT[activeProvider]} />
+                <span className="truncate">
+                  {availableModels.find((m) => `${m.provider}:${m.model}` === `${activeProvider}:${activeModel}`)?.label ?? activeModel}
+                </span>
+              </span>
+            </SelectTrigger>
+            <SelectContent className="rounded-xl p-1 min-w-[220px] border-[color:var(--border)] shadow-lg">
+              {modelsByProvider.map(([provider, models], i) => (
+                <SelectGroup key={provider}>
+                  {i > 0 && <SelectSeparator className="my-1" />}
+                  <SelectLabel className="px-2 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--muted-foreground)]">
+                    {PROVIDER_NAMES[provider]}
+                  </SelectLabel>
+                  {models.map((m) => (
+                    <SelectItem
+                      key={`${m.provider}:${m.model}`}
+                      value={`${m.provider}:${m.model}`}
+                      className="rounded-lg px-2 py-1.5 text-[13px] focus:bg-[color:var(--surface-muted)]"
+                    >
+                      <span className="truncate">{m.model}</span>
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              ))}
+            </SelectContent>
+          </Select>
+
           <input
             ref={fileInputRef}
             type="file"
@@ -402,62 +411,41 @@ export default function ChatView({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             aria-label="Attach image"
-            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#8e8e8e] hover:bg-[#e8e8e8] hover:text-[#5a5a5a] transition-colors"
+            className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)] transition-colors"
           >
-            <Paperclip size={16} strokeWidth={1.5} />
+            <Paperclip size={16} strokeWidth={1.75} />
           </button>
-
-          <Select value={`${activeProvider}:${activeModel}`} onValueChange={handleModelChange}>
-            <SelectTrigger
-              aria-label="Choose model"
-              className="h-8 max-w-[260px] rounded-full border-transparent bg-transparent hover:bg-[#e8e8e8] text-[13px] font-medium text-[#5a5a5a] px-2.5 gap-1 transition-colors"
-            >
-              <span className="flex items-center gap-1.5 truncate">
-                <span className="truncate">
-                  {availableModels.find((m) => `${m.provider}:${m.model}` === `${activeProvider}:${activeModel}`)?.label ?? activeModel}
-                </span>
-                {visionOk && <Eye size={12} strokeWidth={2} className="text-emerald-600/80 shrink-0" />}
-              </span>
-            </SelectTrigger>
-            <SelectContent className="rounded-xl">
-              {availableModels.map((m) => (
-                <SelectItem key={`${m.provider}:${m.model}`} value={`${m.provider}:${m.model}`}>
-                  {m.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
         </div>
 
-        <div className="shrink-0">
-          {isLoading ? (
-            <button
-              type="button"
-              onClick={handleStop}
-              aria-label="Stop generating"
-              className="w-9 h-9 rounded-full bg-black text-white flex items-center justify-center hover:bg-[#333] transition-colors"
-            >
-              <div className="w-3 h-3 bg-white rounded-[2px]" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={sendDisabled}
-              aria-label="Send message"
-              className="w-9 h-9 rounded-full bg-black text-white flex items-center justify-center hover:bg-[#333] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <ArrowUp size={16} strokeWidth={2.5} />
-            </button>
-          )}
-        </div>
+        {isLoading ? (
+          <button
+            type="button"
+            onClick={handleStop}
+            aria-label="Stop generating"
+            className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-medium hover:opacity-90 transition"
+          >
+            <span className="w-2.5 h-2.5 bg-white rounded-[2px]" />
+            Stop
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={sendDisabled}
+            aria-label="Send message"
+            className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-medium hover:opacity-90 transition disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Send
+            <ArrowUp size={14} strokeWidth={2.5} />
+          </button>
+        )}
       </div>
     </div>
   );
 
   return (
     <div
-      className="flex flex-col min-h-screen relative"
+      className="flex flex-col h-full relative"
       onDragEnter={handleDragOver}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -466,24 +454,29 @@ export default function ChatView({
       <ImageLightbox attachment={lightboxRef} onClose={() => setLightboxRef(null)} />
       {dragActive && (
         <div className="fixed inset-0 z-[55] bg-emerald-500/10 border-4 border-dashed border-emerald-500 flex items-center justify-center pointer-events-none">
-          <div className="rounded-2xl bg-white px-6 py-4 shadow-xl flex items-center gap-3 text-[#1c1c1c]">
+          <div className="rounded-2xl bg-white px-6 py-4 shadow-xl flex items-center gap-3 text-[color:var(--foreground)]">
             <ImagePlus size={20} strokeWidth={2} className="text-emerald-600" />
             <span className="text-[13px] font-medium">Drop images to attach</span>
           </div>
         </div>
       )}
+
+      {hasMessages && (
+        <header className="shrink-0 h-14 flex items-center px-6 border-b border-[color:var(--border)]">
+          <h1 className="text-[15px] font-medium text-[color:var(--foreground)] truncate">
+            {conversation!.title}
+          </h1>
+        </header>
+      )}
+
       {!ready ? (
         <div className="flex-1" />
       ) : hasMessages ? (
         <>
-          {/* Messages — page scrolls naturally */}
-          <div className="flex-1 w-full">
-            <div className="max-w-[768px] mx-auto px-4 py-6 space-y-6">
-              {conversation!.messages.map((msg, i) => {
-                const isLastAssistant =
-                  msg.role === 'assistant' && i === conversation!.messages.length - 1;
-                const canRegenerate = msg.role === 'assistant' && !!msg.content && !(isLastAssistant && isLoading);
-                return msg.role === 'user' ? (
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-[768px] mx-auto px-6 py-6 space-y-5">
+              {conversation!.messages.map((msg) => (
+                msg.role === 'user' ? (
                   <div key={msg.id} className="group flex flex-col items-end gap-1">
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
@@ -493,7 +486,7 @@ export default function ChatView({
                       </div>
                     )}
                     {msg.content && (
-                      <div className="max-w-[80%] bg-[#F0EAEA] rounded-[20px] px-4 py-2.5 text-[14px] leading-relaxed text-[#1c1c1c] whitespace-pre-wrap break-words">
+                      <div className="max-w-[80%] bg-[color:var(--accent-user)] rounded-2xl px-4 py-2.5 text-[14px] leading-relaxed text-[color:var(--foreground)] whitespace-pre-wrap break-words">
                         {msg.content}
                       </div>
                     )}
@@ -501,67 +494,37 @@ export default function ChatView({
                       type="button"
                       onClick={() => handleCopy(msg.id, msg.content)}
                       aria-label="Copy message"
-                      className="h-7 w-7 inline-flex items-center justify-center rounded-md text-[#9b9b9b] hover:bg-[#EEEEEE] hover:text-[#5a5a5a] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
+                      className="h-7 w-7 inline-flex items-center justify-center rounded-md text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
                     >
                       {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                     </button>
                   </div>
-                ) : (
-                  <div key={msg.id} className="group">
-                    <div className="text-[14px] leading-relaxed text-[#1c1c1c] pr-8">
-                      {msg.content ? (
-                        <MarkdownRenderer content={msg.content} />
-                      ) : (
-                        <span
-                          role="status"
-                          aria-label="Generating response"
-                          className="inline-block w-1.5 h-4 bg-[#b4b4b4] animate-pulse rounded-sm"
-                        />
-                      )}
+                ) : msg.content ? (
+                  <div key={msg.id} className="group max-w-[90%]">
+                    <div className="bg-[color:var(--accent-asst)] rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[color:var(--foreground)]">
+                      <MarkdownRenderer content={msg.content} />
                     </div>
-                    {msg.content && (
-                      <div className="mt-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(msg.id, msg.content)}
-                          aria-label="Copy response"
-                          className="h-7 w-7 inline-flex items-center justify-center rounded-md text-[#9b9b9b] hover:bg-[#EEEEEE] hover:text-[#5a5a5a] transition"
-                        >
-                          {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
-                        </button>
-                        {canRegenerate && (
-                          <button
-                            type="button"
-                            onClick={() => handleRegenerate(msg.id)}
-                            disabled={isLoading}
-                            aria-label="Regenerate response"
-                            className="h-7 w-7 inline-flex items-center justify-center rounded-md text-[#9b9b9b] hover:bg-[#EEEEEE] hover:text-[#5a5a5a] disabled:opacity-40 disabled:cursor-not-allowed transition"
-                          >
-                            <RotateCcw size={14} />
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(msg.id, msg.content)}
+                      aria-label="Copy response"
+                      className="mt-1 h-7 w-7 inline-flex items-center justify-center rounded-md text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
+                    >
+                      {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
                   </div>
-                );
-              })}
+                ) : null
+              ))}
               <div ref={messagesEndRef} />
             </div>
           </div>
 
-          {/* Input — sticky to viewport bottom while page scrolls */}
-          <div className="sticky bottom-0 z-10 bg-white px-4 pb-3 pt-2 shrink-0">
-            <div className="max-w-[768px] mx-auto">
-              {InputBox}
-              <p className="text-[12px] text-[#b4b4b4] text-center mt-2">
-                AI can make mistakes. Please double-check responses.
-              </p>
-            </div>
+          <div className="shrink-0 px-6 pb-4 pt-2 bg-white">
+            <div className="max-w-[768px] mx-auto">{InputBox}</div>
           </div>
         </>
       ) : !hasStarted ? (
-        /* Inline setup view — add providers, then click Start */
-        <div className="flex-1 flex flex-col items-center justify-center px-6 py-10">
+        <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 overflow-y-auto">
           <div className="w-full max-w-[520px]">
             <div className="text-center mb-8">
               <div className="inline-flex items-center justify-center gap-2 mb-4">
@@ -569,10 +532,10 @@ export default function ChatView({
                 <ProviderLogo provider="anthropic" size={22} className={PROVIDER_ACCENT.anthropic} />
                 <ProviderLogo provider="openrouter" size={22} className={PROVIDER_ACCENT.openrouter} />
               </div>
-              <h1 className="text-[22px] font-semibold text-[#1c1c1c] mb-2 tracking-tight">
+              <h1 className="text-[22px] font-semibold mb-2 tracking-tight">
                 Connect a provider
               </h1>
-              <p className="text-[13px] text-[#5a5a5a] leading-relaxed">
+              <p className="text-[13px] text-[color:var(--muted-foreground)] leading-relaxed">
                 Add one or more API keys to get started. They stay in your browser.
               </p>
             </div>
@@ -583,7 +546,7 @@ export default function ChatView({
               type="button"
               onClick={() => setHasStarted(true)}
               disabled={settings.providers.length === 0}
-              className="mt-6 w-full inline-flex items-center justify-center gap-2 h-11 rounded-full bg-[#1c1c1c] text-white text-[13px] font-semibold hover:bg-[#333] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="mt-6 w-full inline-flex items-center justify-center gap-2 h-11 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-semibold hover:opacity-90 transition disabled:opacity-30 disabled:cursor-not-allowed"
             >
               Start chatting
               <ArrowRight size={16} strokeWidth={2.5} />
@@ -591,16 +554,12 @@ export default function ChatView({
           </div>
         </div>
       ) : (
-        /* Empty state: heading + input vertically centered */
         <div className="flex-1 flex flex-col items-center justify-center px-6 pb-6">
-          <div className="w-full max-w-[768px]">
-            <h1 className="text-[28px] font-semibold text-[#1c1c1c] mb-6 tracking-tight text-center">
-              What can I help with?
+          <div className="w-full max-w-[640px]">
+            <h1 className="text-[28px] font-medium mb-6 tracking-tight text-center">
+              What can I help you with?
             </h1>
             {InputBox}
-            <p className="text-[12px] text-[#b4b4b4] text-center mt-4">
-              AI can make mistakes. Please double-check responses.
-            </p>
           </div>
         </div>
       )}
