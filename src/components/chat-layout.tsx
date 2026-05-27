@@ -1,38 +1,68 @@
 'use client';
 
-import { useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
 import { useConversationsStore, useSettingsStore, useUsageStore } from '@/lib/store-provider';
 import { Provider } from '@/lib/types';
 import AppShell from '@/components/app-shell';
 import ChatView from '@/components/chat-view';
 
-interface ChatLayoutProps {
-  currentId: string | null;
+function pathnameToId(p: string): string | null {
+  return p === '/' ? null : p.slice(1) || null;
 }
 
-export default function ChatLayout({ currentId }: ChatLayoutProps) {
-  const router = useRouter();
+export default function ChatLayout() {
+  // Active id mirrors the URL but updates via history.pushState so ChatView's
+  // local state survives between `/` and `/{id}`. router.push would remount it.
+  const [activeId, setActiveIdRaw] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : pathnameToId(window.location.pathname)
+  );
+
+  const setActiveId = useCallback((id: string | null) => {
+    setActiveIdRaw(id);
+    const url = id ? `/${id}` : '/';
+    if (window.location.pathname !== url) {
+      window.history.pushState(null, '', url);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => setActiveIdRaw(pathnameToId(window.location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   const {
-    conversations, createConversation, addMessage, updateMessage, renameConversation, setConversationModel,
-    loaded: conversationsLoaded,
+    conversations, createConversation, deleteConversation, addMessage, updateMessage,
+    renameConversation, setConversationModel, loaded: conversationsLoaded,
   } = useConversationsStore();
   const { settings, loaded: settingsLoaded } = useSettingsStore();
   const { recordUsage } = useUsageStore();
   const ready = conversationsLoaded && settingsLoaded;
 
-  const currentConversation = currentId
-    ? conversations.find((c) => c.id === currentId) ?? null
+  const currentConversation = activeId
+    ? conversations.find((c) => c.id === activeId) ?? null
     : null;
 
   const handleCreateConversation = useCallback((provider: Provider, model: string) => {
     const id = createConversation(provider, model);
-    router.push(`/${id}`);
+    setActiveId(id);
     return id;
-  }, [createConversation, router]);
+  }, [createConversation, setActiveId]);
+
+  const handleSelect = useCallback((id: string) => setActiveId(id), [setActiveId]);
+  const handleNewChat = useCallback(() => setActiveId(null), [setActiveId]);
+  const handleDelete = useCallback((id: string) => {
+    deleteConversation(id);
+    if (id === activeId) setActiveId(null);
+  }, [deleteConversation, activeId, setActiveId]);
 
   return (
-    <AppShell currentId={currentId}>
+    <AppShell
+      currentId={activeId}
+      onSelect={handleSelect}
+      onNewChat={handleNewChat}
+      onDelete={handleDelete}
+    >
       <ChatView
         conversation={currentConversation}
         settings={settings}

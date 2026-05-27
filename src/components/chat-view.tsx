@@ -52,6 +52,7 @@ export default function ChatView({
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [draftProvider, setDraftProvider] = useState<Provider>(settings.defaultModel.provider);
   const [draftModel, setDraftModel] = useState<string>(settings.defaultModel.model);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
@@ -460,9 +461,22 @@ export default function ChatView({
 
       {hasMessages && (
         <header className="shrink-0 h-14 flex items-center px-6 border-b border-[color:var(--border)]">
-          <h1 className="text-[15px] font-medium text-[color:var(--foreground)] truncate">
-            {conversation!.title}
-          </h1>
+          <input
+            value={titleDraft ?? conversation!.title}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onFocus={() => setTitleDraft(conversation!.title)}
+            onBlur={() => {
+              const t = titleDraft?.trim();
+              if (t && t !== conversation!.title) onRenameConversation(conversation!.id, t);
+              setTitleDraft(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
+              if (e.key === 'Escape') { setTitleDraft(null); (e.target as HTMLInputElement).blur(); }
+            }}
+            className="text-[15px] font-medium bg-transparent outline-none focus:bg-[color:var(--surface-muted)] rounded px-2 py-0.5 -ml-2 max-w-full"
+            aria-label="Conversation title"
+          />
         </header>
       )}
 

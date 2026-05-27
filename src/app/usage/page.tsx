@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import AppShell from '@/components/app-shell';
 import UsageChart, { type UsageRange } from '@/components/usage-chart';
 import { useUsageStore, useConversationsStore } from '@/lib/store-provider';
@@ -34,7 +35,8 @@ interface ModelSummary {
 }
 
 export default function UsagePage() {
-  const { conversations } = useConversationsStore();
+  const router = useRouter();
+  const { conversations, deleteConversation } = useConversationsStore();
   const { usageLog, pricing, loaded } = useUsageStore();
   const [range, setRange] = useState<UsageRange>('7d');
 
@@ -82,7 +84,12 @@ export default function UsagePage() {
   const conversationCount = conversations.length;
 
   return (
-    <AppShell currentId={null}>
+    <AppShell
+      currentId={null}
+      onSelect={(id) => router.push(`/${id}`)}
+      onNewChat={() => router.push('/')}
+      onDelete={(id) => deleteConversation(id)}
+    >
       <div className="w-full max-w-[1100px] mx-auto px-8 py-8 overflow-y-auto h-full">
         {/* Header */}
         <div className="flex items-center justify-between gap-4 mb-6">

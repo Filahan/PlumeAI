@@ -1,30 +1,24 @@
 'use client';
 
-import { ReactNode, useCallback, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { ReactNode, useState } from 'react';
 import { useConversationsStore, useSettingsStore, useSidebarStore } from '@/lib/store-provider';
 import { NavRail, ConversationListPanel } from '@/components/sidebar';
 
 interface AppShellProps {
   /** The currently-active conversation id, or null when not on a conversation route. */
   currentId: string | null;
+  onSelect: (id: string) => void;
+  onNewChat: () => void;
+  onDelete: (id: string) => void;
   children: ReactNode;
 }
 
-export default function AppShell({ currentId, children }: AppShellProps) {
-  const router = useRouter();
-  const { conversations, deleteConversation, loaded: conversationsLoaded } = useConversationsStore();
+export default function AppShell({ currentId, onSelect, onNewChat, onDelete, children }: AppShellProps) {
+  const { conversations, loaded: conversationsLoaded } = useConversationsStore();
   const { settings, setSettings, loaded: settingsLoaded } = useSettingsStore();
   const { open: sidebarOpen, toggle: toggleSidebar } = useSidebarStore();
   const ready = conversationsLoaded && settingsLoaded;
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
-
-  const handleSelect = useCallback((id: string) => router.push(`/${id}`), [router]);
-  const handleNewChat = useCallback(() => router.push('/'), [router]);
-  const handleDelete = useCallback((id: string) => {
-    deleteConversation(id);
-    if (id === currentId) router.push('/');
-  }, [deleteConversation, currentId, router]);
 
   return (
     <div
@@ -36,16 +30,16 @@ export default function AppShell({ currentId, children }: AppShellProps) {
         setSettings={setSettings}
         settingsOpen={settingsDialogOpen}
         onSettingsOpenChange={setSettingsDialogOpen}
-        onNewChat={handleNewChat}
+        onNewChat={onNewChat}
         onToggleSidebar={toggleSidebar}
       />
       {sidebarOpen && (
         <ConversationListPanel
           conversations={conversations}
           currentId={currentId}
-          onSelect={handleSelect}
-          onNewChat={handleNewChat}
-          onDelete={handleDelete}
+          onSelect={onSelect}
+          onNewChat={onNewChat}
+          onDelete={onDelete}
           ready={ready}
         />
       )}

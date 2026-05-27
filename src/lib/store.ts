@@ -120,16 +120,11 @@ export function useConversations() {
       provider,
       model,
     };
-    // Optimistic insert; server will assign its own id, so we replace the optimistic record on response.
     setConversations((prev) => [conv, ...prev]);
-    createConversationAction(provider, model)
-      .then((real) => {
-        setConversations((prev) => prev.map((c) => (c.id === id ? real : c)));
-      })
-      .catch(() => {
-        // rollback the optimistic insert on failure
-        setConversations((prev) => prev.filter((c) => c.id !== id));
-      });
+    createConversationAction(id, provider, model).catch(() => {
+      // rollback the optimistic insert on failure
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+    });
     return id;
   }, []);
 

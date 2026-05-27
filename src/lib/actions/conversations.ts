@@ -6,10 +6,6 @@ import { conversations, messages } from '@/lib/db/schema';
 import { requireSession } from '@/lib/auth';
 import type { Conversation, Message, Provider } from '@/lib/types';
 
-function newId(): string {
-  return crypto.randomUUID();
-}
-
 async function init() {
   await requireSession();
   await ensureMigrations();
@@ -52,30 +48,17 @@ export async function listConversations(): Promise<Conversation[]> {
   return loadConversations();
 }
 
-export async function createConversation(provider: Provider, model: string): Promise<Conversation> {
+export async function createConversation(id: string, provider: Provider, model: string): Promise<void> {
   await init();
   const now = new Date();
-  const id = newId();
-  const [row] = await db
-    .insert(conversations)
-    .values({
-      id,
-      title: 'Nouvelle conversation',
-      provider,
-      model,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
-  return {
-    id: row.id,
-    title: row.title,
-    provider: row.provider as Provider,
-    model: row.model,
-    createdAt: row.createdAt.getTime(),
-    updatedAt: row.updatedAt.getTime(),
-    messages: [],
-  };
+  await db.insert(conversations).values({
+    id,
+    title: 'Nouvelle conversation',
+    provider,
+    model,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 export async function addMessage(

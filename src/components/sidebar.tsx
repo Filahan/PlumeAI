@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Conversation, Settings } from '@/lib/types';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -112,6 +112,13 @@ interface ConversationListPanelProps {
 export function ConversationListPanel({
   conversations, currentId, onSelect, onNewChat, onDelete, ready,
 }: ConversationListPanelProps) {
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const resetTimerRef = useRef<number | undefined>(undefined);
+  const armDelete = (id: string) => {
+    setPendingDelete(id);
+    if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = window.setTimeout(() => setPendingDelete(null), 2000);
+  };
   return (
     <aside className="w-[260px] shrink-0 h-full flex flex-col bg-[color:var(--surface-muted)] border-r border-[color:var(--border)]">
       <div className="px-4 pt-4 pb-2 shrink-0">
@@ -150,14 +157,25 @@ export function ConversationListPanel({
                 >
                   {conv.title}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => onDelete(conv.id)}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center rounded-md text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] hover:text-red-600 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
-                  aria-label={`Delete conversation: ${conv.title}`}
-                >
-                  <Trash2 size={13} strokeWidth={1.75} />
-                </button>
+                {pendingDelete === conv.id ? (
+                  <button
+                    type="button"
+                    onClick={() => { onDelete(conv.id); setPendingDelete(null); }}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 px-2 inline-flex items-center justify-center rounded-md bg-red-600 text-white text-[11px] font-medium hover:bg-red-700 transition"
+                    aria-label={`Confirm delete: ${conv.title}`}
+                  >
+                    Delete?
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => armDelete(conv.id)}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center rounded-md text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] hover:text-red-600 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
+                    aria-label={`Delete conversation: ${conv.title}`}
+                  >
+                    <Trash2 size={13} strokeWidth={1.75} />
+                  </button>
+                )}
               </div>
             );
           })
