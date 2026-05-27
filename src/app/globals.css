@@ -202,6 +202,19 @@ html {
   .prose em { font-style: italic; }
 }
 
+@keyframes fade-in-up-1 {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes fade-in-up-2 {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in-up-3 {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
