@@ -9,7 +9,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { Button } from '@/components/ui/button';
 import SettingsContent from '@/components/settings-content';
 import {
-  SquarePen, Activity, Settings as SettingsIcon, Plus, Trash2,
+  SquarePen, Activity, Settings as SettingsIcon, Trash2,
   type LucideIcon,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
@@ -104,13 +104,12 @@ interface ConversationListPanelProps {
   conversations: Conversation[];
   currentId: string | null;
   onSelect: (id: string) => void;
-  onNewChat: () => void;
   onDelete: (id: string) => void;
   ready: boolean;
 }
 
 export function ConversationListPanel({
-  conversations, currentId, onSelect, onNewChat, onDelete, ready,
+  conversations, currentId, onSelect, onDelete, ready,
 }: ConversationListPanelProps) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const resetTimerRef = useRef<number | undefined>(undefined);
@@ -121,18 +120,7 @@ export function ConversationListPanel({
   };
   return (
     <aside className="w-[260px] shrink-0 h-full flex flex-col bg-[color:var(--surface-muted)] border-r border-[color:var(--border)]">
-      <div className="px-4 pt-4 pb-2 shrink-0">
-        <button
-          type="button"
-          onClick={onNewChat}
-          className="w-full inline-flex items-center justify-center gap-2 h-10 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-medium hover:opacity-90 transition"
-        >
-          <Plus size={15} strokeWidth={2.25} />
-          New chat
-        </button>
-      </div>
-
-      <div className="px-4 pt-3 pb-1 text-[11px] font-semibold tracking-[0.08em] uppercase text-[color:var(--muted-foreground)]">
+      <div className="px-4 pt-4 pb-1 text-[11px] font-semibold tracking-[0.08em] uppercase text-[color:var(--muted-foreground)]">
         Recent
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-3">

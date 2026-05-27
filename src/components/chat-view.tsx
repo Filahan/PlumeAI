@@ -199,15 +199,34 @@ export default function ChatView({
       setDraftModel(model);
     }
   };
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
   const lastMessage = conversation?.messages[conversation.messages.length - 1];
 
+  const handleScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  // New message → snap instantly to bottom (the user just submitted; this is their action).
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversation?.messages.length, lastMessage?.content]);
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickToBottomRef.current = true;
+  }, [conversation?.messages.length]);
+
+  // Streaming chunks → only follow the bottom if the user is still there.
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [lastMessage?.content]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -484,7 +503,7 @@ export default function ChatView({
         <div className="flex-1" />
       ) : hasMessages ? (
         <>
-          <div className="flex-1 overflow-y-auto">
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
             <div className="max-w-[768px] mx-auto px-6 py-6 space-y-5">
               {conversation!.messages.map((msg) => (
                 msg.role === 'user' ? (
@@ -526,7 +545,6 @@ export default function ChatView({
                   </div>
                 ) : null
               ))}
-              <div ref={messagesEndRef} />
             </div>
           </div>
 

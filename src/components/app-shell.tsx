@@ -38,7 +38,6 @@ export default function AppShell({ currentId, onSelect, onNewChat, onDelete, chi
           conversations={conversations}
           currentId={currentId}
           onSelect={onSelect}
-          onNewChat={onNewChat}
           onDelete={onDelete}
           ready={ready}
         />
