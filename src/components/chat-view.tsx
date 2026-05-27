@@ -479,7 +479,7 @@ export default function ChatView({
       )}
 
       {hasMessages && (
-        <header className="shrink-0 h-14 flex items-center px-6 border-b border-[color:var(--border)]">
+        <header className="shrink-0 h-14 flex items-center pl-6 pr-32 border-b border-[color:var(--border)]">
           <input
             value={titleDraft ?? conversation!.title}
             onChange={(e) => setTitleDraft(e.target.value)}

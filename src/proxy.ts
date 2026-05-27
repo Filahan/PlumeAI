@@ -5,61 +5,57 @@ import { settings } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 
 const COOKIE_NAME = 'plumeai_session';
-const ALG = 'HS256';
 
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/health'];
-
-function getSecret(): Uint8Array {
-  const raw = process.env.AUTH_SECRET;
-  if (!raw) throw new Error('AUTH_SECRET is required');
-  return new TextEncoder().encode(raw);
-}
-
-async function isSessionValid(token: string | undefined): Promise<boolean> {
-  if (!token) return false;
+async function isAuthed(token: string | undefined): Promise<boolean> {
+  const secret = process.env.AUTH_SECRET;
+  if (!token || !secret) return false;
   try {
-    await jwtVerify(token, getSecret(), { algorithms: [ALG] });
+    await jwtVerify(token, new TextEncoder().encode(secret), { algorithms: ['HS256'] });
     return true;
   } catch {
     return false;
   }
 }
 
-async function hasAnyProvider(): Promise<boolean> {
-  const [row] = await db.select({ providers: settings.providers }).from(settings).where(eq(settings.id, 1));
-  if (!row) return false;
-  return row.providers.some((p) => p.apiKeyCiphertext && p.apiKeyCiphertext.length > 0);
+async function hasProvider(): Promise<boolean> {
+  const [row] = await db
+    .select({ providers: settings.providers })
+    .from(settings)
+    .where(eq(settings.id, 1));
+  return !!row?.providers.some((p) => p.apiKeyCiphertext?.length);
+}
+
+function redirect(req: NextRequest, path: string, next?: string) {
+  const url = new URL(path, req.url);
+  if (next) url.searchParams.set('next', next);
+  return NextResponse.redirect(url);
 }
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const authed = await isAuthed(req.cookies.get(COOKIE_NAME)?.value);
 
-  // Always allow public paths and Next.js internals (_next/* is excluded by matcher).
-  if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
+  // /login: let the form render when unauthenticated; bounce to ?next or / when authed.
+  if (pathname === '/login') {
+    if (!authed) return NextResponse.next();
+    const next = req.nextUrl.searchParams.get('next');
+    const dest = next && next.startsWith('/') && !next.startsWith('/login') ? next : '/';
+    return NextResponse.redirect(new URL(dest, req.url));
+  }
+
+  // Public endpoints — no session required.
+  if (pathname === '/api/auth/login' || pathname === '/api/health') {
     return NextResponse.next();
   }
 
-  const token = req.cookies.get(COOKIE_NAME)?.value;
-  if (!(await isSessionValid(token))) {
-    const url = req.nextUrl.clone();
-    url.pathname = '/login';
-    url.searchParams.set('next', pathname);
-    return NextResponse.redirect(url);
-  }
+  // Everything else requires a session.
+  if (!authed) return redirect(req, '/login', pathname);
 
-  // Authenticated. Gate `/` and `/setup` on whether any provider is configured.
+  // Force /setup until a provider key is configured; bounce away once it is.
   if (pathname === '/' || pathname === '/setup') {
-    const configured = await hasAnyProvider();
-    if (!configured && pathname === '/') {
-      const url = req.nextUrl.clone();
-      url.pathname = '/setup';
-      return NextResponse.redirect(url);
-    }
-    if (configured && pathname === '/setup') {
-      const url = req.nextUrl.clone();
-      url.pathname = '/';
-      return NextResponse.redirect(url);
-    }
+    const configured = await hasProvider();
+    if (!configured && pathname === '/') return redirect(req, '/setup');
+    if (configured && pathname === '/setup') return redirect(req, '/');
   }
 
   return NextResponse.next();

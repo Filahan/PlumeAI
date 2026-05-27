@@ -24,10 +24,8 @@ export default function LoginPage() {
         setError(data.error || 'Login failed');
         return;
       }
-      const params = new URLSearchParams(window.location.search);
-      const raw = params.get('next') || '/';
-      const dest = raw.startsWith('/') && !raw.startsWith('/login') ? raw : '/';
-      window.location.replace(dest);
+      // Cookie is now set; reload so middleware reads ?next= and routes us to the right place.
+      window.location.reload();
     } catch {
       setError('Network error');
     } finally {
