@@ -31,7 +31,9 @@ export async function POST(req: NextRequest) {
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    // Secure is intentionally off so the cookie works on plain http://localhost in self-hosted Docker.
+    // Put HTTPS in front (Caddy/Nginx/Tailscale) if you expose this to the internet.
+    secure: false,
     path: '/',
     maxAge: SESSION_LIFETIME_S,
   });

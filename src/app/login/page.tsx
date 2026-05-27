@@ -1,14 +1,9 @@
 'use client';
 
 import { useState, FormEvent } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowRight } from 'lucide-react';
 
 export default function LoginPage() {
-  const router = useRouter();
-  const params = useSearchParams();
-  const next = params.get('next') || '/';
-
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,8 +24,13 @@ export default function LoginPage() {
         setError(data.error || 'Login failed');
         return;
       }
-      router.push(next);
-      router.refresh();
+      // Honour ?next= but never bounce back to /login.
+      const params = new URLSearchParams(window.location.search);
+      const raw = params.get('next') || '/';
+      const dest = raw.startsWith('/') && !raw.startsWith('/login') ? raw : '/';
+      // Hard navigate so the cookie just set by the POST is sent on the next request
+      // (no client-router race with middleware).
+      window.location.replace(dest);
     } catch {
       setError('Network error');
     } finally {
@@ -45,7 +45,7 @@ export default function LoginPage() {
         className="w-full max-w-sm rounded-2xl border border-black/[0.08] bg-white p-6 space-y-4"
       >
         <div className="text-center space-y-1.5">
-          <div className="text-[20px] font-semibold tracking-tight bg-gradient-to-r from-[#FB923C] via-[#EC4899] to-[#3B82F6] bg-clip-text text-transparent">
+          <div className="text-[20px] font-semibold tracking-tight">
             PlumeAI
           </div>
           <p className="text-[13px] text-[#8e8e8e]">Enter your admin password to continue.</p>

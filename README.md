@@ -1,3 +1,5 @@
+<img src="public/logo.png" alt="PlumeAI" width="64" />
+
 # PlumeAI
 
 Minimal BYOK chat UI for OpenAI, Anthropic and OpenRouter with usage analytics. Self-hosted via Docker.
@@ -38,6 +40,12 @@ npm run dev
 ```
 
 You still need a Postgres running locally (or `docker compose up -d db` for just the database).
+
+Or in Docker with hot-reload:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
 
 ## License
 

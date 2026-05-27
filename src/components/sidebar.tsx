@@ -91,14 +91,18 @@ export default function Sidebar({
   const handleOpenSettings = useCallback(() => onSettingsOpenChange(true), [onSettingsOpenChange]);
 
   const Header = (
-    <div className="flex items-center justify-between shrink-0 px-4 pt-3 pb-3">
+    <div className={`flex items-center shrink-0 pt-3 pb-3 ${
+      open ? 'justify-between px-4' : 'justify-center px-0'
+    }`}>
       <button
         type="button"
         onClick={onToggle}
         aria-label={open ? 'Collapse sidebar' : 'Open sidebar'}
-        className="h-9 px-2 rounded-lg flex items-center hover:bg-[#EEEEEE] transition-colors shrink-0"
+        className={`rounded-lg flex items-center justify-center hover:bg-[#EEEEEE] transition-colors shrink-0 ${
+          open ? 'h-9 px-2' : 'w-9 h-9'
+        }`}
       >
-        <span className="text-[15px] font-semibold tracking-tight ">
+        <span className="text-[15px] font-semibold tracking-tight">
           {open ? BRAND_NAME : BRAND_NAME.charAt(0)}
         </span>
       </button>
@@ -122,9 +126,9 @@ export default function Sidebar({
       {Header}
 
       {/* Menu */}
-      <div className="shrink-0 px-4">
+      <div className={`shrink-0 ${open ? 'px-4' : 'px-0'}`}>
         {open && <p className={sectionLabelClass}>Menu</p>}
-        <div className={open ? 'space-y-0.5' : 'flex flex-col gap-1'}>
+        <div className={open ? 'space-y-0.5' : 'flex flex-col items-center gap-1'}>
           <NavItem icon={SquarePen} label="New chat" open={open} onClick={onNewChat} />
           <NavItem icon={SearchIcon} label="Search chats" open={open} />
           <NavItem icon={BookMarked} label="Library" open={open} />
@@ -264,7 +268,7 @@ export default function Sidebar({
       )}
 
       {/* Settings at bottom */}
-      <div className="shrink-0 px-4 pb-2">
+      <div className={`shrink-0 pb-2 ${open ? 'px-4' : 'px-0 flex justify-center'}`}>
         <NavItem icon={SettingsIcon} label="Settings" open={open} onClick={handleOpenSettings} />
       </div>
 
