@@ -4,9 +4,8 @@ import { useState, useEffect, useRef, useMemo, useCallback, ClipboardEvent, Drag
 import { Conversation, Message, Settings, Provider, AttachmentRef, findApiKey, supportsVision, PROVIDER_MODELS, PROVIDER_NAMES } from '@/lib/types';
 import { streamChat, generateTitle, ChatMessage, ImagePart } from '@/lib/api';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
-import { Paperclip, ArrowUp, Copy, Check, ArrowRight, X, ImagePlus } from 'lucide-react';
+import { Paperclip, ArrowUp, Copy, Check, X, ImagePlus } from 'lucide-react';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger } from '@/components/ui/select';
-import SettingsContent from '@/components/settings-content';
 import { ProviderLogo, PROVIDER_ACCENT } from '@/components/provider-logo';
 import ImageThumb from '@/components/image-thumb';
 import ImageLightbox from '@/components/image-lightbox';
@@ -38,7 +37,6 @@ async function messageToChatParts(text: string, attachments?: AttachmentRef[]): 
 interface ChatViewProps {
   conversation: Conversation | null;
   settings: Settings;
-  setSettings: (s: Settings) => void;
   onAddMessage: (convId: string, msg: Omit<Message, 'id' | 'timestamp'>) => string;
   onUpdateMessage: (convId: string, msgId: string, content: string, replace?: boolean) => void;
   onCreateConversation: (provider: Provider, model: string) => string;
@@ -49,9 +47,8 @@ interface ChatViewProps {
 }
 
 export default function ChatView({
-  conversation, settings, setSettings, onAddMessage, onUpdateMessage, onCreateConversation, onRenameConversation, onSetConversationModel, onRecordUsage, ready,
+  conversation, settings, onAddMessage, onUpdateMessage, onCreateConversation, onRenameConversation, onSetConversationModel, onRecordUsage, ready,
 }: ChatViewProps) {
-  const [hasStarted, setHasStarted] = useState(settings.providers.length > 0);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -486,7 +483,7 @@ export default function ChatView({
                       </div>
                     )}
                     {msg.content && (
-                      <div className="max-w-[80%] bg-[color:var(--accent-user)] rounded-2xl px-4 py-2.5 text-[14px] leading-relaxed text-[color:var(--foreground)] whitespace-pre-wrap break-words">
+                      <div className="max-w-[80%] bg-[color:var(--surface-muted)] rounded-2xl px-4 py-2.5 text-[14px] leading-relaxed text-[color:var(--foreground)] whitespace-pre-wrap break-words">
                         {msg.content}
                       </div>
                     )}
@@ -500,8 +497,8 @@ export default function ChatView({
                     </button>
                   </div>
                 ) : msg.content ? (
-                  <div key={msg.id} className="group max-w-[90%]">
-                    <div className="bg-[color:var(--accent-asst)] rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[color:var(--foreground)]">
+                  <div key={msg.id} className="group max-w-[90%] w-fit">
+                    <div className="rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[color:var(--foreground)]">
                       <MarkdownRenderer content={msg.content} />
                     </div>
                     <button
@@ -523,36 +520,6 @@ export default function ChatView({
             <div className="max-w-[768px] mx-auto">{InputBox}</div>
           </div>
         </>
-      ) : !hasStarted ? (
-        <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 overflow-y-auto">
-          <div className="w-full max-w-[520px]">
-            <div className="text-center mb-8">
-              <div className="inline-flex items-center justify-center gap-2 mb-4">
-                <ProviderLogo provider="openai" size={22} className={PROVIDER_ACCENT.openai} />
-                <ProviderLogo provider="anthropic" size={22} className={PROVIDER_ACCENT.anthropic} />
-                <ProviderLogo provider="openrouter" size={22} className={PROVIDER_ACCENT.openrouter} />
-              </div>
-              <h1 className="text-[22px] font-semibold mb-2 tracking-tight">
-                Connect a provider
-              </h1>
-              <p className="text-[13px] text-[color:var(--muted-foreground)] leading-relaxed">
-                Add one or more API keys to get started. They stay in your browser.
-              </p>
-            </div>
-
-            <SettingsContent settings={settings} setSettings={setSettings} variant="inline" />
-
-            <button
-              type="button"
-              onClick={() => setHasStarted(true)}
-              disabled={settings.providers.length === 0}
-              className="mt-6 w-full inline-flex items-center justify-center gap-2 h-11 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-semibold hover:opacity-90 transition disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              Start chatting
-              <ArrowRight size={16} strokeWidth={2.5} />
-            </button>
-          </div>
-        </div>
       ) : (
         <div className="flex-1 flex flex-col items-center justify-center px-6 pb-6">
           <div className="w-full max-w-[640px]">

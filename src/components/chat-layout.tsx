@@ -17,7 +17,7 @@ export default function ChatLayout({ currentId }: ChatLayoutProps) {
     conversations, createConversation, addMessage, updateMessage, renameConversation, setConversationModel,
     loaded: conversationsLoaded,
   } = useConversationsStore();
-  const { settings, setSettings, loaded: settingsLoaded } = useSettingsStore();
+  const { settings, loaded: settingsLoaded } = useSettingsStore();
   const { recordUsage } = useUsageStore();
   const ready = conversationsLoaded && settingsLoaded;
 
@@ -36,7 +36,6 @@ export default function ChatLayout({ currentId }: ChatLayoutProps) {
       <ChatView
         conversation={currentConversation}
         settings={settings}
-        setSettings={setSettings}
         onAddMessage={addMessage}
         onUpdateMessage={updateMessage}
         onCreateConversation={handleCreateConversation}
