@@ -1,10 +1,10 @@
 export const MAX_IMAGES_PER_MESSAGE = 8;
-export const MAX_DIMENSION = 2048;
-export const MAX_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_DIMENSION = 2048;
+const MAX_SIZE_BYTES = 10 * 1024 * 1024;
 
 const SUPPORTED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
-export interface ProcessedImage {
+interface ProcessedImage {
   blob: Blob;
   mime: string;
   width: number;

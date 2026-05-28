@@ -7,8 +7,8 @@ import AppShell from '@/components/app-shell';
 import UsageChart, { type UsageRange } from '@/components/usage-chart';
 import { useUsageStore, useConversationsStore } from '@/lib/store-provider';
 import { getCost, formatTokens, formatCost } from '@/lib/pricing';
-import { ProviderLogo, PROVIDER_ACCENT } from '@/components/provider-logo';
-import { PROVIDER_NAMES, Provider, UsageEntry } from '@/lib/types';
+import { ProviderLogo } from '@/components/provider-logo';
+import { PROVIDER_NAMES, PROVIDER_ACCENT, Provider, UsageEntry } from '@/lib/types';
 import { Coins, DollarSign, Zap, Layers } from 'lucide-react';
 
 const RANGE_KEY = 'webui-usage-range';

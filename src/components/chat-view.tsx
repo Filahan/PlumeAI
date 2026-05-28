@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo, useCallback, ClipboardEvent, DragEvent, KeyboardEvent } from 'react';
-import { Conversation, Message, Settings, Provider, AttachmentRef, findApiKey, supportsVision, PROVIDER_MODELS, PROVIDER_NAMES } from '@/lib/types';
+import { Conversation, Message, Settings, Provider, AttachmentRef, findApiKey, supportsVision, PROVIDER_MODELS, PROVIDER_NAMES, PROVIDER_ACCENT } from '@/lib/types';
 import { streamChat, generateTitle, ChatMessage, ImagePart } from '@/lib/api';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { Paperclip, ArrowUp, Copy, Check, X, ImagePlus } from 'lucide-react';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger } from '@/components/ui/select';
-import { ProviderLogo, PROVIDER_ACCENT } from '@/components/provider-logo';
+import { ProviderLogo } from '@/components/provider-logo';
 import ImageThumb from '@/components/image-thumb';
 import ImageLightbox from '@/components/image-lightbox';
 import { putBlob, getBlob } from '@/lib/blob-store';

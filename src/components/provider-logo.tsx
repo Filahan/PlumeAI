@@ -31,9 +31,3 @@ export function ProviderLogo({ provider, size = 16, className = '' }: ProviderLo
     </svg>
   );
 }
-
-export const PROVIDER_ACCENT: Record<Provider, string> = {
-  openai: 'text-[#10A37F]',
-  anthropic: 'text-[#D97706]',
-  openrouter: 'text-[#6366f1]',
-};

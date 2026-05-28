@@ -77,3 +77,9 @@ export const PROVIDER_BASE_URLS: Record<Provider, string> = {
   anthropic: 'https://api.anthropic.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
 };
+
+export const PROVIDER_ACCENT: Record<Provider, string> = {
+  openai: 'text-[#10A37F]',
+  anthropic: 'text-[#D97706]',
+  openrouter: 'text-[#6366f1]',
+};

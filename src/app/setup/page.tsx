@@ -3,7 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useSettingsStore } from '@/lib/store-provider';
 import SettingsContent from '@/components/settings-content';
-import { ProviderLogo, PROVIDER_ACCENT } from '@/components/provider-logo';
+import { ProviderLogo } from '@/components/provider-logo';
+import { PROVIDER_ACCENT } from '@/lib/types';
 import { ArrowRight } from 'lucide-react';
 
 export default function SetupPage() {

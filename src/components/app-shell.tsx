@@ -1,9 +1,11 @@
 'use client';
 
-import { ReactNode, useState } from 'react';
+import { ReactNode, useState, useEffect, useCallback } from 'react';
 import { LogOut } from 'lucide-react';
-import { useConversationsStore, useSettingsStore, useSidebarStore } from '@/lib/store-provider';
+import { useConversationsStore, useSettingsStore } from '@/lib/store-provider';
 import { NavRail, ConversationListPanel } from '@/components/sidebar';
+
+const SIDEBAR_OPEN_KEY = 'webui-sidebar-open';
 
 async function signOut() {
   await fetch('/api/auth/logout', { method: 'POST' });
@@ -23,9 +25,19 @@ interface AppShellProps {
 export default function AppShell({ currentId, onSelect, onNewChat, onDelete, children }: AppShellProps) {
   const { conversations, loaded: conversationsLoaded } = useConversationsStore();
   const { settings, setSettings, loaded: settingsLoaded } = useSettingsStore();
-  const { open: sidebarOpen, toggle: toggleSidebar } = useSidebarStore();
   const ready = conversationsLoaded && settingsLoaded;
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  useEffect(() => {
+    const saved = localStorage.getItem(SIDEBAR_OPEN_KEY);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (saved !== null) setSidebarOpen(saved === 'true');
+  }, []);
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_OPEN_KEY, String(sidebarOpen));
+  }, [sidebarOpen]);
+  const toggleSidebar = useCallback(() => setSidebarOpen((v) => !v), []);
 
   return (
     <div

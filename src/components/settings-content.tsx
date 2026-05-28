@@ -1,14 +1,14 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { PROVIDER_MODELS, PROVIDER_NAMES, Provider, Settings, ProviderConfig } from '@/lib/types';
+import { PROVIDER_MODELS, PROVIDER_NAMES, PROVIDER_ACCENT, Provider, Settings, ProviderConfig } from '@/lib/types';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Trash2, Plus, Pencil, Key, Bot, Sparkles } from 'lucide-react';
-import { ProviderLogo, PROVIDER_ACCENT } from '@/components/provider-logo';
+import { ProviderLogo } from '@/components/provider-logo';
 
 interface ProviderFormProps {
   provider: Provider;
