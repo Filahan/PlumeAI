@@ -21,10 +21,8 @@ services:
       - "3000:3000"
     environment:
       DATABASE_URL: postgres://plumeai:${DB_PASSWORD:-plumeai}@db:5432/plumeai
-      # Override these in `.env` (or env vars) before exposing to the internet.
       AUTH_SECRET: ${AUTH_SECRET:-plumeai-dev-auth-secret-please-change-in-production-32-bytes-min}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-cGx1bWVhaS1kZXYtZW5jLWtleS0zMmJ5dGVzLXBhZCE=}
-      # sha256("admin")
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
     depends_on:
       db:

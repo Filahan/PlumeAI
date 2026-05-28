@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "shadcn/tailwind.css";
 
 html {
   /* Reserve scrollbar space at all times so the body width stays identical across
@@ -10,6 +9,16 @@ html {
 }
 
 @custom-variant dark (&:is(.dark *));
+
+@custom-variant data-open {
+  &:where([data-state="open"]), &:where([data-open]:not([data-open="false"])) { @slot; }
+}
+@custom-variant data-closed {
+  &:where([data-state="closed"]), &:where([data-closed]:not([data-closed="false"])) { @slot; }
+}
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]), &:where([data-disabled]:not([data-disabled="false"])) { @slot; }
+}
 
 @theme inline {
   --color-background: var(--background);

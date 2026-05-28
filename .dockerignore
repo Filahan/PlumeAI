@@ -5,6 +5,7 @@ node_modules
 .dockerignore
 Dockerfile
 docker-compose.yml
+docker-compose.dev.yml
 .env
 .env.*
 !.env.example
@@ -12,7 +13,12 @@ docker-compose.yml
 .DS_Store
 .vscode
 .idea
+.claude
 README.md
+AGENTS.md
+CLAUDE.md
+LICENSE
+tsconfig.tsbuildinfo
 docs
 coverage
 .next/cache
