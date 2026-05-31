@@ -48,14 +48,8 @@ services:
     build:
       context: ./apps/web
     restart: unless-stopped
-    environment:
-      # Stop-gap during Phase 0 — the Next.js app still imports legacy server code that
-      # validates env vars at module load. Phase 8 cleanup deletes those imports and we
-      # remove these vars from the web service.
-      DATABASE_URL: postgresql://plumeai:${DB_PASSWORD:-plumeai}@db:5432/plumeai
-      AUTH_SECRET: ${AUTH_SECRET:-plumeai-dev-auth-secret-please-change-in-production-32-bytes-min}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-cGx1bWVhaS1kZXYtZW5jLWtleS0zMmJ5dGVzLXBhZCE=}
-      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
+    # Web is now a pure SPA-ish Next.js client — no secrets, no DB, no JWT verification.
+    # All sensitive ops happen in the `api` service.
     volumes:
       - ./apps/web:/app
       - /app/node_modules
