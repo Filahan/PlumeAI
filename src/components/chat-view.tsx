@@ -672,6 +672,10 @@ export default function ChatView({
       ) : (
         <div className="flex-1 flex flex-col items-center justify-center px-6 pb-6">
           <div className="w-full max-w-[640px]">
+            <div className="flex justify-center mb-4">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo.png" alt="" className="h-15 w-auto" />
+            </div>
             <h1 className="text-[28px] font-medium mb-6 tracking-tight text-center">
               What can I help you with?
             </h1>
