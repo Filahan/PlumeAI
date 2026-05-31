@@ -37,11 +37,11 @@ export interface AgentOutcome {
 }
 
 type ToolCallAcc = { id: string; name: string; args: string };
-type ChatMsg =
+export type ChatMsg =
   | { role: 'system' | 'user'; content: string }
   | { role: 'assistant'; content: string | null; tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[] }
   | { role: 'tool'; tool_call_id: string; content: string };
-type ToolSchema = { type: 'function'; function: { name: string; description: string; parameters: unknown } };
+export type ToolSchema = { type: 'function'; function: { name: string; description: string; parameters: unknown } };
 
 export async function resolveProviderKey(provider: Provider): Promise<string> {
   const [row] = await db.select().from(settings).where(eq(settings.id, 1));
@@ -119,35 +119,21 @@ async function streamRound(
   return { assistantText, toolCalls: Object.values(toolAcc).filter((t) => t.name), usage };
 }
 
-export async function runAgent(
-  opts: { provider: Provider; model: string; prompt: string; signal: AbortSignal; emit: (e: AgentEvent) => void }
-): Promise<AgentOutcome> {
-  const { provider, model, prompt, signal, emit } = opts;
+/** Core tool-using agent loop. Caller provides the full history (system + user/assistant turns)
+ *  and the tool schemas. Reusable across automations and the conversational chat. */
+export async function streamAgent(opts: {
+  provider: Provider;
+  model: string;
+  apiKey: string;
+  messages: ChatMsg[];   // mutated as the loop progresses (assistant + tool messages appended)
+  tools: ToolSchema[];
+  signal: AbortSignal;
+  emit: (e: AgentEvent) => void;
+}): Promise<AgentOutcome> {
+  const { provider, model, apiKey, messages, tools, signal, emit } = opts;
   const transcript: TranscriptStep[] = [];
   const usage = { inputTokens: 0, outputTokens: 0 };
-
-  if (provider === 'anthropic') {
-    const message = 'Tool-using tasks require an OpenAI or OpenRouter model in this version.';
-    emit({ type: 'error', message });
-    return { status: 'failed', output: '', transcript, error: message, usage };
-  }
-
-  let apiKey: string;
-  try {
-    apiKey = await resolveProviderKey(provider);
-  } catch (e) {
-    const message = e instanceof Error ? e.message : 'Could not resolve API key.';
-    emit({ type: 'error', message });
-    return { status: 'failed', output: '', transcript, error: message, usage };
-  }
-
   const baseUrl = PROVIDER_BASE_URLS[provider];
-  const tools: ToolSchema[] = [...BUILTIN_TOOL_SCHEMAS, ...(await listConfiguredToolSchemas())];
-
-  const messages: ChatMsg[] = [
-    { role: 'system', content: buildSystemPrompt() },
-    { role: 'user', content: prompt },
-  ];
 
   try {
     for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
@@ -194,4 +180,35 @@ export async function runAgent(
     emit({ type: 'error', message });
     return { status: 'failed', output: '', transcript, error: message, usage };
   }
+}
+
+export async function runAgent(
+  opts: { provider: Provider; model: string; prompt: string; signal: AbortSignal; emit: (e: AgentEvent) => void }
+): Promise<AgentOutcome> {
+  const { provider, model, prompt, signal, emit } = opts;
+  const transcript: TranscriptStep[] = [];
+  const usage = { inputTokens: 0, outputTokens: 0 };
+
+  if (provider === 'anthropic') {
+    const message = 'Tool-using tasks require an OpenAI or OpenRouter model in this version.';
+    emit({ type: 'error', message });
+    return { status: 'failed', output: '', transcript, error: message, usage };
+  }
+
+  let apiKey: string;
+  try {
+    apiKey = await resolveProviderKey(provider);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Could not resolve API key.';
+    emit({ type: 'error', message });
+    return { status: 'failed', output: '', transcript, error: message, usage };
+  }
+
+  const tools: ToolSchema[] = [...BUILTIN_TOOL_SCHEMAS, ...(await listConfiguredToolSchemas())];
+  const messages: ChatMsg[] = [
+    { role: 'system', content: buildSystemPrompt() },
+    { role: 'user', content: prompt },
+  ];
+
+  return streamAgent({ provider, model, apiKey, messages, tools, signal, emit });
 }

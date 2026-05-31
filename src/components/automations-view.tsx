@@ -9,6 +9,7 @@ import type { useAutomations } from '@/lib/use-automations';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ProviderLogo } from '@/components/provider-logo';
 import MentionAutocomplete, { type MentionAutocompleteHandle } from '@/components/mention-autocomplete';
+import { TOOL_DESCRIPTORS } from '@/lib/tools/registry-client';
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger,
 } from '@/components/ui/select';
@@ -20,6 +21,12 @@ import {
 type AutomationsApi = ReturnType<typeof useAutomations>;
 
 const SCHEDULES: TaskSchedule[] = ['manual', 'hourly', 'daily', 'weekly'];
+
+const STARTER_PROMPTS: readonly string[] = [
+  'Summarize my Gmail inbox for today',
+  'Daily Hacker News top 5 stories',
+  'Fetch a URL daily and email me a summary',
+] as const;
 
 export const TASK_STATUS_DOT: Record<TaskStatus, string> = {
   idle: 'bg-[color:var(--muted-foreground)]/40',
@@ -162,6 +169,22 @@ function TaskComposer({
     void automations.chat(id, text);
   };
 
+  const pickStarter = (text: string) => {
+    setIntent(text);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const insertMention = (name: string) => {
+    const next = intent ? `${intent} @${name} ` : `@${name} `;
+    setIntent(next);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(next.length, next.length);
+    });
+  };
+
   return (
     <div className="rounded-2xl border border-[color:var(--border)] bg-white p-4 space-y-3">
       <div className="relative">
@@ -176,6 +199,47 @@ function TaskComposer({
           className="w-full resize-none bg-transparent text-[14px] outline-none placeholder:text-[color:var(--muted-foreground)]"
         />
       </div>
+
+      {intent === '' && (
+        <div className="space-y-2 -mt-1">
+          <div className="flex flex-wrap gap-1.5">
+            {STARTER_PROMPTS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => pickStarter(p)}
+                className="h-7 px-3 rounded-full bg-[color:var(--surface-muted)] hover:bg-[color:var(--accent)] text-[12px] text-[color:var(--muted-foreground)] hover:text-[color:var(--foreground)] transition"
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-[color:var(--muted-foreground)]">Try with:</span>
+            {TOOL_DESCRIPTORS.map((t) => {
+              const connected = !!settings.tools?.[t.name]?.connected;
+              return (
+                <button
+                  key={t.name}
+                  type="button"
+                  onClick={() => insertMention(t.name)}
+                  className="inline-flex items-center gap-1 h-6 pl-1 pr-2 rounded-full border border-[color:var(--border)] bg-white hover:bg-[color:var(--surface-muted)] text-[11px] transition"
+                >
+                  {t.logoUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={t.logoUrl} alt="" className="w-3.5 h-3.5 object-contain" />
+                  )}
+                  <span>@{t.name}</span>
+                  {!connected && (
+                    <span className="text-[10px] text-[color:var(--muted-foreground)]">(connect)</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <ModelSelect settings={settings} value={modelKey} onChange={setModelKey} />
         <button

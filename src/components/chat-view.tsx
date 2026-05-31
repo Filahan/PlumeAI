@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useMemo, useCallback, ClipboardEvent, Drag
 import { Conversation, Message, Settings, Provider, AttachmentRef, findApiKey, supportsVision, PROVIDER_MODELS, PROVIDER_NAMES, PROVIDER_ACCENT } from '@/lib/types';
 import { streamChat, generateTitle, ChatMessage, ImagePart } from '@/lib/api';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
-import { Paperclip, ArrowUp, Copy, Check, X, ImagePlus } from 'lucide-react';
+import MentionAutocomplete, { type MentionAutocompleteHandle } from '@/components/mention-autocomplete';
+import { Paperclip, ArrowUp, Copy, Check, X, ImagePlus, Wrench, AlertCircle } from 'lucide-react';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger } from '@/components/ui/select';
 import { ProviderLogo } from '@/components/provider-logo';
 import ImageThumb from '@/components/image-thumb';
@@ -203,6 +204,13 @@ export default function ChatView({
   const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const acRef = useRef<MentionAutocompleteHandle>(null);
+
+  // In-flight tool calls for the assistant message currently being streamed. Cleared at the end
+  // of each send. Not persisted — v1 chat keeps tool execution transient.
+  interface InFlightToolCall { id: string; tool: string; args: string; ok?: boolean; result?: string }
+  const [currentAssistantId, setCurrentAssistantId] = useState<string | null>(null);
+  const [activeToolCalls, setActiveToolCalls] = useState<InFlightToolCall[]>([]);
 
   const lastMessage = conversation?.messages[conversation.messages.length - 1];
 
@@ -265,38 +273,112 @@ export default function ChatView({
     });
     const assistantMsgId = onAddMessage(convId, { role: 'assistant', content: '' });
 
-    // Build history. Existing messages may have attachments — resolve their blobs to image parts.
+    // Decide which streaming path to use. The tool-aware server route only supports text
+    // (no image parts yet) and only non-Anthropic providers.
     const priorMessages = conversation?.messages ?? [];
-    const history: ChatMessage[] = [];
-    for (const m of priorMessages) {
-      const parts = await messageToChatParts(m.content, m.attachments);
-      history.push({ role: m.role, content: parts });
-    }
-    history.push({
-      role: 'user',
-      content: await messageToChatParts(userContent, messageAttachments),
-    });
+    const historyHasImages = priorMessages.some((m) => m.attachments && m.attachments.length > 0);
+    const newHasImages = messageAttachments.length > 0;
+    const useToolPath = activeProvider !== 'anthropic' && !newHasImages && !historyHasImages;
 
     let assistantText = '';
     setIsLoading(true);
-    try {
-      const { controller, done } = await streamChat(
-        activeProvider, activeModel, apiKey, history,
-        (chunk) => {
-          assistantText += chunk;
-          onUpdateMessage(convId!, assistantMsgId, chunk);
-        },
-        (usage) => onRecordUsage({ conversationId: convId!, provider: activeProvider, model: activeModel, ...usage })
-      );
+    setCurrentAssistantId(assistantMsgId);
+    setActiveToolCalls([]);
+
+    if (useToolPath) {
+      const controller = new AbortController();
       controllerRef.current = controller;
-      await done;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      onUpdateMessage(convId, assistantMsgId, 'Error: ' + message);
-      return;
-    } finally {
-      setIsLoading(false);
-      controllerRef.current = null;
+      try {
+        const res = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            provider: activeProvider,
+            model: activeModel,
+            history: priorMessages.map((m) => ({ role: m.role, content: m.content })),
+            newMessage: userContent,
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`Chat stream failed (${res.status})`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            let evt: { type: string; [k: string]: unknown };
+            try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+            if (evt.type === 'text' && typeof evt.delta === 'string') {
+              assistantText += evt.delta;
+              onUpdateMessage(convId, assistantMsgId, evt.delta);
+            } else if (evt.type === 'tool_call') {
+              setActiveToolCalls((prev) => [...prev, { id: String(evt.id), tool: String(evt.tool), args: String(evt.args ?? '') }]);
+            } else if (evt.type === 'tool_result') {
+              setActiveToolCalls((prev) =>
+                prev.map((c) => (c.id === String(evt.id) ? { ...c, ok: !!evt.ok, result: String(evt.result ?? '') } : c))
+              );
+            } else if (evt.type === 'error' && typeof evt.message === 'string') {
+              onUpdateMessage(convId, assistantMsgId, '\n\nError: ' + evt.message);
+            }
+          }
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          onUpdateMessage(convId, assistantMsgId, 'Error: ' + message);
+          setIsLoading(false);
+          setCurrentAssistantId(null);
+          controllerRef.current = null;
+          return;
+        }
+      } finally {
+        setIsLoading(false);
+        setCurrentAssistantId(null);
+        setActiveToolCalls([]);
+        controllerRef.current = null;
+      }
+    } else {
+      // Legacy path: direct client → provider streaming (supports images + Anthropic).
+      const history: ChatMessage[] = [];
+      for (const m of priorMessages) {
+        const parts = await messageToChatParts(m.content, m.attachments);
+        history.push({ role: m.role, content: parts });
+      }
+      history.push({
+        role: 'user',
+        content: await messageToChatParts(userContent, messageAttachments),
+      });
+
+      try {
+        const { controller, done } = await streamChat(
+          activeProvider, activeModel, apiKey, history,
+          (chunk) => {
+            assistantText += chunk;
+            onUpdateMessage(convId!, assistantMsgId, chunk);
+          },
+          (usage) => onRecordUsage({ conversationId: convId!, provider: activeProvider, model: activeModel, ...usage })
+        );
+        controllerRef.current = controller;
+        await done;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        onUpdateMessage(convId, assistantMsgId, 'Error: ' + message);
+        setIsLoading(false);
+        setCurrentAssistantId(null);
+        controllerRef.current = null;
+        return;
+      } finally {
+        setIsLoading(false);
+        setCurrentAssistantId(null);
+        controllerRef.current = null;
+      }
     }
 
     if (isFirstExchange && assistantText) {
@@ -365,17 +447,23 @@ export default function ChatView({
         </div>
       )}
 
-      <textarea
-        ref={textareaRef}
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onPaste={handlePaste}
-        placeholder="Message PlumeAI…"
-        rows={1}
-        className="w-full resize-none bg-transparent text-[14px] text-[color:var(--foreground)] placeholder:text-[color:var(--muted-foreground)] outline-none min-h-[24px] max-h-[200px] leading-relaxed"
-        disabled={isLoading}
-      />
+      <div className="relative">
+        <MentionAutocomplete ref={acRef} textareaRef={textareaRef} value={input} onChange={setInput} />
+        <textarea
+          ref={textareaRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (acRef.current?.handleKeyDown(e)) return;
+            handleKeyDown(e);
+          }}
+          onPaste={handlePaste}
+          placeholder="Message PlumeAI… (type @ for tools)"
+          rows={1}
+          className="w-full resize-none bg-transparent text-[14px] text-[color:var(--foreground)] placeholder:text-[color:var(--muted-foreground)] outline-none min-h-[24px] max-h-[200px] leading-relaxed"
+          disabled={isLoading}
+        />
+      </div>
 
       <div className="flex items-center justify-between mt-2 gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -529,19 +617,48 @@ export default function ChatView({
                       {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
                     </button>
                   </div>
-                ) : msg.content ? (
+                ) : msg.content || msg.id === currentAssistantId ? (
                   <div key={msg.id} className="group max-w-[90%] w-fit">
-                    <div className="rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[color:var(--foreground)]">
-                      <MarkdownRenderer content={msg.content} />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(msg.id, msg.content)}
-                      aria-label="Copy response"
-                      className="mt-1 h-7 w-7 inline-flex items-center justify-center rounded-md text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
-                    >
-                      {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
+                    {msg.id === currentAssistantId && activeToolCalls.length > 0 && (
+                      <div className="mb-2 space-y-1.5">
+                        {activeToolCalls.map((tc) => (
+                          <details key={tc.id} className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-muted)] px-3 py-1.5 max-w-[400px]">
+                            <summary className="flex items-center gap-2 cursor-pointer list-none text-[12px]">
+                              <Wrench size={12} strokeWidth={1.75} className="shrink-0 text-[color:var(--muted-foreground)]" />
+                              <span className="font-medium truncate">{tc.tool}</span>
+                              <span className="truncate text-[color:var(--muted-foreground)]">{tc.args}</span>
+                              {tc.result === undefined ? (
+                                <span className="ml-auto w-2 h-2 rounded-full bg-[#6366f1] animate-pulse shrink-0" aria-label="Running" />
+                              ) : tc.ok ? (
+                                <Check size={12} strokeWidth={2.5} className="ml-auto shrink-0 text-[#10A37F]" />
+                              ) : (
+                                <AlertCircle size={12} strokeWidth={2} className="ml-auto shrink-0 text-[#D4183D]" />
+                              )}
+                            </summary>
+                            {tc.result !== undefined && (
+                              <pre className="mt-1.5 text-[11px] whitespace-pre-wrap break-words text-[color:var(--muted-foreground)] max-h-32 overflow-y-auto">
+                                {tc.result || '…'}
+                              </pre>
+                            )}
+                          </details>
+                        ))}
+                      </div>
+                    )}
+                    {msg.content && (
+                      <div className="rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[color:var(--foreground)]">
+                        <MarkdownRenderer content={msg.content} />
+                      </div>
+                    )}
+                    {msg.content && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(msg.id, msg.content)}
+                        aria-label="Copy response"
+                        className="mt-1 h-7 w-7 inline-flex items-center justify-center rounded-md text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
+                      >
+                        {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
+                      </button>
+                    )}
                   </div>
                 ) : null
               ))}
