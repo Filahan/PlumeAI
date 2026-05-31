@@ -38,36 +38,38 @@ export default function LoginPage() {
   const hasError = !!error;
 
   return (
-    <main className="fixed inset-0 grid place-items-center px-6 bg-[#FAFAFA] [background-image:radial-gradient(ellipse_80%_50%_at_50%_-10%,rgba(176,124,240,0.10),transparent_70%)]">
-      <div className="w-full max-w-[360px]">
+    <div
+      className="fixed inset-3 rounded-3xl bg-white border border-[color:var(--border)] overflow-hidden flex items-center justify-center"
+      suppressHydrationWarning
+    >
+      <div className="w-full max-w-[400px] px-6">
         <div
-          className="flex flex-col items-center gap-2 mb-8"
+          className="flex flex-col items-center"
           style={{ animation: 'fade-in-up-1 400ms ease-out 80ms both' }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="" className="h-12 w-auto" />
-          <span className="text-[15px] font-medium tracking-[-0.01em] text-[#111111]">
+          <img src="/logo.png" alt="" className="h-16 w-auto" />
+          <span className="mt-3 text-[17px] font-semibold tracking-[-0.015em] text-[#111111]">
             PlumeAI
           </span>
+          <p className="mt-1.5 text-[13px] text-[color:var(--muted-foreground)]">
+            Private AI for chat &amp; automations
+          </p>
         </div>
 
-        <div
-          className="text-center mb-10"
+        <h1
+          className="text-center mt-12 text-[26px] font-semibold tracking-[-0.025em] text-[#111111]"
           style={{ animation: 'fade-in-up-2 350ms ease-out 160ms both' }}
         >
-          <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-            Sign in to continue
-          </h1>
-        </div>
+          Sign in to continue
+        </h1>
 
         <form
           onSubmit={handleSubmit}
+          className="mt-8"
           style={{ animation: 'fade-in-up-3 350ms ease-out 240ms both' }}
         >
-          <label
-            htmlFor="password"
-            className="block text-[13px] font-medium text-[#111111] mb-2"
-          >
+          <label htmlFor="password" className="sr-only">
             Password
           </label>
 
@@ -77,6 +79,7 @@ export default function LoginPage() {
               type={showPassword ? 'text' : 'password'}
               autoFocus
               autoComplete="current-password"
+              placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               aria-invalid={hasError}
@@ -115,12 +118,12 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading || !password}
-            className={`mt-3 w-full inline-flex items-center justify-center gap-1.5 h-11 rounded-2xl bg-[#111111] text-white text-[14px] font-medium transition-all focus-visible:ring-4 focus-visible:ring-black/10 ${
+            className={`mt-4 w-full inline-flex items-center justify-center gap-1.5 h-11 rounded-2xl bg-[#111111] text-white text-[14px] font-medium transition-all focus-visible:ring-4 focus-visible:ring-black/10 [&_svg]:transition-transform [&_svg]:duration-150 ${
               loading
                 ? 'pointer-events-none'
                 : !password
                   ? 'opacity-50 pointer-events-none cursor-not-allowed'
-                  : 'hover:bg-[#1F1F23] active:scale-[0.98]'
+                  : 'hover:bg-[#1F1F23] active:scale-[0.98] hover:[&_svg]:translate-x-0.5'
             }`}
           >
             {loading ? (
@@ -137,6 +140,13 @@ export default function LoginPage() {
           </button>
         </form>
       </div>
-    </main>
+
+      <p
+        className="absolute bottom-8 left-1/2 -translate-x-1/2 text-[12px] text-[color:var(--muted-foreground)]"
+        style={{ animation: 'fade-in-up-3 350ms ease-out 400ms both' }}
+      >
+        Self-hosted · v0.1
+      </p>
+    </div>
   );
 }
