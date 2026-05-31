@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
 
   const { db, ensureMigrations } = await import('@/lib/db');
   const { interview } = await import('@/lib/agent/interview');
+  const { generateTaskTitle } = await import('@/lib/agent/generate-title');
   await ensureMigrations();
 
   const body = await req.json().catch(() => ({}));
@@ -27,14 +28,22 @@ export async function POST(req: NextRequest) {
   if (!task) return new Response('Task not found', { status: 404 });
 
   const history: InterviewMessage[] = task.messages ?? [];
+  const isFirstExchange = history.length === 0;
+
+  // Run interview + title generation in parallel — no latency cost on first exchange.
+  const interviewPromise = interview(task.provider as Provider, task.model, history, message);
+  const titlePromise: Promise<string> = isFirstExchange && !task.title
+    ? generateTaskTitle(task.provider as Provider, task.model, message)
+    : Promise.resolve(task.title ?? '');
 
   let result;
   try {
-    result = await interview(task.provider as Provider, task.model, history, message);
+    result = await interviewPromise;
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : 'Interview failed.';
     return Response.json({ error: errMsg }, { status: 502 });
   }
+  const generatedTitle = await titlePromise;
 
   const userMsg: InterviewMessage = { role: 'user', content: message };
   const assistantMsg: InterviewMessage =
@@ -47,14 +56,16 @@ export async function POST(req: NextRequest) {
     .update(tasks)
     .set({
       messages: nextMessages,
+      ...(generatedTitle && !task.title ? { title: generatedTitle } : {}),
       ...(result.kind === 'finalize' ? { prompt: result.skill } : {}),
       updatedAt: new Date(),
     })
     .where(eq(tasks.id, taskId));
 
-  return Response.json(
-    result.kind === 'ask'
+  return Response.json({
+    ...(result.kind === 'ask'
       ? { question: result.question, options: result.options }
-      : { finalized: true, skill: result.skill }
-  );
+      : { finalized: true, skill: result.skill }),
+    ...(generatedTitle && !task.title ? { title: generatedTitle } : {}),
+  });
 }

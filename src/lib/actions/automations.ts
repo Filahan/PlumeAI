@@ -16,6 +16,7 @@ export async function listTasks(): Promise<Task[]> {
   const rows = await db.select().from(tasks).orderBy(desc(tasks.createdAt));
   return rows.map((r) => ({
     id: r.id,
+    title: r.title ?? undefined,
     prompt: r.prompt,
     messages: r.messages ?? [],
     schedule: r.schedule,
@@ -55,6 +56,7 @@ export async function createTask(
 export async function updateTask(
   id: string,
   patch: {
+    title?: string;
     prompt?: string;
     schedule?: TaskSchedule;
     status?: TaskStatus;
@@ -68,6 +70,7 @@ export async function updateTask(
   await db
     .update(tasks)
     .set({
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.prompt !== undefined ? { prompt: patch.prompt } : {}),
       ...(patch.schedule !== undefined ? { schedule: patch.schedule } : {}),
       ...(patch.status !== undefined ? { status: patch.status } : {}),

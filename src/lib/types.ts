@@ -103,6 +103,9 @@ export interface InterviewMessage {
 
 export interface Task {
   id: string;
+  /** LLM-generated 3-5 word title from the first interview exchange. Falls back to a slice of
+   *  the prompt when missing. Mirrors how chat conversations get auto-titled. */
+  title?: string;
   prompt: string;        // the compiled "skill" — empty while the interview is in progress
   messages: InterviewMessage[];
   schedule: TaskSchedule;

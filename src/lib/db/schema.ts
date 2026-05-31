@@ -54,6 +54,7 @@ export const tasks = pgTable(
   {
     id: text('id').primaryKey(),
     ownerId: text('owner_id'),
+    title: text('title'),
     prompt: text('prompt').notNull(),
     messages: jsonb('messages').$type<InterviewMessage[]>().notNull().default([]),
     schedule: text('schedule').$type<TaskSchedule>().notNull().default('manual'),

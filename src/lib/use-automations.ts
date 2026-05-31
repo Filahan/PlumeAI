@@ -52,7 +52,7 @@ export function useAutomations() {
     async (prompt: string, schedule: TaskSchedule, provider: Provider, model: string): Promise<string> => {
       const id = newId();
       const now = Date.now();
-      const task: Task = { id, prompt, messages: [], schedule, status: 'idle', transcript: [], provider, model, createdAt: now, updatedAt: now };
+      const task: Task = { id, prompt, messages: [], schedule, status: 'idle', transcript: [], provider, model, createdAt: now, updatedAt: now, title: undefined };
       setTasks((prev) => [task, ...prev]);
       await createTaskAction(id, prompt, schedule, provider, model).catch(() => {});
       return id;
@@ -81,6 +81,7 @@ export function useAutomations() {
         options?: string[];
         finalized?: boolean;
         skill?: string;
+        title?: string;
         error?: string;
       };
       if (!res.ok || data.error) throw new Error(data.error || `Chat failed (${res.status})`);
@@ -95,6 +96,7 @@ export function useAutomations() {
             ...t,
             messages: [...t.messages, newAsst],
             ...(data.finalized && data.skill ? { prompt: data.skill } : {}),
+            ...(data.title ? { title: data.title } : {}),
             updatedAt: Date.now(),
           };
         })

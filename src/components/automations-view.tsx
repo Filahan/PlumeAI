@@ -36,8 +36,11 @@ export const TASK_STATUS_DOT: Record<TaskStatus, string> = {
   cancelled: 'bg-[color:var(--muted-foreground)]/40',
 };
 
-export function taskLabel(prompt: string): string {
-  const firstLine = prompt.trim().split('\n')[0];
+export function taskLabel(task: Pick<Task, 'title' | 'prompt' | 'messages'>): string {
+  if (task.title && task.title.trim()) return task.title.trim();
+  const firstUserMsg = task.messages.find((m) => m.role === 'user')?.content;
+  const source = firstUserMsg || task.prompt;
+  const firstLine = source.trim().split('\n')[0];
   return firstLine.slice(0, 60) || 'Untitled task';
 }
 
@@ -75,7 +78,7 @@ export function TaskList({
               >
                 <div className="flex items-center gap-1.5">
                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TASK_STATUS_DOT[t.status]}`} />
-                  <span className={`truncate text-[13px] ${isActive ? 'font-medium' : ''}`}>{taskLabel(t.prompt)}</span>
+                  <span className={`truncate text-[13px] ${isActive ? 'font-medium' : ''}`}>{taskLabel(t)}</span>
                 </div>
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-[color:var(--muted-foreground)]">
                   <Clock size={11} strokeWidth={1.75} />
