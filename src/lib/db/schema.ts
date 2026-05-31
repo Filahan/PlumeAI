@@ -1,5 +1,5 @@
 import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
-import type { AttachmentRef, ProviderConfig, Provider, TaskStatus, TaskSchedule, TranscriptStep, InterviewMessage } from '@/lib/types';
+import type { AttachmentRef, ProviderConfig, Provider, TaskStatus, TaskSchedule, TranscriptStep, InterviewMessage, TaskRun } from '@/lib/types';
 
 // Stored ProviderConfig with the apiKey replaced by ciphertext + iv. Plaintext apiKey
 // never touches the DB.
@@ -61,6 +61,7 @@ export const tasks = pgTable(
     status: text('status').$type<TaskStatus>().notNull().default('idle'),
     output: text('output'),
     transcript: jsonb('transcript').$type<TranscriptStep[]>().notNull().default([]),
+    runs: jsonb('runs').$type<TaskRun[]>().notNull().default([]),
     provider: text('provider').notNull(),
     model: text('model').notNull(),
     error: text('error'),

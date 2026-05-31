@@ -23,6 +23,7 @@ export async function listTasks(): Promise<Task[]> {
     status: r.status,
     output: r.output ?? undefined,
     transcript: r.transcript ?? [],
+    runs: r.runs ?? [],
     provider: r.provider as Provider,
     model: r.model,
     error: r.error ?? undefined,

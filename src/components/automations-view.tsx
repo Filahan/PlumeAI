@@ -9,6 +9,7 @@ import type { useAutomations } from '@/lib/use-automations';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ProviderLogo } from '@/components/provider-logo';
 import MentionAutocomplete, { type MentionAutocompleteHandle } from '@/components/mention-autocomplete';
+import ExecutionsOverview from '@/components/executions-overview';
 import { TOOL_DESCRIPTORS } from '@/lib/tools/registry-client';
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger,
@@ -131,6 +132,15 @@ export default function AutomationsView({
           Describe a task in plain text — run it now, or set a schedule.
         </p>
       </div>
+
+      {selected && (
+        <div className="mb-6">
+          <ExecutionsOverview
+            tasks={automations.tasks.filter((t) => t.id === selected.id)}
+            onSelect={onSelect}
+          />
+        </div>
+      )}
 
       {selected ? (
         <TaskDetail key={selected.id} task={selected} settings={settings} automations={automations} />

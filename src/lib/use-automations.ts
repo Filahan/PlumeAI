@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Task, Provider, TaskSchedule, TranscriptStep, ToolStep, InterviewMessage } from '@/lib/types';
+import { Task, Provider, TaskSchedule, TranscriptStep, ToolStep, InterviewMessage, TaskRun } from '@/lib/types';
 import {
   listTasks as listTasksAction,
   createTask as createTaskAction,
@@ -52,7 +52,7 @@ export function useAutomations() {
     async (prompt: string, schedule: TaskSchedule, provider: Provider, model: string): Promise<string> => {
       const id = newId();
       const now = Date.now();
-      const task: Task = { id, prompt, messages: [], schedule, status: 'idle', transcript: [], provider, model, createdAt: now, updatedAt: now, title: undefined };
+      const task: Task = { id, prompt, messages: [], schedule, status: 'idle', transcript: [], runs: [], provider, model, createdAt: now, updatedAt: now, title: undefined };
       setTasks((prev) => [task, ...prev]);
       await createTaskAction(id, prompt, schedule, provider, model).catch(() => {});
       return id;
@@ -131,6 +131,7 @@ export function useAutomations() {
     async (id: string): Promise<void> => {
       const controller = new AbortController();
       controllers.current.set(id, controller);
+      const runStartedAt = Date.now();
       patchTask(id, { status: 'running', output: '', transcript: [], error: undefined });
 
       let assistantBuf = '';
@@ -186,6 +187,21 @@ export function useAutomations() {
             } else if (evt.type === 'error') {
               patchTask(id, { error: evt.message });
             } else if (evt.type === 'done') {
+              // Append a TaskRun entry optimistically. Server has already persisted it; this
+              // just keeps the UI in sync without a re-fetch. Use functional setTasks to
+              // avoid stale-closure reads of `tasks`.
+              const endedAt = Date.now();
+              const newRun: TaskRun = {
+                status: (evt.status === 'failed' || evt.status === 'cancelled' ? evt.status : 'succeeded'),
+                startedAt: runStartedAt,
+                endedAt,
+                durationMs: endedAt - runStartedAt,
+              };
+              setTasks((prev) =>
+                prev.map((t) =>
+                  t.id === id ? { ...t, runs: [...(t.runs ?? []), newRun].slice(-30) } : t
+                )
+              );
               const last = transcript[transcript.length - 1];
               if (assistantBuf && (!last || last.kind === 'tool')) {
                 transcript.push({ kind: 'assistant', text: assistantBuf });

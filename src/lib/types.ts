@@ -101,6 +101,16 @@ export interface InterviewMessage {
   options?: string[];    // present when the assistant proposes choices
 }
 
+/** One completed execution of a task. Appended to `Task.runs` (capped at 30) at the end of
+ *  each Run, providing the Airflow-style strip in `ExecutionsOverview`. */
+export interface TaskRun {
+  status: 'succeeded' | 'failed' | 'cancelled';
+  startedAt: number;       // unix ms
+  endedAt: number;         // unix ms
+  durationMs: number;
+  error?: string;
+}
+
 export interface Task {
   id: string;
   /** LLM-generated 3-5 word title from the first interview exchange. Falls back to a slice of
@@ -112,6 +122,8 @@ export interface Task {
   status: TaskStatus;
   output?: string;
   transcript: TranscriptStep[];
+  /** History of past executions (most recent last, capped at 30). */
+  runs: TaskRun[];
   provider: Provider;
   model: string;
   error?: string;

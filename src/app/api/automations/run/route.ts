@@ -2,8 +2,10 @@ import { NextRequest } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { tasks, usageEntries } from '@/lib/db/schema';
 import { requireSession } from '@/lib/auth';
-import type { Provider } from '@/lib/types';
+import type { Provider, TaskRun } from '@/lib/types';
 import type { AgentEvent } from '@/lib/agent/run';
+
+const MAX_RUNS_KEPT = 30;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,6 +45,7 @@ export async function POST(req: NextRequest) {
         }
       };
 
+      const startedAt = Date.now();
       await db
         .update(tasks)
         .set({ status: 'running', output: '', transcript: [], error: null, updatedAt: new Date() })
@@ -51,12 +54,24 @@ export async function POST(req: NextRequest) {
 
       const outcome = await runAgent({ provider, model, prompt, signal: req.signal, emit: send });
 
+      // Append a TaskRun entry to history (capped at MAX_RUNS_KEPT).
+      const endedAt = Date.now();
+      const run: TaskRun = {
+        status: outcome.status,
+        startedAt,
+        endedAt,
+        durationMs: endedAt - startedAt,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      };
+      const nextRuns = [...((task.runs as TaskRun[] | null) ?? []), run].slice(-MAX_RUNS_KEPT);
+
       await db
         .update(tasks)
         .set({
           status: outcome.status,
           output: outcome.output,
           transcript: outcome.transcript,
+          runs: nextRuns,
           error: outcome.error ?? null,
           updatedAt: new Date(),
         })
