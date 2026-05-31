@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     google_oauth_client_id: str | None = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_ID")
     google_oauth_client_secret: str | None = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_SECRET")
 
+    # Public frontend URL. OAuth callback URIs are anchored on this so the user always
+    # comes back through the nginx proxy (which sets the session cookie), regardless of
+    # how `gmail_oauth_start` was reached internally.
+    frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
+
     # App
     app_env: str = Field(default="dev", alias="APP_ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

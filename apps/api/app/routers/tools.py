@@ -16,6 +16,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser
+from app.config import get_settings
 from app.db.base import get_session
 from app.errors import BadRequest, ToolNotConfigured
 from app.integrations.gmail.oauth import (
@@ -33,15 +34,16 @@ STATE_COOKIE = "gmail_oauth_state"
 STATE_TTL_SECONDS = 600
 
 
-def _redirect_uri(request: Request) -> str:
-    """Compute the callback URI the OAuth provider will redirect the user to.
+def _redirect_uri() -> str:
+    """Callback URI sent to Google's OAuth screen.
 
-    We honor X-Forwarded-Proto / Host (the nginx proxy sets them) so the URL we send to
-    Google matches the URL the browser is on.
+    Anchored on the public frontend URL (FRONTEND_URL env var, defaults to
+    http://localhost:3000) — NEVER on the inbound request's Host header. The Host header
+    may be `api:8000` (Docker-internal) or `localhost:8000` (direct API access), neither
+    of which is what's registered in Google Cloud Console. Always sending the same URL
+    means there's exactly ONE entry to whitelist there.
     """
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
-    return f"{scheme}://{host}/api/tools/gmail/oauth/callback"
+    return f"{get_settings().frontend_url}/api/tools/gmail/oauth/callback"
 
 
 def _tools_redirect(status: str, message: str | None = None) -> RedirectResponse:
@@ -54,7 +56,8 @@ def _tools_redirect(status: str, message: str | None = None) -> RedirectResponse
 
 @router.get("/gmail/oauth/start")
 async def gmail_oauth_start(request: Request, user: CurrentUser) -> RedirectResponse:
-    redirect_uri = _redirect_uri(request)
+    redirect_uri = _redirect_uri()
+    log.info("gmail_oauth_start", redirect_uri=redirect_uri)
     try:
         state = secrets.token_urlsafe(24)
         auth_url = build_auth_url(state, redirect_uri)
@@ -92,7 +95,7 @@ async def gmail_oauth_callback(
         response = _tools_redirect("error", "invalid_state")
     else:
         try:
-            creds = await exchange_code(code, _redirect_uri(request))
+            creds = await exchange_code(code, _redirect_uri())
             await save_creds(session, creds)
             response = _tools_redirect("connected")
         except Exception as exc:  # noqa: BLE001

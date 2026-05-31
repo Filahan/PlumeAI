@@ -17,6 +17,8 @@ services:
   api:
     build:
       context: ./apps/api
+    ports:
+      - "8000:8000"
     command:
       [
         "uvicorn",
@@ -38,6 +40,7 @@ services:
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       APP_ENV: ${APP_ENV:-dev}
     depends_on:
@@ -48,8 +51,6 @@ services:
     build:
       context: ./apps/web
     restart: unless-stopped
-    # Web is now a pure SPA-ish Next.js client — no secrets, no DB, no JWT verification.
-    # All sensitive ops happen in the `api` service.
     volumes:
       - ./apps/web:/app
       - /app/node_modules
