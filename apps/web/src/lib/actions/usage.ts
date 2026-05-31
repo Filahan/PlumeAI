@@ -1,45 +1,17 @@
-'use server';
+/** Thin client-side wrappers around the FastAPI usage endpoint.
+ *
+ *  `recordUsage` is now a no-op client-side: FastAPI persists every LLM round automatically
+ *  inside its /chat/stream and /automations/run routes. We keep the function exported for
+ *  backward compatibility with the chat-view's `onRecordUsage` callback prop.
+ */
 
-import { gte, asc } from 'drizzle-orm';
-import { db, ensureMigrations } from '@/lib/db';
-import { usageEntries } from '@/lib/db/schema';
-import { requireSession } from '@/lib/auth';
-import type { Provider, UsageEntry } from '@/lib/types';
+import { api } from '@/lib/api-client';
+import type { UsageEntry } from '@/lib/types';
 
-async function init() {
-  await requireSession();
-  await ensureMigrations();
+export async function listUsage(): Promise<UsageEntry[]> {
+  return api.get<UsageEntry[]>('/usage');
 }
 
-export async function listUsage(lookbackMs?: number): Promise<UsageEntry[]> {
-  await init();
-  const rows = lookbackMs && Number.isFinite(lookbackMs)
-    ? await db
-        .select()
-        .from(usageEntries)
-        .where(gte(usageEntries.timestamp, new Date(Date.now() - lookbackMs)))
-        .orderBy(asc(usageEntries.timestamp))
-    : await db.select().from(usageEntries).orderBy(asc(usageEntries.timestamp));
-  return rows.map((r) => ({
-    timestamp: r.timestamp.getTime(),
-    conversationId: r.conversationId ?? '',
-    provider: r.provider as Provider,
-    model: r.model,
-    inputTokens: r.inputTokens,
-    outputTokens: r.outputTokens,
-  }));
+export async function recordUsage(_entry: Omit<UsageEntry, 'timestamp'>): Promise<void> {
+  // No-op — usage is recorded server-side as part of the agent SSE finalization.
 }
-
-export async function recordUsage(entry: Omit<UsageEntry, 'timestamp'>): Promise<void> {
-  await init();
-  await db.insert(usageEntries).values({
-    id: crypto.randomUUID(),
-    conversationId: entry.conversationId || null,
-    provider: entry.provider,
-    model: entry.model,
-    inputTokens: entry.inputTokens,
-    outputTokens: entry.outputTokens,
-    timestamp: new Date(),
-  });
-}
-

@@ -18,6 +18,7 @@ from app.middleware import RequestLoggingMiddleware
 from app.routers import auth as auth_router
 from app.routers import automations as automations_router
 from app.routers import chat as chat_router
+from app.routers import conversations as conversations_router
 from app.routers import settings as settings_router
 from app.routers import tools as tools_router
 from app.routers import usage as usage_router
@@ -65,3 +66,4 @@ app.include_router(chat_router.router)
 app.include_router(tools_router.router)
 app.include_router(automations_router.router)
 app.include_router(usage_router.router)
+app.include_router(conversations_router.router)

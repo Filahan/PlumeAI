@@ -1,35 +1,10 @@
-'use server';
+/** Thin client-side wrappers around the FastAPI automations endpoints. */
 
-import { desc, eq } from 'drizzle-orm';
-import { db, ensureMigrations } from '@/lib/db';
-import { tasks } from '@/lib/db/schema';
-import { requireSession } from '@/lib/auth';
+import { api } from '@/lib/api-client';
 import type { Task, Provider, TaskSchedule, TaskStatus } from '@/lib/types';
 
-async function init() {
-  await requireSession();
-  await ensureMigrations();
-}
-
 export async function listTasks(): Promise<Task[]> {
-  await init();
-  const rows = await db.select().from(tasks).orderBy(desc(tasks.createdAt));
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title ?? undefined,
-    prompt: r.prompt,
-    messages: r.messages ?? [],
-    schedule: r.schedule,
-    status: r.status,
-    output: r.output ?? undefined,
-    transcript: r.transcript ?? [],
-    runs: r.runs ?? [],
-    provider: r.provider as Provider,
-    model: r.model,
-    error: r.error ?? undefined,
-    createdAt: r.createdAt.getTime(),
-    updatedAt: r.updatedAt.getTime(),
-  }));
+  return api.get<Task[]>('/automations');
 }
 
 export async function createTask(
@@ -39,19 +14,7 @@ export async function createTask(
   provider: Provider,
   model: string
 ): Promise<void> {
-  await init();
-  const now = new Date();
-  await db.insert(tasks).values({
-    id,
-    prompt,
-    messages: [],
-    schedule,
-    status: 'idle',
-    provider,
-    model,
-    createdAt: now,
-    updatedAt: now,
-  });
+  await api.post('/automations', { id, prompt, schedule, provider, model });
 }
 
 export async function updateTask(
@@ -67,24 +30,9 @@ export async function updateTask(
     model?: string;
   }
 ): Promise<void> {
-  await init();
-  await db
-    .update(tasks)
-    .set({
-      ...(patch.title !== undefined ? { title: patch.title } : {}),
-      ...(patch.prompt !== undefined ? { prompt: patch.prompt } : {}),
-      ...(patch.schedule !== undefined ? { schedule: patch.schedule } : {}),
-      ...(patch.status !== undefined ? { status: patch.status } : {}),
-      ...(patch.output !== undefined ? { output: patch.output } : {}),
-      ...(patch.error !== undefined ? { error: patch.error } : {}),
-      ...(patch.provider !== undefined ? { provider: patch.provider } : {}),
-      ...(patch.model !== undefined ? { model: patch.model } : {}),
-      updatedAt: new Date(),
-    })
-    .where(eq(tasks.id, id));
+  await api.patch(`/automations/${encodeURIComponent(id)}`, patch);
 }
 
 export async function deleteTask(id: string): Promise<void> {
-  await init();
-  await db.delete(tasks).where(eq(tasks.id, id));
+  await api.delete(`/automations/${encodeURIComponent(id)}`);
 }
