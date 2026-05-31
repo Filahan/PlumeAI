@@ -14,19 +14,65 @@ services:
       timeout: 5s
       retries: 10
 
-  app:
-    build: .
+  api:
+    build:
+      context: ./apps/api
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--loop", "uvloop",
+        "--proxy-headers",
+        "--reload",
+      ]
+    volumes:
+      - ./apps/api/app:/app/app
+      - ./apps/api/alembic:/app/alembic
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
-      DATABASE_URL: postgres://plumeai:${DB_PASSWORD:-plumeai}@db:5432/plumeai
+      DATABASE_URL: postgresql+asyncpg://plumeai:${DB_PASSWORD:-plumeai}@db:5432/plumeai
       AUTH_SECRET: ${AUTH_SECRET:-plumeai-dev-auth-secret-please-change-in-production-32-bytes-min}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-cGx1bWVhaS1kZXYtZW5jLWtleS0zMmJ5dGVzLXBhZCE=}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      APP_ENV: ${APP_ENV:-dev}
     depends_on:
       db:
         condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+    restart: unless-stopped
+    environment:
+      # Stop-gap during Phase 0 — the Next.js app still imports legacy server code that
+      # validates env vars at module load. Phase 8 cleanup deletes those imports and we
+      # remove these vars from the web service.
+      DATABASE_URL: postgresql://plumeai:${DB_PASSWORD:-plumeai}@db:5432/plumeai
+      AUTH_SECRET: ${AUTH_SECRET:-plumeai-dev-auth-secret-please-change-in-production-32-bytes-min}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-cGx1bWVhaS1kZXYtZW5jLWtleS0zMmJ5dGVzLXBhZCE=}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - api
+
+  proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - web
 
 volumes:
   pgdata:
