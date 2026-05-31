@@ -1,1 +1,0 @@
-ALTER TABLE "tasks" ADD COLUMN "runs" jsonb DEFAULT '[]'::jsonb NOT NULL;
