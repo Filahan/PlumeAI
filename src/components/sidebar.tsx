@@ -9,10 +9,10 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { Button } from '@/components/ui/button';
 import SettingsContent from '@/components/settings-content';
 import {
-  SquarePen, Activity, Settings as SettingsIcon, Trash2,
+  SquarePen, Activity, Workflow, Plug, Settings as SettingsIcon, Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 
 interface NavRailProps {
   settings: Settings;
@@ -48,6 +48,7 @@ function RailIcon({ icon: Icon, label, onClick, active }: {
 
 export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenChange, onNewChat, onToggleSidebar }: NavRailProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const handleOpenSettings = useCallback(() => onSettingsOpenChange(true), [onSettingsOpenChange]);
 
   return (
@@ -67,7 +68,9 @@ export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenCha
 
         <div className="flex flex-col gap-1">
           <RailIcon icon={SquarePen} label="New chat" onClick={onNewChat} />
-          <RailIcon icon={Activity} label="Usage" onClick={() => router.push('/usage')} />
+          <RailIcon icon={Workflow} label="Automations" active={pathname === '/automations'} onClick={() => router.push('/automations')} />
+          <RailIcon icon={Plug} label="Tools" active={pathname === '/tools'} onClick={() => router.push('/tools')} />
+          <RailIcon icon={Activity} label="Usage" active={pathname === '/usage'} onClick={() => router.push('/usage')} />
         </div>
 
         <div className="flex-1" />
@@ -121,7 +124,7 @@ export function ConversationListPanel({
   return (
     <aside className="w-[260px] shrink-0 h-full flex flex-col bg-[color:var(--surface-muted)] border-r border-[color:var(--border)]">
       <div className="px-4 pt-4 pb-1 text-[11px] font-semibold tracking-[0.08em] uppercase text-[color:var(--muted-foreground)]">
-        Recent
+        Chat
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-3">
         {!ready ? null : conversations.length === 0 ? (

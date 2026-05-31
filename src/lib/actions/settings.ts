@@ -15,6 +15,7 @@ async function init() {
 const DEFAULT_SETTINGS: Settings = {
   providers: [],
   defaultModel: { provider: 'openai', model: 'gpt-4o' },
+  tools: {},
 };
 
 async function ensureRow(): Promise<void> {
@@ -37,7 +38,21 @@ export async function getSettings(): Promise<Settings> {
       apiKey: p.apiKeyCiphertext ? await decrypt(p.apiKeyIv, p.apiKeyCiphertext) : '',
     }))
   );
-  return { providers, defaultModel: row.defaultModel };
+  // Surface only `{connected}` for each tool — secrets stay encrypted server-side.
+  const tools: Settings['tools'] = {};
+  for (const [name, blob] of Object.entries(row.tools ?? {})) {
+    tools[name] = { connected: !!(blob?.ciphertext && blob?.iv) };
+  }
+  return { providers, defaultModel: row.defaultModel, tools };
+}
+
+export async function disconnectTool(name: string): Promise<void> {
+  await init();
+  const [row] = await db.select().from(settings).where(eq(settings.id, 1));
+  if (!row) return;
+  const next = { ...row.tools };
+  delete next[name];
+  await db.update(settings).set({ tools: next }).where(eq(settings.id, 1));
 }
 
 export async function updateSettings(next: Settings): Promise<void> {

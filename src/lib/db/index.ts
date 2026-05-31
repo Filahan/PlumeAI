@@ -29,3 +29,10 @@ export function ensureMigrations(): Promise<void> {
   });
   return migrationPromise;
 }
+
+// Eager warm-up: start migrations as soon as the db module is imported, so the first user
+// action doesn't pay the 200-500ms cold-start cost. We log here to surface boot-time
+// migration failures; callers that await ensureMigrations() also see the failure via throw.
+void ensureMigrations().catch((err) => {
+  console.error('[db] Migration boot failed:', err);
+});

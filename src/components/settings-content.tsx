@@ -292,7 +292,7 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
 
       <p className="text-[11px] text-[#a8a8a8] leading-relaxed pt-1 border-t border-black/[0.05]">
         <Sparkles size={11} className="inline mr-1 -mt-0.5" strokeWidth={2} />
-        API keys are stored only in your browser&apos;s local storage. They never reach our servers.
+        Provider API keys are encrypted at rest. Manage external integrations (Gmail, …) from the Tools section.
       </p>
     </div>
   );

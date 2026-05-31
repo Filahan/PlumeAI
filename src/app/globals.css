@@ -1,11 +1,10 @@
 @import "tailwindcss";
 
 html {
-  /* Reserve scrollbar space at all times so the body width stays identical across
-     Chrome and Safari, and doesn't jump when content grows past the viewport. */
-  scrollbar-gutter: stable;
-  /* Belt-and-suspenders against any descendant accidentally creating horizontal scroll. */
-  overflow-x: hidden;
+  /* The app is a fixed full-viewport shell (AppShell is `fixed inset-3`; login is
+     `fixed inset-0`), so the window itself never scrolls — content scrolls inside inner
+     panels. Hide window-level overflow to avoid a reserved/empty scrollbar gutter. */
+  overflow: hidden;
 }
 
 @custom-variant dark (&:is(.dark *));

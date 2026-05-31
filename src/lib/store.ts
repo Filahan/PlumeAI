@@ -295,6 +295,7 @@ export function useUsage() {
 const DEFAULT_SETTINGS: Settings = {
   providers: [],
   defaultModel: { provider: 'openai', model: 'gpt-4o' },
+  tools: {},
 };
 
 export function useSettings() {

@@ -89,6 +89,7 @@ export default function UsagePage() {
       onSelect={(id) => router.push(`/${id}`)}
       onNewChat={() => router.push('/')}
       onDelete={(id) => deleteConversation(id)}
+      leftPanel={false}
     >
       <div className="w-full max-w-[1100px] mx-auto px-8 py-8 overflow-y-auto h-full">
         {/* Header */}

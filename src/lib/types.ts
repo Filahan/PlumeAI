@@ -33,9 +33,20 @@ export interface ProviderConfig {
   apiKey: string;
 }
 
+/** Client-facing tool connection info. Never includes secrets — tokens stay on the server. */
+export interface ToolConnection {
+  connected: boolean;
+  /** Unix ms; omitted when unknown or not applicable. */
+  expiresAt?: number;
+  /** OAuth scopes granted. */
+  scope?: string;
+}
+
 export interface Settings {
   providers: ProviderConfig[];
   defaultModel: { provider: Provider; model: string };
+  /** Per-tool connection status (e.g. `tools.gmail.connected`). Tokens are NEVER exposed here. */
+  tools: Record<string, ToolConnection>;
 }
 
 export function findApiKey(settings: Settings, provider: Provider): string {
@@ -58,6 +69,51 @@ export interface UsageEntry {
   model: string;
   inputTokens: number;
   outputTokens: number;
+}
+
+export type TaskStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export type TaskSchedule = 'manual' | 'hourly' | 'daily' | 'weekly';
+
+export const TASK_SCHEDULE_LABELS: Record<TaskSchedule, string> = {
+  manual: 'Manual',
+  hourly: 'Every hour',
+  daily: 'Every day',
+  weekly: 'Every week',
+};
+
+export interface AssistantStep {
+  kind: 'assistant';
+  text: string;
+}
+export interface ToolStep {
+  kind: 'tool';
+  tool: string;   // e.g. 'web_fetch'
+  args: string;   // JSON string of arguments, secrets redacted
+  result: string; // truncated tool result text
+  ok: boolean;
+}
+export type TranscriptStep = AssistantStep | ToolStep;
+
+export interface InterviewMessage {
+  role: 'user' | 'assistant';
+  content: string;       // displayed text (question or user reply)
+  options?: string[];    // present when the assistant proposes choices
+}
+
+export interface Task {
+  id: string;
+  prompt: string;        // the compiled "skill" — empty while the interview is in progress
+  messages: InterviewMessage[];
+  schedule: TaskSchedule;
+  status: TaskStatus;
+  output?: string;
+  transcript: TranscriptStep[];
+  provider: Provider;
+  model: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export const PROVIDER_MODELS: Record<Provider, string[]> = {

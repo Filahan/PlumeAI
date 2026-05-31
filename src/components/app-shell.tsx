@@ -19,10 +19,12 @@ interface AppShellProps {
   onSelect: (id: string) => void;
   onNewChat: () => void;
   onDelete: (id: string) => void;
+  /** Replaces the conversation list in the left panel (e.g. the task list on /automations). */
+  leftPanel?: ReactNode;
   children: ReactNode;
 }
 
-export default function AppShell({ currentId, onSelect, onNewChat, onDelete, children }: AppShellProps) {
+export default function AppShell({ currentId, onSelect, onNewChat, onDelete, leftPanel, children }: AppShellProps) {
   const { conversations, loaded: conversationsLoaded } = useConversationsStore();
   const { settings, setSettings, loaded: settingsLoaded } = useSettingsStore();
   const ready = conversationsLoaded && settingsLoaded;
@@ -52,7 +54,7 @@ export default function AppShell({ currentId, onSelect, onNewChat, onDelete, chi
         onNewChat={onNewChat}
         onToggleSidebar={toggleSidebar}
       />
-      {sidebarOpen && (
+      {sidebarOpen && (leftPanel ?? (
         <ConversationListPanel
           conversations={conversations}
           currentId={currentId}
@@ -60,7 +62,7 @@ export default function AppShell({ currentId, onSelect, onNewChat, onDelete, chi
           onDelete={onDelete}
           ready={ready}
         />
-      )}
+      ))}
       <main className="relative flex-1 flex flex-col min-w-0 overflow-hidden">
         <button
           type="button"

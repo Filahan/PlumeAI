@@ -1,5 +1,5 @@
 import { pgTable, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
-import type { AttachmentRef, ProviderConfig, Provider } from '@/lib/types';
+import type { AttachmentRef, ProviderConfig, Provider, TaskStatus, TaskSchedule, TranscriptStep, InterviewMessage } from '@/lib/types';
 
 // Stored ProviderConfig with the apiKey replaced by ciphertext + iv. Plaintext apiKey
 // never touches the DB.
@@ -35,6 +35,10 @@ export const messages = pgTable(
   })
 );
 
+/** Encrypted blob (one per tool name) stored inside `settings.tools`. Decrypts to a tool-specific
+ *  JSON payload (e.g. for Gmail: access_token, refresh_token, expires_at, scope). */
+export type ToolCredsEncrypted = { ciphertext: string; iv: string };
+
 export const settings = pgTable('settings', {
   // Single-row table; we keep id=1 as a sentinel for the single-user mode.
   id: integer('id').primaryKey().default(1),
@@ -42,7 +46,30 @@ export const settings = pgTable('settings', {
   defaultModel: jsonb('default_model')
     .$type<{ provider: Provider; model: string }>()
     .notNull(),
+  tools: jsonb('tools').$type<Record<string, ToolCredsEncrypted>>().notNull().default({}),
 });
+
+export const tasks = pgTable(
+  'tasks',
+  {
+    id: text('id').primaryKey(),
+    ownerId: text('owner_id'),
+    prompt: text('prompt').notNull(),
+    messages: jsonb('messages').$type<InterviewMessage[]>().notNull().default([]),
+    schedule: text('schedule').$type<TaskSchedule>().notNull().default('manual'),
+    status: text('status').$type<TaskStatus>().notNull().default('idle'),
+    output: text('output'),
+    transcript: jsonb('transcript').$type<TranscriptStep[]>().notNull().default([]),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    createdIdx: index('tasks_created_idx').on(table.createdAt),
+  })
+);
 
 export const usageEntries = pgTable(
   'usage_entries',
