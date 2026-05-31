@@ -1,7 +1,7 @@
 'use client';
 
 import { Task } from '@/lib/types';
-import { TaskList } from '@/components/automations-view';
+import { TaskList } from '@/components/automations/view';
 import { Plus } from 'lucide-react';
 
 export function AutomationsSidebar({

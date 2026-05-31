@@ -5,7 +5,7 @@ import {
   Provider, Settings, Task, TaskStatus, TaskSchedule, ToolStep, InterviewMessage,
   PROVIDER_MODELS, PROVIDER_NAMES, PROVIDER_ACCENT, TASK_SCHEDULE_LABELS, findApiKey,
 } from '@/lib/types';
-import type { useAutomations } from '@/lib/use-automations';
+import type { useAutomations } from '@/lib/hooks/use-automations';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import { ProviderLogo } from '@/components/provider-logo';
 import MentionAutocomplete, { type MentionAutocompleteHandle } from '@/components/mention-autocomplete';

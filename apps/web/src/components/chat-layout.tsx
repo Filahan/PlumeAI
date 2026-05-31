@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useConversationsStore, useSettingsStore, useUsageStore } from '@/lib/store-provider';
 import { Provider } from '@/lib/types';
 import AppShell from '@/components/app-shell';
-import ChatView from '@/components/chat-view';
+import ChatView from '@/components/chat/view';
 
 function pathnameToId(p: string): string | null {
   return p === '/' ? null : p.slice(1) || null;

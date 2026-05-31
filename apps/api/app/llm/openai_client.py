@@ -12,11 +12,24 @@ from app.llm.base import ChatMessage, LLMProvider
 from app.llm.events import AgentEvent
 
 
+def _part_to_openai(p: dict[str, Any]) -> dict[str, Any]:
+    """Map one of our normalized parts ({type:'text'|'image', ...}) to OpenAI's shape."""
+    if p.get("type") == "image":
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{p['mime']};base64,{p['base64']}", "detail": "auto"},
+        }
+    return {"type": "text", "text": p.get("text", "")}
+
+
 def _msg_to_openai(m: ChatMessage) -> dict[str, Any]:
     """Translate our normalized ChatMessage into the OpenAI wire payload."""
     out: dict[str, Any] = {"role": m.role}
     if m.content is not None:
-        out["content"] = m.content
+        if isinstance(m.content, list):
+            out["content"] = [_part_to_openai(p) for p in m.content]
+        else:
+            out["content"] = m.content
     if m.tool_calls:
         out["tool_calls"] = m.tool_calls
     if m.tool_call_id is not None:

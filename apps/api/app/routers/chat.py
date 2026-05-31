@@ -60,10 +60,19 @@ async def chat_stream(
     # back as a proper 4xx Problem Details rather than disappearing into the SSE stream.
     provider = await get_provider_for(session, provider_name)
 
+    def _content(c: str | list) -> str | list[dict]:
+        """Pass strings through as-is; convert Pydantic Part models to plain dicts."""
+        if isinstance(c, list):
+            return [
+                p.model_dump(by_alias=False) if hasattr(p, "model_dump") else p  # type: ignore[union-attr]
+                for p in c
+            ]
+        return c
+
     messages: list[ChatMessage] = [
         ChatMessage(role="system", content=CHAT_SYSTEM_PROMPT),
-        *[ChatMessage(role=t.role, content=t.content) for t in body.history],
-        ChatMessage(role="user", content=body.new_message),
+        *[ChatMessage(role=t.role, content=_content(t.content)) for t in body.history],
+        ChatMessage(role="user", content=_content(body.new_message)),
     ]
     # Anthropic doesn't support our tool-call format yet, so route it through the provider
     # directly without tools. OpenAI + OpenRouter go through the agent runner with all

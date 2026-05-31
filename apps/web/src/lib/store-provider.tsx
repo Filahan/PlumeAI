@@ -1,7 +1,9 @@
 'use client';
 
 import { createContext, useContext, ReactNode } from 'react';
-import { useConversations, useSettings, useUsage } from '@/lib/store';
+import { useConversations } from '@/lib/hooks/use-conversations';
+import { useSettings } from '@/lib/hooks/use-settings';
+import { useUsage } from '@/lib/hooks/use-usage';
 
 type ConversationsValue = ReturnType<typeof useConversations>;
 type SettingsValue = ReturnType<typeof useSettings>;

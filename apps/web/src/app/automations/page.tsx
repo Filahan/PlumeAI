@@ -3,10 +3,10 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import AppShell from '@/components/app-shell';
-import AutomationsView from '@/components/automations-view';
-import { AutomationsSidebar } from '@/components/automations-sidebar';
+import AutomationsView from '@/components/automations/view';
+import { AutomationsSidebar } from '@/components/automations/sidebar';
 import { useConversationsStore, useSettingsStore } from '@/lib/store-provider';
-import { useAutomations } from '@/lib/use-automations';
+import { useAutomations } from '@/lib/hooks/use-automations';
 
 export default function AutomationsPage() {
   const router = useRouter();

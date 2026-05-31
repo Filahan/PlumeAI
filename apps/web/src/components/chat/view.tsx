@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo, useCallback, ClipboardEvent, DragEvent, KeyboardEvent } from 'react';
 import { Conversation, Message, Settings, Provider, AttachmentRef, findApiKey, supportsVision, PROVIDER_MODELS, PROVIDER_NAMES, PROVIDER_ACCENT } from '@/lib/types';
-import { streamChat, generateTitle, ChatMessage, ImagePart } from '@/lib/api';
+import { chat, parseSSE, type ChatContent } from '@/lib/api';
 import { MarkdownRenderer } from '@/components/markdown-renderer';
 import MentionAutocomplete, { type MentionAutocompleteHandle } from '@/components/mention-autocomplete';
 import { Paperclip, ArrowUp, Copy, Check, X, ImagePlus, Wrench, AlertCircle } from 'lucide-react';
@@ -21,17 +21,19 @@ interface PendingAttachment {
   error?: string;
 }
 
-async function messageToChatParts(text: string, attachments?: AttachmentRef[]): Promise<string | (ImagePart | { type: 'text'; text: string })[]> {
+async function messageToContent(text: string, attachments?: AttachmentRef[]): Promise<ChatContent> {
   if (!attachments || attachments.length === 0) return text;
-  const parts: (ImagePart | { type: 'text'; text: string })[] = [];
-  if (text) parts.push({ type: 'text', text });
-  for (const a of attachments) {
-    const blob = await getBlob(a.id);
-    if (!blob) continue;
-    const base64 = await blobToBase64(blob);
-    parts.push({ type: 'image', mime: a.mime, base64 });
+  const parts: ChatContent = [] as ChatContent;
+  if (Array.isArray(parts)) {
+    if (text) parts.push({ type: 'text', text });
+    for (const a of attachments) {
+      const blob = await getBlob(a.id);
+      if (!blob) continue;
+      const base64 = await blobToBase64(blob);
+      parts.push({ type: 'image', mime: a.mime, base64 });
+    }
+    if (parts.length === 0 && text) parts.push({ type: 'text', text });
   }
-  if (parts.length === 0 && text) parts.push({ type: 'text', text });
   return parts;
 }
 
@@ -273,123 +275,74 @@ export default function ChatView({
     });
     const assistantMsgId = onAddMessage(convId, { role: 'assistant', content: '' });
 
-    // Decide which streaming path to use. The tool-aware server route only supports text
-    // (no image parts yet) and only non-Anthropic providers.
+    // Single code path: every chat goes through FastAPI /chat/stream, which handles tool
+    // calling for OpenAI/OpenRouter and accepts {text|image} parts for all providers.
     const priorMessages = conversation?.messages ?? [];
-    const historyHasImages = priorMessages.some((m) => m.attachments && m.attachments.length > 0);
-    const newHasImages = messageAttachments.length > 0;
-    const useToolPath = activeProvider !== 'anthropic' && !newHasImages && !historyHasImages;
 
     let assistantText = '';
     setIsLoading(true);
     setCurrentAssistantId(assistantMsgId);
     setActiveToolCalls([]);
 
-    if (useToolPath) {
-      const controller = new AbortController();
-      controllerRef.current = controller;
-      try {
-        const res = await fetch('/api/chat/stream', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    try {
+      const history = await Promise.all(
+        priorMessages.map(async (m) => ({
+          role: m.role,
+          content: await messageToContent(m.content, m.attachments),
+        }))
+      );
+      const newMessage = await messageToContent(userContent, messageAttachments);
+
+      const res = await chat.stream(
+        {
+          provider: activeProvider,
+          model: activeModel,
+          history,
+          newMessage,
+          conversationId: convId,
+        },
+        controller.signal
+      );
+
+      for await (const evt of parseSSE<{ type: string; [k: string]: unknown }>(res, controller.signal)) {
+        if (evt.type === 'text' && typeof evt.delta === 'string') {
+          assistantText += evt.delta;
+          onUpdateMessage(convId, assistantMsgId, evt.delta);
+        } else if (evt.type === 'tool_call') {
+          setActiveToolCalls((prev) => [...prev, { id: String(evt.id), tool: String(evt.tool), args: String(evt.args ?? '') }]);
+        } else if (evt.type === 'tool_result') {
+          setActiveToolCalls((prev) =>
+            prev.map((c) => (c.id === String(evt.id) ? { ...c, ok: !!evt.ok, result: String(evt.result ?? '') } : c))
+          );
+        } else if (evt.type === 'usage') {
+          onRecordUsage({
+            conversationId: convId,
             provider: activeProvider,
             model: activeModel,
-            history: priorMessages.map((m) => ({ role: m.role, content: m.content })),
-            newMessage: userContent,
-          }),
-          signal: controller.signal,
-        });
-        if (!res.ok || !res.body) throw new Error(`Chat stream failed (${res.status})`);
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            let evt: { type: string; [k: string]: unknown };
-            try { evt = JSON.parse(line.slice(6)); } catch { continue; }
-            if (evt.type === 'text' && typeof evt.delta === 'string') {
-              assistantText += evt.delta;
-              onUpdateMessage(convId, assistantMsgId, evt.delta);
-            } else if (evt.type === 'tool_call') {
-              setActiveToolCalls((prev) => [...prev, { id: String(evt.id), tool: String(evt.tool), args: String(evt.args ?? '') }]);
-            } else if (evt.type === 'tool_result') {
-              setActiveToolCalls((prev) =>
-                prev.map((c) => (c.id === String(evt.id) ? { ...c, ok: !!evt.ok, result: String(evt.result ?? '') } : c))
-              );
-            } else if (evt.type === 'error' && typeof evt.message === 'string') {
-              onUpdateMessage(convId, assistantMsgId, '\n\nError: ' + evt.message);
-            }
-          }
+            inputTokens: Number(evt.inputTokens ?? 0),
+            outputTokens: Number(evt.outputTokens ?? 0),
+          });
+        } else if (evt.type === 'error' && typeof evt.message === 'string') {
+          onUpdateMessage(convId, assistantMsgId, '\n\nError: ' + evt.message);
         }
-      } catch (err) {
-        if (!controller.signal.aborted) {
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          onUpdateMessage(convId, assistantMsgId, 'Error: ' + message);
-          setIsLoading(false);
-          setCurrentAssistantId(null);
-          controllerRef.current = null;
-          return;
-        }
-      } finally {
-        setIsLoading(false);
-        setCurrentAssistantId(null);
-        setActiveToolCalls([]);
-        controllerRef.current = null;
       }
-    } else {
-      // Legacy path: direct client → provider streaming (supports images + Anthropic).
-      const history: ChatMessage[] = [];
-      for (const m of priorMessages) {
-        const parts = await messageToChatParts(m.content, m.attachments);
-        history.push({ role: m.role, content: parts });
-      }
-      history.push({
-        role: 'user',
-        content: await messageToChatParts(userContent, messageAttachments),
-      });
-
-      try {
-        const { controller, done } = await streamChat(
-          activeProvider, activeModel, apiKey, history,
-          (chunk) => {
-            assistantText += chunk;
-            onUpdateMessage(convId!, assistantMsgId, chunk);
-          },
-          (usage) => onRecordUsage({ conversationId: convId!, provider: activeProvider, model: activeModel, ...usage })
-        );
-        controllerRef.current = controller;
-        await done;
-      } catch (err) {
+    } catch (err) {
+      if (!controller.signal.aborted) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         onUpdateMessage(convId, assistantMsgId, 'Error: ' + message);
-        setIsLoading(false);
-        setCurrentAssistantId(null);
-        controllerRef.current = null;
-        return;
-      } finally {
-        setIsLoading(false);
-        setCurrentAssistantId(null);
-        controllerRef.current = null;
       }
+    } finally {
+      setIsLoading(false);
+      setCurrentAssistantId(null);
+      setActiveToolCalls([]);
+      controllerRef.current = null;
     }
 
-    if (isFirstExchange && assistantText) {
-      generateTitle(activeProvider, activeModel, apiKey, userContent, assistantText)
-        .then((title) => {
-          if (title) onRenameConversation(convId!, title);
-        })
-        .catch(() => {
-          // title generation is best-effort — fall back to the default title silently
-        });
-    }
+    // First-exchange title is set server-side by the conversations router on addMessage.
+    void isFirstExchange;
+    void assistantText;
   };
 
   const handleStop = () => {

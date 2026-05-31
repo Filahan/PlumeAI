@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Task, Provider, TaskSchedule, TranscriptStep, ToolStep, InterviewMessage, TaskRun } from '@/lib/types';
-import {
-  listTasks as listTasksAction,
-  createTask as createTaskAction,
-  updateTask as updateTaskAction,
-  deleteTask as deleteTaskAction,
-} from '@/lib/actions/automations';
+import { automations, parseSSE } from '@/lib/api';
+
+const listTasksAction = automations.list;
+const createTaskAction = automations.create;
+const updateTaskAction = automations.update;
+const deleteTaskAction = automations.delete;
 
 function newId(): string {
   return crypto.randomUUID();
@@ -71,20 +71,7 @@ export function useAutomations() {
       prev.map((t) => (t.id === id ? { ...t, messages: [...t.messages, userMsg], updatedAt: Date.now() } : t))
     );
     try {
-      const res = await fetch('/api/automations/chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ taskId: id, message }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        question?: string;
-        options?: string[];
-        finalized?: boolean;
-        skill?: string;
-        title?: string;
-        error?: string;
-      };
-      if (!res.ok || data.error) throw new Error(data.error || `Chat failed (${res.status})`);
+      const data = await automations.chat(id, message);
       setTasks((prev) =>
         prev.map((t) => {
           if (t.id !== id) return t;
@@ -139,32 +126,10 @@ export function useAutomations() {
       const idToIndex = new Map<string, number>();
 
       try {
-        const res = await fetch('/api/automations/run', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ taskId: id }),
-          signal: controller.signal,
-        });
-        if (!res.ok || !res.body) throw new Error(`Run failed (${res.status})`);
+        const res = await automations.runStream(id, controller.signal);
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            let evt: RunEvent;
-            try {
-              evt = JSON.parse(line.slice(6)) as RunEvent;
-            } catch {
-              continue;
-            }
-            if (evt.type === 'text') {
+        for await (const evt of parseSSE<RunEvent>(res, controller.signal)) {
+          if (evt.type === 'text') {
               assistantBuf += evt.delta;
               patchTask(id, { output: assistantBuf });
             } else if (evt.type === 'tool_call') {
@@ -208,7 +173,6 @@ export function useAutomations() {
               }
               patchTask(id, { status: evt.status, transcript: [...transcript], output: assistantBuf });
             }
-          }
         }
       } catch (e) {
         if (controller.signal.aborted) {

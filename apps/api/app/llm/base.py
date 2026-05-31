@@ -21,13 +21,14 @@ class ChatMessage:
     """Normalized chat message, provider-independent.
 
     - `role` always present.
-    - `content` may be None when this message is a pure tool_call from the assistant.
+    - `content` is either a plain string OR a list of parts (`{type: 'text'|'image', ...}`)
+      for multimodal messages. Provider clients translate to their native wire format.
     - `tool_calls` are present on assistant messages that requested tools.
     - `tool_call_id` is present on `role='tool'` messages (the result of a previous call).
     """
 
     role: Role
-    content: str | None = None
+    content: str | list[dict[str, Any]] | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_call_id: str | None = None
 

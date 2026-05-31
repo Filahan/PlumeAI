@@ -18,17 +18,26 @@ def _split_system(messages: list[ChatMessage]) -> tuple[str | None, list[ChatMes
     rest: list[ChatMessage] = []
     for m in messages:
         if m.role == "system" and system is None:
-            system = m.content or ""
+            system = m.content if isinstance(m.content, str) else ""
         else:
             rest.append(m)
     return system, rest
 
 
+def _part_to_anthropic(p: dict[str, Any]) -> dict[str, Any]:
+    if p.get("type") == "image":
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": p["mime"], "data": p["base64"]},
+        }
+    return {"type": "text", "text": p.get("text", "")}
+
+
 def _msg_to_anthropic(m: ChatMessage) -> dict[str, Any]:
-    return {
-        "role": "user" if m.role == "tool" else m.role,
-        "content": m.content or "",
-    }
+    role = "user" if m.role == "tool" else m.role
+    if isinstance(m.content, list):
+        return {"role": role, "content": [_part_to_anthropic(p) for p in m.content]}
+    return {"role": role, "content": m.content or ""}
 
 
 class AnthropicProvider:
