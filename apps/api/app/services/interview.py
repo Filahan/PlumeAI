@@ -46,6 +46,14 @@ TITLE_SYSTEM = (
     "in the user's language."
 )
 
+CHAT_TITLE_SYSTEM = (
+    "You generate a very short 2-5 word title that summarizes the topic of a chat "
+    "conversation, based on the user's first message. Reply with ONLY the title text — "
+    "no quotes, no punctuation, no prefix, no explanation. Match the language of the "
+    "user's message; if it is short or ambiguous, default to English. Do not invent a "
+    "topic that is not in the message."
+)
+
 
 @dataclass
 class InterviewAsk:
@@ -186,10 +194,14 @@ async def interview(
     raise ProviderError("Interviewer response did not match the expected shape.")
 
 
-async def generate_task_title(
-    session: AsyncSession, provider: str, model: str, user_intent: str
+async def _generate_title(
+    session: AsyncSession,
+    provider: str,
+    model: str,
+    system_prompt: str,
+    user_intent: str,
 ) -> str:
-    """Best-effort 3-5 word title from the user's first message. Returns '' on failure."""
+    """Best-effort short title via chat-completions. Returns '' on any failure."""
     if provider == "anthropic":
         return ""
     try:
@@ -207,7 +219,7 @@ async def generate_task_title(
             model=model,
             max_tokens=40,
             messages=[
-                {"role": "system", "content": TITLE_SYSTEM},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_intent},
             ],
         )
@@ -215,3 +227,17 @@ async def generate_task_title(
         return raw.strip().strip("\"'`.!?,").strip()[:80]
     except Exception:  # noqa: BLE001
         return ""
+
+
+async def generate_task_title(
+    session: AsyncSession, provider: str, model: str, user_intent: str
+) -> str:
+    """Best-effort 3-5 word title for an automation task. Returns '' on failure."""
+    return await _generate_title(session, provider, model, TITLE_SYSTEM, user_intent)
+
+
+async def generate_chat_title(
+    session: AsyncSession, provider: str, model: str, user_message: str
+) -> str:
+    """Best-effort 2-5 word title for a chat conversation. Returns '' on failure."""
+    return await _generate_title(session, provider, model, CHAT_TITLE_SYSTEM, user_message)

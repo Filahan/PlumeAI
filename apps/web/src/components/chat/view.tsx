@@ -326,6 +326,8 @@ export default function ChatView({
           });
         } else if (evt.type === 'error' && typeof evt.message === 'string') {
           onUpdateMessage(convId, assistantMsgId, '\n\nError: ' + evt.message);
+        } else if (evt.type === 'title' && typeof evt.title === 'string') {
+          onRenameConversation(convId, evt.title);
         }
       }
     } catch (err) {
