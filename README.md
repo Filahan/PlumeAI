@@ -1,6 +1,3 @@
-<!-- TODO: add docs/banner.png once provided -->
-<!-- <p align="center"><img src="docs/banner.png" alt="PlumeAI" /></p> -->
-
 <p align="center">
   <img src="apps/web/public/logo.png" alt="PlumeAI" width="64" />
 </p>
@@ -9,6 +6,10 @@
 
 <p align="center">
   Your private, self-hosted AI assistant. Chat with any LLM, automate tasks, connect to your services — all in one place.
+</p>
+
+<p align="center">
+  <img src="docs/chat.jpg" alt="PlumeAI chat" />
 </p>
 
 <p align="center">
@@ -43,6 +44,14 @@ For production, copy `.env.example` → `.env` and rotate `AUTH_SECRET`, `ENCRYP
 - 📊 **Usage analytics** — Per-model token spend across 30m / 1h / 6h / 24h windows
 - 🔒 **Private by design** — BYOK, no telemetry, no vendor lock-in, your conversations never leave your server
 
+## Automations
+
+Tell PlumeAI what you want. It asks the right follow-up questions, compiles your intent into a reusable skill, and runs it on demand or on a schedule.
+
+<p align="center">
+  <img src="docs/automations.jpg" alt="PlumeAI automations" />
+</p>
+
 ## Stack
 
 Next.js 16 · React 19 · Tailwind v4 · FastAPI 0.115 (Python 3.12) · SQLAlchemy 2.0 + Alembic · PostgreSQL 16 · nginx · Docker Compose
@@ -50,6 +59,3 @@ Next.js 16 · React 19 · Tailwind v4 · FastAPI 0.115 (Python 3.12) · SQLAlche
 ## License
 
 PlumeAI is licensed under the **[Elastic License 2.0 (ELv2)](LICENSE)** — a source-available license.
-
-- ✅ Self-host for personal, internal, or non-competing commercial use; read, fork, modify, redistribute.
-- ❌ Provide PlumeAI as a hosted/managed service to third parties.
