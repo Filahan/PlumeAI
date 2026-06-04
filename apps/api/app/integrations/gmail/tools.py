@@ -1,15 +1,14 @@
-"""Gmail tool functions exposed to the agent — search/get/send/modify/mark_read/trash."""
+"""Gmail tool functions: search/get/send/modify/mark_read/trash."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any
-from urllib.parse import urlencode
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.integrations.gmail.client import gmail_fetch
-from app.integrations.gmail.oauth import load_creds
+from app.integrations.google.base import GoogleOAuthIntegration
 from app.tools.base import ToolResult, cap
 
 # ─── OpenAI function-calling schemas ──────────────────────────────────────────────────
@@ -121,8 +120,6 @@ GMAIL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-GMAIL_FUNCTION_NAMES = {s["function"]["name"] for s in GMAIL_SCHEMAS}
-
 
 # ─── helpers ──────────────────────────────────────────────────────────────────────────
 
@@ -160,7 +157,6 @@ def _extract_body(part: dict[str, Any] | None) -> str:
         if out:
             return out
     if mime == "text/html" and data:
-        # Crude fallback: strip tags from the html body.
         import re
 
         raw = _b64url_decode(data).decode("utf-8", errors="replace")
@@ -184,18 +180,21 @@ def _rfc5322(to: str, subject: str, body: str, cc: str | None, bcc: str | None) 
     return "\r\n".join(lines)
 
 
-# ─── tool implementations ────────────────────────────────────────────────────────────
+# ─── tool implementations (free functions, take the integration as `self`) ──────────
 
 
-async def _gmail_search(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _gmail_search(
+    self: "GmailIntegration", args: dict[str, Any], session: AsyncSession
+) -> ToolResult:
     query = args.get("query")
     if not isinstance(query, str) or not query:
         return ToolResult(ok=False, content='gmail_search requires "query".')
     raw_max = args.get("max_results", 25)
     max_results = max(1, min(int(raw_max) if isinstance(raw_max, (int, float)) else 25, 100))
 
-    q = urlencode({"maxResults": max_results, "q": query})
-    r = await gmail_fetch(session, f"/users/me/messages?{q}")
+    r = await self.authed_fetch(
+        session, "/users/me/messages", params={"maxResults": max_results, "q": query}
+    )
     if not r.is_success:
         return ToolResult(ok=False, content=f"gmail_search HTTP {r.status_code}: {cap(r.text)}")
     data = r.json()
@@ -203,14 +202,15 @@ async def _gmail_search(args: dict[str, Any], session: AsyncSession) -> ToolResu
     if not messages:
         return ToolResult(ok=True, content="No messages matched.")
 
-    import asyncio
-
     async def _meta(mid: str) -> dict[str, str]:
-        path = (
-            f"/users/me/messages/{mid}?format=metadata"
-            "&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date"
+        rr = await self.authed_fetch(
+            session,
+            f"/users/me/messages/{mid}",
+            params={
+                "format": "metadata",
+                "metadataHeaders": ["Subject", "From", "Date"],
+            },
         )
-        rr = await gmail_fetch(session, path)
         if not rr.is_success:
             return {"id": mid, "error": f"HTTP {rr.status_code}"}
         body = rr.json()
@@ -238,11 +238,13 @@ async def _gmail_search(args: dict[str, Any], session: AsyncSession) -> ToolResu
     return ToolResult(ok=True, content=cap("\n\n".join(lines)))
 
 
-async def _gmail_get(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _gmail_get(
+    self: "GmailIntegration", args: dict[str, Any], session: AsyncSession
+) -> ToolResult:
     mid = args.get("id")
     if not isinstance(mid, str):
         return ToolResult(ok=False, content='gmail_get requires "id".')
-    r = await gmail_fetch(session, f"/users/me/messages/{mid}?format=full")
+    r = await self.authed_fetch(session, f"/users/me/messages/{mid}", params={"format": "full"})
     if not r.is_success:
         return ToolResult(ok=False, content=f"gmail_get HTTP {r.status_code}: {cap(r.text)}")
     j = r.json()
@@ -263,20 +265,24 @@ async def _gmail_get(args: dict[str, Any], session: AsyncSession) -> ToolResult:
     return ToolResult(ok=True, content=cap(text))
 
 
-async def _gmail_send(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _gmail_send(
+    self: "GmailIntegration", args: dict[str, Any], session: AsyncSession
+) -> ToolResult:
     to = args.get("to")
     subject = args.get("subject")
     body = args.get("body")
     if not (isinstance(to, str) and isinstance(subject, str) and isinstance(body, str)):
         return ToolResult(ok=False, content='gmail_send requires "to", "subject", "body".')
     raw = _b64url_encode(_rfc5322(to, subject, body, args.get("cc"), args.get("bcc")).encode("utf-8"))
-    r = await gmail_fetch(session, "/users/me/messages/send", "POST", {"raw": raw})
+    r = await self.authed_fetch(session, "/users/me/messages/send", "POST", {"raw": raw})
     if not r.is_success:
         return ToolResult(ok=False, content=f"gmail_send HTTP {r.status_code}: {cap(r.text)}")
     return ToolResult(ok=True, content=f"Sent. id={r.json().get('id')}")
 
 
-async def _gmail_modify(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _gmail_modify(
+    self: "GmailIntegration", args: dict[str, Any], session: AsyncSession
+) -> ToolResult:
     mid = args.get("id")
     if not isinstance(mid, str):
         return ToolResult(ok=False, content='gmail_modify requires "id".')
@@ -285,7 +291,7 @@ async def _gmail_modify(args: dict[str, Any], session: AsyncSession) -> ToolResu
     if not add and not rem:
         return ToolResult(ok=False, content="gmail_modify requires add_labels or remove_labels.")
     payload = {"addLabelIds": add, "removeLabelIds": rem}
-    r = await gmail_fetch(session, f"/users/me/messages/{mid}/modify", "POST", payload)
+    r = await self.authed_fetch(session, f"/users/me/messages/{mid}/modify", "POST", payload)
     if not r.is_success:
         return ToolResult(ok=False, content=f"gmail_modify HTTP {r.status_code}: {cap(r.text)}")
     return ToolResult(
@@ -294,12 +300,15 @@ async def _gmail_modify(args: dict[str, Any], session: AsyncSession) -> ToolResu
     )
 
 
-async def _gmail_mark_read(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _gmail_mark_read(
+    self: "GmailIntegration", args: dict[str, Any], session: AsyncSession
+) -> ToolResult:
     mid = args.get("id")
     read = args.get("read")
     if not isinstance(mid, str) or not isinstance(read, bool):
         return ToolResult(ok=False, content='gmail_mark_read requires "id" and boolean "read".')
     return await _gmail_modify(
+        self,
         {
             "id": mid,
             "add_labels": [] if read else ["UNREAD"],
@@ -309,49 +318,48 @@ async def _gmail_mark_read(args: dict[str, Any], session: AsyncSession) -> ToolR
     )
 
 
-async def _gmail_trash(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _gmail_trash(
+    self: "GmailIntegration", args: dict[str, Any], session: AsyncSession
+) -> ToolResult:
     mid = args.get("id")
     if not isinstance(mid, str):
         return ToolResult(ok=False, content='gmail_trash requires "id".')
-    r = await gmail_fetch(session, f"/users/me/messages/{mid}/trash", "POST")
+    r = await self.authed_fetch(session, f"/users/me/messages/{mid}/trash", "POST")
     if not r.is_success:
         return ToolResult(ok=False, content=f"gmail_trash HTTP {r.status_code}: {cap(r.text)}")
     return ToolResult(ok=True, content=f"Trashed {mid}.")
 
 
-_DISPATCH = {
-    "gmail_search": _gmail_search,
-    "gmail_get": _gmail_get,
-    "gmail_send": _gmail_send,
-    "gmail_modify": _gmail_modify,
-    "gmail_mark_read": _gmail_mark_read,
-    "gmail_trash": _gmail_trash,
-}
-
-
 # ─── Integration object ──────────────────────────────────────────────────────────────
 
 
-class GmailIntegration:
+class GmailIntegration(GoogleOAuthIntegration):
     name = "gmail"
     label = "Gmail"
     description = "Read, send, label, and trash Gmail messages."
     setup_url = "/api/tools/gmail/oauth/start"
     schemas = GMAIL_SCHEMAS
 
-    async def is_configured(self, session: AsyncSession) -> bool:
-        return (await load_creds(session)) is not None
+    tool_key = "gmail"
+    scopes = " ".join(
+        [
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.labels",
+        ]
+    )
+    api_base_url = "https://gmail.googleapis.com/gmail/v1"
 
-    async def execute(
-        self, function_name: str, args: dict[str, Any], session: AsyncSession
-    ) -> ToolResult:
-        fn = _DISPATCH.get(function_name)
-        if fn is None:
-            return ToolResult(ok=False, content=f"Unknown gmail function: {function_name}")
-        try:
-            return await fn(args, session)
-        except Exception as exc:  # noqa: BLE001
-            return ToolResult(ok=False, content=f"Error: {exc}")
+    @property
+    def _dispatch(self):
+        return {
+            "gmail_search": _gmail_search,
+            "gmail_get": _gmail_get,
+            "gmail_send": _gmail_send,
+            "gmail_modify": _gmail_modify,
+            "gmail_mark_read": _gmail_mark_read,
+            "gmail_trash": _gmail_trash,
+        }
 
 
 gmail_integration = GmailIntegration()

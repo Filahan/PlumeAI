@@ -39,10 +39,14 @@ class SettingsPayload(APISchema):
     providers: list[ProviderConfig] = Field(default_factory=list)
     default_model: DefaultModel
     tools: dict[str, ToolConnection] = Field(default_factory=dict)
+    # Per-provider credential status (e.g. {"google": True, "discord": False}).
+    # Only booleans — secrets never reach the client.
+    tool_credentials: dict[str, bool] = Field(default_factory=dict)
 
 
 DEFAULT_SETTINGS = SettingsPayload(
     providers=[],
     default_model=DefaultModel(provider="openai", model="gpt-4o"),
     tools={},
+    tool_credentials={},
 )

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -14,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.errors import ProviderError
 from app.integrations.registry import INTEGRATIONS, list_configured_integrations
 from app.llm.base import ChatMessage
-from app.llm.factory import get_provider_for
 
 BASE_PROMPT = """You are an automation designer. Interview the user about their intended automation so you can produce a precise, complete prompt for an autonomous agent that will then execute it.
 

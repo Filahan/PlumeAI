@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS: Settings = {
   providers: [],
   defaultModel: { provider: 'openai', model: 'gpt-4o' },
   tools: {},
+  toolCredentials: {},
 };
 
 export function useSettings() {

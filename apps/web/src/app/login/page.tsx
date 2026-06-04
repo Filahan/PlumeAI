@@ -1,7 +1,6 @@
 'use client';
 
-import * as React from 'react';
-import { useState } from 'react';
+import { type SyntheticEvent, useState } from 'react';
 import { AlertCircle, ArrowRight, Eye, EyeOff, Loader2 } from 'lucide-react';
 
 export default function LoginPage() {
@@ -10,7 +9,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
-  const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!password) return;
     setError(null);

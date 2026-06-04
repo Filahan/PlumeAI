@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Conversation, Message, Provider } from '@/lib/types';
 import { conversations as convsApi } from '@/lib/api';
 import { deleteBlobs } from '@/lib/blob-store';
@@ -12,6 +12,22 @@ function newId(): string {
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loaded, setLoaded] = useState(false);
+
+  // Serializes per-conversation DB writes so /messages can't race ahead of /conversations
+  // (was causing FK violations and silently-lost user messages on refresh).
+  const convPendingRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  const enqueue = useCallback(
+    (convId: string, op: () => Promise<unknown>): Promise<unknown> => {
+      const prev = convPendingRef.current.get(convId) ?? Promise.resolve();
+      // Run `op` whether `prev` resolved or rejected — a failed create shouldn't block
+      // subsequent message POSTs from being attempted (they'll fail too, but cleanly).
+      const next = prev.then(op, op);
+      convPendingRef.current.set(convId, next);
+      next.catch(() => {}); // avoid unhandled-rejection warnings on the tail
+      return next;
+    },
+    []
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -29,24 +45,27 @@ export function useConversations() {
     };
   }, []);
 
-  const createConversation = useCallback((provider: Provider, model: string) => {
-    const id = newId();
-    const now = Date.now();
-    const conv: Conversation = {
-      id,
-      title: 'Nouvelle conversation',
-      messages: [],
-      createdAt: now,
-      updatedAt: now,
-      provider,
-      model,
-    };
-    setConversations((prev) => [conv, ...prev]);
-    convsApi.create(id, provider, model).catch(() => {
-      setConversations((prev) => prev.filter((c) => c.id !== id));
-    });
-    return id;
-  }, []);
+  const createConversation = useCallback(
+    (provider: Provider, model: string) => {
+      const id = newId();
+      const now = Date.now();
+      const conv: Conversation = {
+        id,
+        title: 'Nouvelle conversation',
+        messages: [],
+        createdAt: now,
+        updatedAt: now,
+        provider,
+        model,
+      };
+      setConversations((prev) => [conv, ...prev]);
+      enqueue(id, () => convsApi.create(id, provider, model)).catch(() => {
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+      });
+      return id;
+    },
+    [enqueue]
+  );
 
   const addMessage = useCallback(
     (conversationId: string, message: Omit<Message, 'id' | 'timestamp'>) => {
@@ -67,10 +86,12 @@ export function useConversations() {
           };
         })
       );
-      convsApi.addMessage(conversationId, { ...message, id }).catch(() => {});
+      enqueue(conversationId, () =>
+        convsApi.addMessage(conversationId, { ...message, id })
+      );
       return id;
     },
-    []
+    [enqueue]
   );
 
   const updateMessage = useCallback(
@@ -87,9 +108,17 @@ export function useConversations() {
           };
         })
       );
-      convsApi.updateMessage(conversationId, messageId, chunk, replace).catch(() => {});
+      // Only persist on `replace=true` (full final content). Per-chunk PATCHes raced
+      // with the assistant-message POST and corrupted the saved content (chunks 1..N
+      // returned 404 because the message wasn't committed yet, leaving only the tail
+      // in DB). The chat view sends one final replace=true update after streaming ends.
+      if (replace) {
+        enqueue(conversationId, () =>
+          convsApi.updateMessage(conversationId, messageId, chunk, true)
+        );
+      }
     },
-    []
+    [enqueue]
   );
 
   const deleteConversation = useCallback((id: string) => {

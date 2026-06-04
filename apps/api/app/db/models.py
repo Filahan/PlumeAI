@@ -59,7 +59,13 @@ class Settings(Base):
         JSONB, nullable=False, server_default="[]"
     )
     default_model: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Per-user OAuth tokens, keyed by integration name (e.g. "gmail" → {ciphertext, iv}).
     tools: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default="{}"
+    )
+    # App-level credentials, keyed by provider namespace (e.g. "google" → {ciphertext, iv}
+    # → decrypts to {"client_id": ..., "client_secret": ...}). Set via the Tools UI.
+    tool_credentials: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
 
@@ -68,7 +74,6 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    owner_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     messages: Mapped[list[dict]] = mapped_column(

@@ -30,6 +30,7 @@ async def _get_or_create_row(session: AsyncSession) -> SettingsRow:
             providers=[],
             default_model=DEFAULT_SETTINGS.default_model.model_dump(by_alias=True),
             tools={},
+            tool_credentials={},
         )
         session.add(row)
         await session.flush()
@@ -67,10 +68,16 @@ async def get_settings_for_client(session: AsyncSession) -> SettingsPayload:
             connected=bool(blob.get("ciphertext") and blob.get("iv"))
         )
 
+    tool_credentials = {
+        name: bool(blob and blob.get("ciphertext") and blob.get("iv"))
+        for name, blob in (row.tool_credentials or {}).items()
+    }
+
     return SettingsPayload(
         providers=providers,
         default_model=DefaultModel.model_validate(row.default_model),
         tools=tools,
+        tool_credentials=tool_credentials,
     )
 
 

@@ -47,6 +47,8 @@ export interface Settings {
   defaultModel: { provider: Provider; model: string };
   /** Per-tool connection status (e.g. `tools.gmail.connected`). Tokens are NEVER exposed here. */
   tools: Record<string, ToolConnection>;
+  /** App-level credential status per provider namespace (e.g. `toolCredentials.google = true`). */
+  toolCredentials: Record<string, boolean>;
 }
 
 export function findApiKey(settings: Settings, provider: Provider): string {

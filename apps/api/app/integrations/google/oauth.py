@@ -1,45 +1,35 @@
-"""Google OAuth handshake + token storage for Gmail.
+"""Generic Google OAuth: handshake + encrypted token storage, parameterised by tool key.
 
-Tokens (access + refresh + expiry) are encrypted as a single JSON blob and stored in
-`settings.tools.gmail = {ciphertext, iv}` — the same shape the legacy Node code used,
-so existing connections continue to work.
+Client credentials (OAuth client_id + client_secret) are read from the DB-backed
+`tool_credentials["google"]` slot (set via the Tools UI). No env vars involved.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.crypto import decrypt, encrypt
 from app.db.models import Settings as SettingsRow
 from app.errors import ProviderError, ToolNotConfigured
+from app.services.tool_credentials import get_credentials
 
-log = structlog.get_logger("app.integrations.gmail.oauth")
+log = structlog.get_logger("app.integrations.google.oauth")
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-TOOL_KEY = "gmail"
-
-# "modify" subsumes read + label + trash + mark-read; we add send + labels for clarity.
-GMAIL_SCOPES = " ".join(
-    [
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/gmail.send",
-        "https://www.googleapis.com/auth/gmail.labels",
-    ]
-)
 
 
 @dataclass
-class GmailCreds:
+class GoogleCreds:
     access_token: str
     refresh_token: str
     expires_at: int  # unix ms — 60s safety margin baked in
@@ -59,9 +49,9 @@ class GmailCreds:
         )
 
     @staticmethod
-    def from_blob(raw: str) -> "GmailCreds":
+    def from_blob(raw: str) -> "GoogleCreds":
         d = json.loads(raw)
-        return GmailCreds(
+        return GoogleCreds(
             access_token=d["accessToken"],
             refresh_token=d["refreshToken"],
             expires_at=int(d["expiresAt"]),
@@ -70,25 +60,32 @@ class GmailCreds:
         )
 
 
-def _require_env() -> tuple[str, str]:
-    settings = get_settings()
-    if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
+async def _require_app_credentials(session: AsyncSession) -> tuple[str, str]:
+    """Fetch the Google OAuth client_id + client_secret from DB. Raises if missing."""
+    creds = await get_credentials(session, "google")
+    if not creds:
         raise ToolNotConfigured(
-            "GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must be set in the API "
-            "environment to enable Gmail."
+            "Google credentials are not configured. Open any Google tool's card in "
+            "Settings → Tools and save your OAuth client ID and secret."
         )
-    return settings.google_oauth_client_id, settings.google_oauth_client_secret
+    client_id = creds.get("client_id")
+    client_secret = creds.get("client_secret")
+    if not client_id or not client_secret:
+        raise ToolNotConfigured(
+            "Google credentials are incomplete (client_id or client_secret missing)."
+        )
+    return client_id, client_secret
 
 
-def build_auth_url(state: str, redirect_uri: str) -> str:
-    client_id, _ = _require_env()
-    from urllib.parse import urlencode
-
+async def build_auth_url(
+    session: AsyncSession, scopes: str, state: str, redirect_uri: str
+) -> str:
+    client_id, _ = await _require_app_credentials(session)
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": GMAIL_SCOPES,
+        "scope": scopes,
         "access_type": "offline",
         "prompt": "consent",  # force refresh_token issuance
         "include_granted_scopes": "true",
@@ -111,8 +108,10 @@ async def _post_token(form: dict[str, str]) -> dict[str, Any]:
     return body
 
 
-async def exchange_code(code: str, redirect_uri: str) -> GmailCreds:
-    client_id, client_secret = _require_env()
+async def exchange_code(
+    session: AsyncSession, code: str, redirect_uri: str
+) -> GoogleCreds:
+    client_id, client_secret = await _require_app_credentials(session)
     body = await _post_token(
         {
             "code": code,
@@ -127,7 +126,7 @@ async def exchange_code(code: str, redirect_uri: str) -> GmailCreds:
             "Google did not return a refresh_token. Revoke the app in your Google account "
             "and retry — 'prompt=consent' should force it."
         )
-    return GmailCreds(
+    return GoogleCreds(
         access_token=body["access_token"],
         refresh_token=body["refresh_token"],
         expires_at=int(time.time() * 1000) + (int(body["expires_in"]) - 60) * 1000,
@@ -136,8 +135,8 @@ async def exchange_code(code: str, redirect_uri: str) -> GmailCreds:
     )
 
 
-async def _refresh(refresh_token: str) -> dict[str, Any]:
-    client_id, client_secret = _require_env()
+async def _refresh(session: AsyncSession, refresh_token: str) -> dict[str, Any]:
+    client_id, client_secret = await _require_app_credentials(session)
     return await _post_token(
         {
             "client_id": client_id,
@@ -154,52 +153,51 @@ async def _get_row(session: AsyncSession) -> SettingsRow | None:
     ).scalar_one_or_none()
 
 
-async def load_creds(session: AsyncSession) -> GmailCreds | None:
+async def load_creds(session: AsyncSession, tool_key: str) -> GoogleCreds | None:
     row = await _get_row(session)
     if row is None:
         return None
-    blob = (row.tools or {}).get(TOOL_KEY)
+    blob = (row.tools or {}).get(tool_key)
     if not blob or not blob.get("ciphertext") or not blob.get("iv"):
         return None
     try:
-        return GmailCreds.from_blob(decrypt(blob["iv"], blob["ciphertext"]))
+        return GoogleCreds.from_blob(decrypt(blob["iv"], blob["ciphertext"]))
     except Exception:  # noqa: BLE001
-        log.warning("gmail_creds_decrypt_failed", exc_info=True)
+        log.warning("google_creds_decrypt_failed", tool_key=tool_key, exc_info=True)
         return None
 
 
-async def save_creds(session: AsyncSession, creds: GmailCreds) -> None:
+async def save_creds(session: AsyncSession, tool_key: str, creds: GoogleCreds) -> None:
     row = await _get_row(session)
     if row is None:
-        # Shouldn't happen — settings is created in get_or_create on first access.
         return
     enc = encrypt(creds.to_blob())
     tools = dict(row.tools or {})
-    tools[TOOL_KEY] = {"ciphertext": enc["ct"], "iv": enc["iv"]}
+    tools[tool_key] = {"ciphertext": enc["ct"], "iv": enc["iv"]}
     row.tools = tools
 
 
-async def clear_creds(session: AsyncSession) -> None:
+async def clear_creds(session: AsyncSession, tool_key: str) -> None:
     row = await _get_row(session)
     if row is None:
         return
     tools = dict(row.tools or {})
-    tools.pop(TOOL_KEY, None)
+    tools.pop(tool_key, None)
     row.tools = tools
 
 
-async def get_valid_access_token(session: AsyncSession) -> str:
+async def get_valid_access_token(session: AsyncSession, tool_key: str) -> str:
     """Returns a fresh access_token, refreshing + persisting if expired."""
-    creds = await load_creds(session)
+    creds = await load_creds(session, tool_key)
     if creds is None:
-        raise ToolNotConfigured("Gmail is not connected.")
+        raise ToolNotConfigured(f"{tool_key} is not connected.")
 
     if int(time.time() * 1000) < creds.expires_at:
         return creds.access_token
 
-    refreshed = await _refresh(creds.refresh_token)
+    refreshed = await _refresh(session, creds.refresh_token)
     creds.access_token = refreshed["access_token"]
     creds.expires_at = int(time.time() * 1000) + (int(refreshed["expires_in"]) - 60) * 1000
     creds.token_type = refreshed.get("token_type", creds.token_type)
-    await save_creds(session, creds)
+    await save_creds(session, tool_key, creds)
     return creds.access_token

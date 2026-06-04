@@ -15,10 +15,7 @@ docker-compose.dev.yml
 .idea
 .claude
 README.md
-AGENTS.md
-CLAUDE.md
 LICENSE
 tsconfig.tsbuildinfo
-docs
 coverage
 .next/cache

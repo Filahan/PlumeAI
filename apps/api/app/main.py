@@ -10,8 +10,10 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import APIRouter, FastAPI
+from sqlalchemy import text
 
 from app.config import get_settings
+from app.db.base import get_engine
 from app.errors import register_handlers
 from app.logging import configure_logging, get_logger
 from app.middleware import RequestLoggingMiddleware
@@ -24,6 +26,22 @@ from app.routers import tools as tools_router
 from app.routers import usage as usage_router
 
 
+async def _apply_runtime_migrations() -> None:
+    """Idempotent ALTER TABLE statements applied on startup.
+
+    Cheaper than running Alembic from the container entrypoint and keeps schema
+    drift in sync for self-hosted users who don't run migrations manually.
+    """
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "ALTER TABLE settings ADD COLUMN IF NOT EXISTS "
+                "tool_credentials JSONB NOT NULL DEFAULT '{}'::jsonb"
+            )
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifespan handler — runs startup before the first request and cleanup on shutdown."""
@@ -31,6 +49,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(level=settings.log_level)
     log = get_logger("app.lifespan")
     log.info("startup", env=settings.app_env)
+    try:
+        await _apply_runtime_migrations()
+    except Exception:  # noqa: BLE001
+        log.warning("runtime_migrations_failed", exc_info=True)
     try:
         yield
     finally:

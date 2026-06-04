@@ -25,10 +25,6 @@ class Settings(BaseSettings):
     # Crypto
     encryption_key_b64: str = Field(..., alias="ENCRYPTION_KEY")
 
-    # OAuth Google (optional — Gmail integration)
-    google_oauth_client_id: str | None = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_ID")
-    google_oauth_client_secret: str | None = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_SECRET")
-
     # Public frontend URL. OAuth callback URIs are anchored on this so the user always
     # comes back through the nginx proxy (which sets the session cookie), regardless of
     # how `gmail_oauth_start` was reached internally.

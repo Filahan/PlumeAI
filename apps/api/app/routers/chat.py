@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from typing import Annotated
 
 import structlog
@@ -33,10 +34,12 @@ log = structlog.get_logger("app.chat")
 
 DBSession = Annotated[AsyncSession, Depends(get_session)]
 
-CHAT_SYSTEM_PROMPT = (
-    "You are a helpful assistant. Reply concisely; the user sees Markdown so use it when "
-    "useful (lists, code fences, links)."
-)
+def _chat_system_prompt() -> str:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return (
+        "You are a helpful assistant. Reply concisely; the user sees Markdown so use it "
+        f"when useful. Today is {today}."
+    )
 
 
 def _sse(event: dict) -> dict:
@@ -88,7 +91,7 @@ async def chat_stream(
         return c
 
     messages: list[ChatMessage] = [
-        ChatMessage(role="system", content=CHAT_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=_chat_system_prompt()),
         *[ChatMessage(role=t.role, content=_content(t.content)) for t in body.history],
         ChatMessage(role="user", content=_content(body.new_message)),
     ]

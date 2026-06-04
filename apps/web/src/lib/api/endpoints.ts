@@ -27,6 +27,16 @@ export const settings = {
   update: (next: Settings) => api.put<Settings>('/settings', next),
   disconnectTool: (name: string) =>
     api.post(`/tools/${encodeURIComponent(name)}/disconnect`),
+  saveToolCredentials: (namespace: string, fields: Record<string, string>) =>
+    api.put(`/tools/credentials/${encodeURIComponent(namespace)}`, fields),
+  clearToolCredentials: (namespace: string) =>
+    api.delete(`/tools/credentials/${encodeURIComponent(namespace)}`),
+  discordMeta: () =>
+    api.get<{
+      bot_name: string | null;
+      application_id: string | null;
+      invite_url: string | null;
+    }>('/tools/discord/meta'),
 };
 
 // ─── Conversations ──────────────────────────────────────────────────────────────────

@@ -340,11 +340,16 @@ export default function ChatView({
       setCurrentAssistantId(null);
       setActiveToolCalls([]);
       controllerRef.current = null;
+      // One single PATCH with the full assembled content (replace=true). Per-chunk
+      // persistence was racing with the assistant-message POST; this final replace
+      // guarantees the saved content matches what the user saw.
+      if (assistantText) {
+        onUpdateMessage(convId, assistantMsgId, assistantText, true);
+      }
     }
 
     // First-exchange title is set server-side by the conversations router on addMessage.
     void isFirstExchange;
-    void assistantText;
   };
 
   const handleStop = () => {
@@ -536,7 +541,7 @@ export default function ChatView({
               if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
               if (e.key === 'Escape') { setTitleDraft(null); (e.target as HTMLInputElement).blur(); }
             }}
-            className="text-[15px] font-medium bg-transparent outline-none focus:bg-[color:var(--surface-muted)] rounded px-2 py-0.5 -ml-2 max-w-full"
+            className="text-[15px] font-medium bg-transparent outline-none focus:bg-[color:var(--surface-muted)] rounded px-2 py-0.5 -ml-2 flex-1 min-w-0"
             aria-label="Conversation title"
           />
         </header>

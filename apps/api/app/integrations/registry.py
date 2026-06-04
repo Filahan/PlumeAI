@@ -5,10 +5,18 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.base import Integration
+from app.integrations.calendar import calendar_integration
+from app.integrations.discord import discord_integration
+from app.integrations.drive import drive_integration
 from app.integrations.gmail import gmail_integration
 
-# Add new integrations here. Each must implement the `Integration` protocol.
-INTEGRATIONS: list[Integration] = [gmail_integration]
+# Add new integrations here. Each must extend the `Integration` ABC.
+INTEGRATIONS: list[Integration] = [
+    gmail_integration,
+    drive_integration,
+    calendar_integration,
+    discord_integration,
+]
 
 
 def find_integration_for_function(function_name: str) -> Integration | None:
