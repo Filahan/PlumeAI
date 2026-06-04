@@ -1,8 +1,5 @@
-"""FastAPI application entrypoint.
-
-Phase 0 ship: healthcheck + structured logging + Problem Details error handlers. Other
-routers (auth, settings, chat, automations, tools, usage) are registered in later phases.
-"""
+"""FastAPI application entrypoint — registers all routers, healthcheck, and the lifespan
+that applies idempotent runtime migrations on startup."""
 
 from __future__ import annotations
 

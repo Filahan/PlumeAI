@@ -22,16 +22,11 @@ from app.schemas.conversations import (
     UpdateConversationRequest,
     UpdateMessageRequest,
 )
+from app.utils import to_ms as _ms
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 DBSession = Annotated[AsyncSession, Depends(get_session)]
-
-
-def _ms(dt: datetime) -> int:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
 
 
 async def _get_conv(session: AsyncSession, conv_id: str) -> Conversation:

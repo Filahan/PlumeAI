@@ -58,28 +58,28 @@ Compose ships with dev-safe secrets baked in. To expose to the internet, copy `.
 
 Direct access to FastAPI for debug: `http://localhost:8000/health`. Same paths as via proxy, just without the `/api/` prefix.
 
-## Gmail OAuth setup
+## Tools setup
 
-Required only if you want the `@gmail` integration enabled.
+Credentials are entered through the UI — open `/tools`, click a card, and paste the
+required keys into the **Credentials** section of its modal. They are AES-GCM encrypted
+at rest in the `settings.tool_credentials` table. No `.env` editing required.
 
-1. Open https://console.cloud.google.com/apis/credentials and create an **OAuth 2.0 Client ID** of type **Web application**.
-2. Under **Authorized redirect URIs**, add **exactly**:
-   ```
-   ${FRONTEND_URL}/api/tools/gmail/oauth/callback
-   ```
-   In dev: `http://localhost:3000/api/tools/gmail/oauth/callback`. In prod use your domain (e.g. `https://plumeai.example.com/api/tools/gmail/oauth/callback`). The URI **must match the value FastAPI sends** — visible in the logs:
-   ```bash
-   docker compose logs api | grep gmail_oauth_start
-   # {"redirect_uri": "http://localhost:3000/api/tools/gmail/oauth/callback", ...}
-   ```
-3. Copy the **Client ID** and **Client secret** into your `.env`:
-   ```
-   GOOGLE_OAUTH_CLIENT_ID=…apps.googleusercontent.com
-   GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-…
-   ```
-4. `docker compose restart api`, then click **Connect** on the `/tools` page.
+**Google integrations (Gmail, Drive, Calendar)** share one OAuth client:
 
-If Google returns `Erreur 400 : redirect_uri_mismatch`, the URI in step 2 doesn't match what the API logs — paste the logged value verbatim.
+1. https://console.cloud.google.com/apis/credentials → **OAuth 2.0 Client ID** of type **Web application**.
+2. Under **Authorized redirect URIs**, add (once for all Google tools):
+   ```
+   ${FRONTEND_URL}/api/tools/google/oauth/callback
+   ```
+   In dev: `http://localhost:3000/api/tools/google/oauth/callback`.
+3. On `/tools`, click any Google card → Credentials section → paste Client ID + Secret → **Save & Connect**.
+   Gmail, Drive, and Calendar all reuse the same credentials.
+
+**Discord**: create a bot in the Developer Portal, paste its token in the Discord card's
+Credentials section, then click **Invite to a Discord server** in the same modal.
+
+If Google returns `redirect_uri_mismatch`, the URI in step 2 doesn't match the one the
+API sends — the modal shows the exact value to register.
 
 ## Tools available to the agent
 
@@ -147,8 +147,6 @@ The current schema (`conversations`, `messages`, `settings`, `tasks`, `usage_ent
 | `ENCRYPTION_KEY` | yes | base64 of exactly 32 bytes — AES-GCM master key |
 | `ADMIN_PASSWORD_HASH` | yes | `sha256(password)` hex |
 | `FRONTEND_URL` | optional | default `http://localhost:3000`; anchors OAuth callback URIs |
-| `GOOGLE_OAUTH_CLIENT_ID` | optional | needed only for the Gmail integration |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | optional | … same |
 | `LOG_LEVEL` | optional | default `INFO` |
 | `APP_ENV` | optional | `dev` or `prod`; affects cookie `Secure` flag |
 

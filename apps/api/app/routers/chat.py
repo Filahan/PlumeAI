@@ -1,7 +1,9 @@
-"""Chat streaming router — POST /chat/stream wraps the LLM provider in SSE.
+"""Chat streaming router — POST /chat/stream streams a single chat-completion as SSE.
 
-This phase ships *chat-only* (no tool calling). Phase 4 wraps the provider stream in the
-agent runner to add tool execution.
+Wraps `stream_agent` so tool calls / tool results / final usage / done are emitted as
+events the frontend can replay incrementally. Anthropic flows go through the provider
+directly without tools; OpenAI / OpenRouter go through the full agent loop with all
+configured integrations.
 """
 
 from __future__ import annotations

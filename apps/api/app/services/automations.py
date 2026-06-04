@@ -17,12 +17,7 @@ from app.schemas.automations import (
     TaskRun,
     UpdateTaskRequest,
 )
-
-
-def _dt_ms(dt: datetime) -> int:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
+from app.utils import to_ms as _dt_ms
 
 
 def _row_to_task(r: TaskRow) -> TaskPayload:
