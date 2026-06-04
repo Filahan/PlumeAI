@@ -56,6 +56,16 @@ Tell PlumeAI what you want. It asks the right follow-up questions, compiles your
 
 Next.js 16 · React 19 · Tailwind v4 · FastAPI 0.115 (Python 3.12) · SQLAlchemy 2.0 + Alembic · PostgreSQL 16 · nginx · Docker Compose
 
+## Contributing
+
+After cloning, wire up the secrets-blocking pre-commit hook (one-time):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+See [`docs/security.md`](docs/security.md) for details on what's blocked and how to handle false positives.
+
 ## License
 
 PlumeAI is licensed under the **[Elastic License 2.0 (ELv2)](LICENSE)** — a source-available license.

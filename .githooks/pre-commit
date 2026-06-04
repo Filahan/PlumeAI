@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# pre-commit — blocks commits that contain secrets, .env files, or known-dangerous patterns.
+#
+# Install once per clone:
+#   git config core.hooksPath .githooks
+#   chmod +x .githooks/pre-commit
+#
+# To allow a false positive, append `# pragma: allowlist secret` on the same line.
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+fail() {
+  printf "${RED}❌ %s${NC}\n" "$1" >&2
+  exit 1
+}
+
+# ─── 1. Block .env files (but allow .env.example) ──────────────────────────────
+
+ENV_STAGED=$(git diff --cached --name-only | grep -E '(^|/)\.env($|\.[a-z]+$)' | grep -vE '\.env\.example$' || true)
+if [ -n "$ENV_STAGED" ]; then
+  fail ".env files cannot be committed:
+$ENV_STAGED
+Add to .gitignore or use .env.example for templates."
+fi
+
+# ─── 2. Block files with sensitive extensions ─────────────────────────────────
+
+SUSP=$(git diff --cached --name-only | grep -E '\.(pem|key|p12|pfx|jks|keystore)$' || true)
+if [ -n "$SUSP" ]; then
+  fail "Suspicious key/cert files staged:
+$SUSP"
+fi
+
+# ─── 3. Scan staged diff for secret patterns ──────────────────────────────────
+
+# Each entry: NAME|REGEX
+# REGEX uses ERE (grep -E syntax).
+PATTERNS=(
+  "OpenAI API key|sk-[A-Za-z0-9_-]{20,}"
+  "Anthropic API key|sk-ant-[A-Za-z0-9_-]{20,}"
+  "Google OAuth client secret|GOCSPX-[A-Za-z0-9_-]{20,}"
+  "Google API key|AIza[0-9A-Za-z_-]{35}"
+  "AWS access key|AKIA[0-9A-Z]{16}"
+  "Discord bot token|M[A-Za-z0-9_-]{23}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}"
+  "PEM private key|-----BEGIN [A-Z ]+PRIVATE KEY-----"
+  "Slack token|xox[abprs]-[A-Za-z0-9-]{10,}"
+  "GitHub PAT|ghp_[A-Za-z0-9]{36}"
+  "Stripe live key|sk_live_[A-Za-z0-9]{24,}"
+)
+
+# Get the added lines only (lines starting with '+', excluding '+++' file headers).
+STAGED_ADDS=$(git diff --cached -U0 --no-color | grep -E '^\+[^+]' || true)
+
+if [ -n "$STAGED_ADDS" ]; then
+  for entry in "${PATTERNS[@]}"; do
+    name="${entry%%|*}"
+    pattern="${entry#*|}"
+    # Filter out lines marked as allowed false positives.
+    HITS=$(echo "$STAGED_ADDS" | grep -E -- "$pattern" | grep -v 'pragma: allowlist secret' || true)
+    if [ -n "$HITS" ]; then
+      printf "${RED}❌ %s detected in staged changes:${NC}\n" "$name" >&2
+      echo "$HITS" | head -5 >&2
+      echo "" >&2
+      echo "  → If this is a false positive, append '# pragma: allowlist secret' to the same line." >&2
+      exit 1
+    fi
+  done
+fi
+
+printf "${GREEN}✅ pre-commit: no secrets, no .env, no suspicious files.${NC}\n"
+exit 0
