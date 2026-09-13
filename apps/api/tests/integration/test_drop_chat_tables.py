@@ -8,9 +8,11 @@ same as a fresh self-hosted install. These tests run the revision's real `upgrad
 loaded through Alembic's own script directory (mirrors `test_schema_migration.py` and
 `test_drop_tasks_legacy.py`), so there is no second copy of the DDL to drift.
 
-The single-head assertion lives here rather than in its own module because `0006` is the
-head: a revision added without a `down_revision` (or pointed at the wrong one) would
-silently branch the history and `alembic upgrade head` would start failing.
+The single-head assertion lives here (originally added alongside `0006`, when it was the
+head) rather than in its own module: a revision added without a `down_revision` (or
+pointed at the wrong one) would silently branch the history and `alembic upgrade head`
+would start failing. It still checks whatever the current head is (`0007_usage_entry_source`
+as of this writing) — update the expected id here whenever a new revision is added.
 """
 
 from __future__ import annotations
@@ -138,4 +140,4 @@ def test_downgrade_is_a_documented_noop() -> None:
 
 
 def test_the_migration_history_has_a_single_head() -> None:
-    assert list(_script_directory().get_heads()) == ["0006_drop_chat_tables"]
+    assert list(_script_directory().get_heads()) == ["0007_usage_entry_source"]
