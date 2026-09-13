@@ -420,12 +420,16 @@ async def start_run_route(
 ) -> StartRunResponse:
     """Queue a run and hand it to the executor. 409 when one is already in flight."""
     automation = await svc.get_automation(session, automation_id)
-    run = await runs_svc.create_run(session, automation, trigger=body.trigger)
-    # Committed here rather than by the dependency so the background executor (Task 4b),
-    # which opens its own session, can actually see the run it's about to be handed.
-    await session.commit()
-    executor.start_run_in_background(run.id)
-    return StartRunResponse(run_id=run.id)
+    # Held across the commit, not just the insert: two simultaneous clicks would otherwise
+    # both find no active run and both be queued. See `runs_svc.creation_lock`.
+    async with runs_svc.creation_lock(automation_id):
+        run = await runs_svc.create_run(session, automation, trigger=body.trigger)
+        # Committed here rather than by the dependency so the background executor, which
+        # opens its own session, can actually see the run it's about to be handed.
+        await session.commit()
+        run_id = run.id
+    executor.start_run_in_background(run_id)
+    return StartRunResponse(run_id=run_id)
 
 
 @router.get(

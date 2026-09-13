@@ -16,14 +16,23 @@ Three step types, three shapes of work:
   should continue.
 
 Every failure raises. `StepFailure` marks the ones worth retrying (a tool returned
-`ok=False`, the agent gave up); `RefError`, `ValidationFailure` and a non-upstream
-`ProviderError` are deterministic and the executor will not retry them.
+`ok=False` with `retryable`, the agent gave up); `PermanentStepFailure`, `RefError`,
+`ValidationFailure` and a non-upstream `ProviderError` are deterministic and the executor
+will not retry them.
+
+Redaction policy: a step's `resolved_input` is masked by key name before it is stored,
+because that map is assembled from the document and holds whatever the author typed into a
+credential field. Step *outputs* and traces are deliberately **not** redacted — they are
+what the run detail view exists to show, and a tool's response has no key names we could
+trust to mean "secret". Anything a tool returns is treated as visible to whoever can read
+the run.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -50,9 +59,13 @@ TRACE_VALUE_CHARS = 2_000
 _SECRET_HINTS = ("password", "token", "secret", "key")
 REDACTED = "***"
 
+JSON_COERCION_SYSTEM = (
+    "You reformat an answer that has already been written. Put it into the requested JSON "
+    "payload using only what the answer says — add nothing, and do not answer the "
+    "question again."
+)
 JSON_COERCION_PROMPT = (
-    "Convert the following answer into the requested JSON payload. Use only what the "
-    "answer says — do not add facts of your own.\n\nAnswer:\n"
+    "Convert the following answer into the requested JSON payload.\n\nAnswer:\n"
 )
 
 FILTER_DECISION_SCHEMA: dict[str, Any] = {
@@ -80,6 +93,16 @@ FILTER_SYSTEM_PROMPT = (
 
 class StepFailure(RuntimeError):
     """A step attempt failed for a reason that may well succeed on a retry."""
+
+
+class PermanentStepFailure(StepFailure):
+    """A step attempt failed for a reason no retry can change.
+
+    A tool that rejected the *request* — an unknown tool name, a disconnected integration,
+    a URL pointing at a private host, an argument that isn't valid — will reject it
+    identically on the next attempt. Retrying only delays the failure the author has to
+    see, so the executor fails the step on the first one.
+    """
 
 
 @dataclass
@@ -140,12 +163,27 @@ def clip(text: str, limit: int = TRACE_VALUE_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def redact(resolved: dict[str, Any]) -> dict[str, Any]:
-    """Mask values whose key name suggests a credential before they are persisted."""
-    return {
-        name: REDACTED if any(hint in name.lower() for hint in _SECRET_HINTS) else value
-        for name, value in resolved.items()
-    }
+def _is_secret_key(name: str) -> bool:
+    lowered = name.lower()
+    return any(hint in lowered for hint in _SECRET_HINTS)
+
+
+def redact(value: Any) -> Any:
+    """Mask values whose key name suggests a credential, at any depth.
+
+    Recursive because a resolved input is rarely flat: an `http` action carries its
+    credential inside `headers`, and a ref can resolve to a whole nested object. Matching
+    is on key *names* only — a masked value is replaced wholesale, so nothing under a
+    secret key survives either.
+    """
+    if isinstance(value, dict):
+        return {
+            key: REDACTED if _is_secret_key(str(key)) else redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact(item) for item in value]
+    return value
 
 
 def preview(value: Any) -> str:
@@ -236,9 +274,11 @@ async def run_action_step(sctx: StepContext, resolved: dict[str, Any]) -> StepRe
     raw_args = json.dumps(resolved, default=str)
     result = await execute_tool(step.settings.action, raw_args, sctx.session)
     if not result.ok:
-        # `execute_tool` never raises — a failure arrives as `ok=False`, and most of them
-        # (a 502 from an API, a rate limit) are exactly what a retry is for.
-        raise StepFailure(clip(result.content))
+        # `execute_tool` never raises — a failure arrives as `ok=False`, and it says
+        # whether another attempt could do better: a 502 or a rate limit is what retries
+        # are for, a rejected request is not.
+        failure = StepFailure if result.retryable else PermanentStepFailure
+        raise failure(clip(result.content))
 
     output = result.data if result.data is not None else _parse_tool_content(result.content)
     return StepResult(output=output)
@@ -269,49 +309,54 @@ async def run_ai_step(sctx: StepContext) -> StepResult:
 
     final_text = ""
     agent_error: str | None = None
-    async for ev in stream_agent(
+    # `aclosing`: the loop below is abandoned the moment the step times out or the run is
+    # cancelled, and without it the generator — and the provider's open HTTP response —
+    # would only be finalized whenever the garbage collector got round to it.
+    agent = stream_agent(
         provider=provider,
         model=sctx.model,
         messages=messages,
         session=sctx.session,
         tools=tools,
-    ):
-        kind = ev.get("type")
-        if kind == "text":
-            sctx.publish("step_text", delta=ev["delta"])
-        elif kind == "tool_call":
-            args = clip(str(ev.get("args") or ""))
-            sctx.publish("step_tool_call", id=ev["id"], tool=ev["tool"], args=args)
-            sctx.trace.append(
-                {"kind": "tool_call", "id": ev["id"], "tool": ev["tool"], "args": args}
-            )
-        elif kind == "tool_result":
-            content = clip(str(ev.get("result") or ""))
-            sctx.publish(
-                "step_tool_result",
-                id=ev["id"],
-                tool=ev["tool"],
-                ok=ev["ok"],
-                result=content,
-            )
-            sctx.trace.append(
-                {
-                    "kind": "tool_result",
-                    "id": ev["id"],
-                    "tool": ev["tool"],
-                    "ok": ev["ok"],
-                    "result": content,
-                }
-            )
-        elif kind == "final":
-            final_text = ev.get("text") or ""
-        elif kind == "usage":
-            # `stream_agent` emits one cumulative usage event at the end of the loop.
-            sctx.usage.add(ev["inputTokens"], ev["outputTokens"])
-        elif kind == "error":
-            # Recorded rather than raised on the spot: the runner still has a usage event
-            # to emit, and those tokens were spent whether or not the step succeeded.
-            agent_error = ev.get("message") or "The agent stopped without an answer."
+    )
+    async with aclosing(agent):
+        async for ev in agent:
+            kind = ev.get("type")
+            if kind == "text":
+                sctx.publish("step_text", delta=ev["delta"])
+            elif kind == "tool_call":
+                args = clip(str(ev.get("args") or ""))
+                sctx.publish("step_tool_call", id=ev["id"], tool=ev["tool"], args=args)
+                sctx.trace.append(
+                    {"kind": "tool_call", "id": ev["id"], "tool": ev["tool"], "args": args}
+                )
+            elif kind == "tool_result":
+                content = clip(str(ev.get("result") or ""))
+                sctx.publish(
+                    "step_tool_result",
+                    id=ev["id"],
+                    tool=ev["tool"],
+                    ok=ev["ok"],
+                    result=content,
+                )
+                sctx.trace.append(
+                    {
+                        "kind": "tool_result",
+                        "id": ev["id"],
+                        "tool": ev["tool"],
+                        "ok": ev["ok"],
+                        "result": content,
+                    }
+                )
+            elif kind == "final":
+                final_text = ev.get("text") or ""
+            elif kind == "usage":
+                # `stream_agent` emits one cumulative usage event at the end of the loop.
+                sctx.usage.add(ev["inputTokens"], ev["outputTokens"])
+            elif kind == "error":
+                # Recorded rather than raised on the spot: the runner still has a usage event
+                # to emit, and those tokens were spent whether or not the step succeeded.
+                agent_error = ev.get("message") or "The agent stopped without an answer."
 
     if agent_error is not None:
         raise StepFailure(agent_error)
@@ -319,11 +364,15 @@ async def run_ai_step(sctx: StepContext) -> StepResult:
     if step.settings.output.mode != "json":
         return StepResult(output={"text": final_text})
 
+    # Deliberately *not* the automation context block: this round trip only has to reshape
+    # `final_text`, which the step already produced with the full context in front of it.
+    # Resending it would pay for every prior output twice and tempt the model into
+    # answering again rather than reformatting.
     coerced = await complete_json(
         provider,
         sctx.model,
         [
-            ChatMessage(role="system", content=_context_block(sctx)),
+            ChatMessage(role="system", content=JSON_COERCION_SYSTEM),
             ChatMessage(role="user", content=JSON_COERCION_PROMPT + final_text),
         ],
         step.settings.output.schema_ or {"type": "object"},

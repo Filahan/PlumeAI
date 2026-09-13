@@ -26,11 +26,20 @@ USER_AGENT = (
 
 @dataclass
 class ToolResult:
-    """What every tool returns. Truncation is the tool's responsibility (cap to MAX_RESULT_CHARS)."""
+    """What every tool returns. Truncation is the tool's responsibility (cap to MAX_RESULT_CHARS).
+
+    `retryable` only means anything when `ok` is False, and it answers one question for the
+    automation executor: could another attempt do better? A timeout or a 502 says yes; a
+    request the tool *rejected* — an unknown tool name, a disconnected integration, a URL
+    pointing at a private host — says no, and retrying it would only delay the failure the
+    author has to see. Defaults to True, so a tool that doesn't think about it keeps the
+    forgiving behavior.
+    """
 
     ok: bool
     content: str
     data: Any | None = None
+    retryable: bool = True
 
 
 class ToolFn(Protocol):
@@ -127,6 +136,12 @@ def safe_json_args(raw: str) -> dict[str, Any]:
 
 
 # ───────────────────── SSRF guard ─────────────────────
+#
+# Every rejection here is about the URL itself, so it is permanent: `extra={"retryable":
+# False}` is how `app.tools.registry` learns not to hand the automation executor something
+# worth retrying. Passed through `extra` rather than a new `ToolError` field so the error
+# hierarchy (and the HTTP problem-details shape it feeds) stays as it was.
+_PERMANENT = {"retryable": False}
 
 _PRIVATE_HOSTS = {"localhost"}
 _PRIVATE_SUFFIXES = (".local", ".internal")
@@ -162,28 +177,34 @@ async def assert_public_url(raw_url: str) -> str:
     try:
         parsed = urlparse(raw_url)
     except ValueError as exc:
-        raise ToolError(f"Invalid URL: {raw_url}") from exc
+        raise ToolError(f"Invalid URL: {raw_url}", extra=_PERMANENT) from exc
 
     if parsed.scheme not in ("http", "https"):
-        raise ToolError(f"Only http(s) URLs are allowed (got {parsed.scheme}).")
+        raise ToolError(
+            f"Only http(s) URLs are allowed (got {parsed.scheme}).", extra=_PERMANENT
+        )
     host = (parsed.hostname or "").strip().lower()
     if not host:
-        raise ToolError("URL is missing a host.")
+        raise ToolError("URL is missing a host.", extra=_PERMANENT)
     if host in _PRIVATE_HOSTS or host.endswith(_PRIVATE_SUFFIXES):
-        raise ToolError("Requests to internal hosts are not allowed.")
+        raise ToolError("Requests to internal hosts are not allowed.", extra=_PERMANENT)
 
     # Already-an-IP shortcut
     try:
         ipaddress.ip_address(host)
         if _is_private_ip(host):
-            raise ToolError("Requests to private addresses are not allowed.")
+            raise ToolError(
+                "Requests to private addresses are not allowed.", extra=_PERMANENT
+            )
         return raw_url
     except ValueError:
         pass
 
     for ip in await _resolve_addresses(host):
         if _is_private_ip(ip):
-            raise ToolError(f"Host {host} resolves to a private address; blocked.")
+            raise ToolError(
+                f"Host {host} resolves to a private address; blocked.", extra=_PERMANENT
+            )
     return raw_url
 
 

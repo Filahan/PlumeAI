@@ -15,14 +15,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import asyncio
+
 import sqlalchemy as sa
 import structlog
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Automation, AutomationVersion, Run, RunStep
 from app.errors import Conflict, NotFound
 from app.services import executor, run_events
+from app.utils import LoopLocal
 
 log = structlog.get_logger("app.runs")
 
@@ -34,6 +38,30 @@ RESTART_ERROR = "Interrupted by server restart"
 
 DEFAULT_RUN_LIMIT = 50
 DEFAULT_KEEP_RUNS = 200
+
+# Name of the partial unique index that enforces one active run per automation; matched
+# against an `IntegrityError` so a race is reported as a 409 rather than a 500.
+ACTIVE_RUN_INDEX = "runs_one_active_per_automation"
+
+# One lock per automation, so the check-then-insert in `create_run` is atomic *within*
+# this process. The database index behind it is what makes the rule hold across processes;
+# the lock exists so the common case (two clicks, one worker) reports a clean 409 instead
+# of relying on an integrity error, and so the loser never gets as far as writing steps.
+_creation_locks: LoopLocal[dict[str, asyncio.Lock]] = LoopLocal(dict)
+
+
+def creation_lock(automation_id: str) -> asyncio.Lock:
+    """The lock to hold across check + insert + commit when queueing a run.
+
+    Callers must hold it until the transaction is committed — releasing at the end of
+    `create_run` would let the next waiter run its "is there an active run?" query against
+    a transaction that hasn't landed yet, which is the race the lock is there to close.
+    """
+    locks = _creation_locks.get()
+    lock = locks.get(automation_id)
+    if lock is None:
+        lock = locks[automation_id] = asyncio.Lock()
+    return lock
 
 
 def _now() -> datetime:
@@ -69,6 +97,14 @@ async def create_run(session: AsyncSession, automation: Automation, *, trigger: 
     Raises `Conflict` (409) when a run of this automation is already queued or running —
     one automation executes at most one run at a time, so steps that mutate shared state
     (send an email, write a row) can't interleave with themselves.
+
+    That rule is enforced twice. The check below is the one that produces a good error
+    message, but two concurrent callers in separate transactions can both pass it, so the
+    insert goes through a savepoint and a violation of the
+    `runs_one_active_per_automation` partial unique index is translated into the same
+    `Conflict`. Callers that can race (the `POST /runs` route, the scheduler) additionally
+    hold `creation_lock(automation.id)` across the surrounding commit, which keeps the
+    in-process case on the fast path.
     """
     active = await _active_run(session, automation.id)
     if active is not None:
@@ -100,23 +136,39 @@ async def create_run(session: AsyncSession, automation: Automation, *, trigger: 
         output_tokens=0,
         created_at=_now(),
     )
-    session.add(run)
-    await session.flush()
+    try:
+        # A savepoint, so losing the race to the unique index rolls back only this insert
+        # and leaves `session` usable — the caller's transaction may hold work of its own,
+        # and we still need to query for the run that won.
+        async with session.begin_nested():
+            session.add(run)
+            await session.flush()
 
-    for index, step in enumerate(document.get("steps") or []):
-        session.add(
-            RunStep(
-                id=_new_id(),
-                run_id=run.id,
-                step_id=step.get("id", f"step_{index}"),
-                index=index,
-                name=step.get("name") or "",
-                type=step.get("type") or "",
-                status="pending",
-                attempt=0,
-                trace=[],
-            )
-        )
+            for index, step in enumerate(document.get("steps") or []):
+                session.add(
+                    RunStep(
+                        id=_new_id(),
+                        run_id=run.id,
+                        step_id=step.get("id", f"step_{index}"),
+                        index=index,
+                        name=step.get("name") or "",
+                        type=step.get("type") or "",
+                        status="pending",
+                        attempt=0,
+                        trace=[],
+                    )
+                )
+            await session.flush()
+    except IntegrityError as exc:
+        if ACTIVE_RUN_INDEX not in str(exc.orig):
+            raise
+        winner = await _active_run(session, automation.id)
+        log.info("run_create_lost_race", automation_id=automation.id, trigger=trigger)
+        raise Conflict(
+            f"Automation {automation.id} already has a "
+            f"{winner.status if winner else 'queued'} run.",
+            extra={"runId": winner.id if winner else None},
+        ) from exc
 
     automation.last_run_id = run.id
     automation.last_run_status = run.status
@@ -230,10 +282,19 @@ async def prune_runs(
 async def cancel_run(session: AsyncSession, run_id: str) -> str:
     """Cancel a run, returning its resulting status.
 
-    A `queued` run has not started, so it is cancelled outright here. A `running` run is
-    owned by the executor, which has to unwind the step it's inside — we only signal it
-    (Task 4b) and leave it `running` until it reports back. Terminal runs are returned
-    unchanged; cancelling twice is not an error.
+    Three cases, and the returned status is the honest one for each:
+
+    - **queued** — nothing has started; it is cancelled outright here and comes back
+      `cancelled`.
+    - **running, owned by this process** — the executor has to unwind the step it is
+      inside, so it is only signalled and comes back `running`; it reaches `cancelled`
+      when the executor reports back over `run_events`.
+    - **running, not owned by anything** — `request_cancel` found no task, which means the
+      process that was driving it is gone. Nothing will ever finish it, so leaving it
+      `running` would both lie to the client and block every future run of that automation
+      (the active-run guard). It is cancelled here too, and comes back `cancelled`.
+
+    Terminal runs are returned unchanged; cancelling twice is not an error.
     """
     run = (
         await session.execute(select(Run).where(Run.id == run_id))
@@ -244,7 +305,11 @@ async def cancel_run(session: AsyncSession, run_id: str) -> str:
     if run.status in TERMINAL_RUN_STATUSES:
         return run.status
 
-    if run.status == "queued":
+    # `or` short-circuits: a queued run is never signalled, and a running one is only
+    # cancelled here when no task in this process answered.
+    if run.status == "queued" or not executor.request_cancel(run.id):
+        if run.status != "queued":
+            log.warning("cancelling_unowned_run", run_id=run.id)
         now = _now()
         run.status = "cancelled"
         run.ended_at = now
@@ -267,5 +332,4 @@ async def cancel_run(session: AsyncSession, run_id: str) -> str:
         log.info("run_cancelled", run_id=run.id)
         return run.status
 
-    executor.request_cancel(run.id)
     return run.status

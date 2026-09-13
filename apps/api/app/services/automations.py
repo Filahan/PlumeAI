@@ -42,7 +42,7 @@ from app.services.documents import (
     dump_document,
     validate_document,
 )
-from app.services.settings import get_settings_for_client
+from app.services.settings import get_settings_for_client, get_timezone
 
 log = structlog.get_logger("app.automations")
 
@@ -262,7 +262,9 @@ async def save_document(
     automation.updated_at = _now()
     await session.flush()
 
-    scheduler.sync_job(automation)
+    # The workspace timezone is the fallback for a schedule that doesn't name one, so it
+    # has to be passed in — the scheduler has no session of its own here.
+    scheduler.sync_job(automation, timezone=await get_timezone(session))
     return validated, issues, version.number
 
 
@@ -345,7 +347,7 @@ async def set_enabled(
     automation.enabled = enabled
     automation.updated_at = _now()
     await session.flush()
-    scheduler.sync_job(automation)
+    scheduler.sync_job(automation, timezone=await get_timezone(session))
     return automation
 
 

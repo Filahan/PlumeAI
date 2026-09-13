@@ -22,6 +22,7 @@ the case where a manual run is already in flight when the schedule fires.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -37,8 +38,8 @@ from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Automation
 from app.errors import Conflict
-from app.services.executor import execute_run
-from app.services.runs import create_run
+from app.services.executor import start_run_in_background
+from app.services.runs import create_run, creation_lock
 from app.services.settings import get_timezone
 
 log = structlog.get_logger("app.scheduler")
@@ -145,17 +146,28 @@ async def reload_all() -> None:
         return
     async with session_scope() as session:
         timezone = await get_timezone(session)
-        automations = list(
-            (await session.execute(select(Automation))).scalars().all()
+        # Plain rows, not ORM objects: the session closes at the end of this block, and an
+        # `Automation` instance read out of it would lazy-load (and fail) the moment
+        # `sync_job` touched an attribute below.
+        rows = list(
+            (
+                await session.execute(
+                    select(
+                        Automation.id,
+                        Automation.name,
+                        Automation.enabled,
+                        Automation.document,
+                    )
+                )
+            ).all()
         )
-    known = set()
-    for automation in automations:
-        known.add(automation.id)
-        sync_job(automation, timezone=timezone)
+    known = {row.id for row in rows}
+    for row in rows:
+        sync_job(row, timezone=timezone)
     for job in scheduler.get_jobs():
         if job.id not in known:
             remove_job(job.id)
-    log.info("scheduler_reloaded", automations=len(automations))
+    log.info("scheduler_reloaded", automations=len(rows))
 
 
 # ─── job management ──────────────────────────────────────────────────────────────────
@@ -249,9 +261,11 @@ def next_run_at(automation_id: str) -> int | None:
 async def run_scheduled(automation_id: str) -> None:
     """Fire one scheduled run, start to finish.
 
-    The run is *awaited* rather than handed to `start_run_in_background`: combined with
-    `max_instances=1` that is what stops a slow automation on a one-minute schedule from
-    stacking up runs on top of itself.
+    The run is started as a normal background task and then *awaited*: awaiting it is what,
+    together with `max_instances=1`, stops a slow automation on a one-minute schedule from
+    stacking runs on top of itself, while going through `start_run_in_background` keeps the
+    run in `executor.RUNNING_TASKS` — so it can be cancelled through the API and is cleaned
+    up by `cancel_all` at shutdown, exactly like a manual one.
     """
     # APScheduler's timer callbacks inherit the context of whatever added the job — often
     # the HTTP request that saved the schedule — so a scheduled run would otherwise log a
@@ -267,13 +281,20 @@ async def run_scheduled(automation_id: str) -> None:
         if not automation.enabled:
             log.info("run_skipped_disabled", automation_id=automation_id)
             return
-        try:
-            run = await create_run(session, automation, trigger="schedule")
-        except Conflict:
-            # A manual run (or a previous fire) is still going. Skipping is the right call:
-            # the next tick will pick it up.
-            log.info("run_skipped_overlap", automation_id=automation_id)
-            return
-        run_id = run.id
+        # Same lock the `POST /runs` route holds, so a fire landing at the same moment as
+        # a manual start is serialized rather than relying on the unique index to reject it.
+        async with creation_lock(automation_id):
+            try:
+                run = await create_run(session, automation, trigger="schedule")
+            except Conflict:
+                # A manual run (or a previous fire) is still going. Skipping is the right
+                # call: the next tick will pick it up.
+                log.info("run_skipped_overlap", automation_id=automation_id)
+                return
+            await session.commit()
+            run_id = run.id
 
-    await execute_run(run_id)
+    # `asyncio.wait` rather than `await task`: the executor handles its own cancellation
+    # and ends cleanly, but a shutdown that cancels *this* job mid-wait should not surface
+    # as an unhandled error out of an APScheduler job.
+    await asyncio.wait({start_run_in_background(run_id)})

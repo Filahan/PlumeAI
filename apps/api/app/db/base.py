@@ -42,8 +42,12 @@ def _build_engine() -> AsyncEngine:
         settings.database_url,
         echo=False,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=5,
+        # Sized for the executor: a run holds one connection for its whole duration (the
+        # tool registry and the agent loop share the run's session), and up to
+        # `executor.MAX_CONCURRENT_RUNS` runs execute at once, so the pool has to cover
+        # those plus the requests being served alongside them.
+        pool_size=10,
+        max_overflow=10,
     )
 
 

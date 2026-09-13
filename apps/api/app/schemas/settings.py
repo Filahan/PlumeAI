@@ -9,8 +9,9 @@ Secrets policy:
 from __future__ import annotations
 
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.schemas.base import APISchema
 
@@ -42,6 +43,19 @@ class SettingsPayload(APISchema):
     # Per-provider credential status (e.g. {"google": True, "discord": False}).
     # Only booleans — secrets never reach the client.
     tool_credentials: dict[str, bool] = Field(default_factory=dict)
+    # IANA timezone the workspace lives in. Schedule triggers that don't carry one of
+    # their own fire in it, and it is what `{{trigger.date}}` means inside a run — so
+    # "every weekday at 8" is 8am where the user is, not 8am UTC.
+    timezone: str = "UTC"
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (KeyError, ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone: {value!r}") from exc
+        return value
 
 
 DEFAULT_SETTINGS = SettingsPayload(
@@ -49,4 +63,5 @@ DEFAULT_SETTINGS = SettingsPayload(
     default_model=DefaultModel(provider="openai", model="gpt-4o"),
     tools={},
     tool_credentials={},
+    timezone="UTC",
 )

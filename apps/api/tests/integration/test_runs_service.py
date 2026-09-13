@@ -273,15 +273,50 @@ async def test_list_runs_is_newest_first_and_honours_the_cursor(
     assert len(await runs_svc.list_runs(session, automation.id, limit=1)) == 1
 
 
-async def test_cancel_a_running_run_only_signals_the_executor(
+async def test_cancelling_a_running_run_only_signals_the_task_that_owns_it(
     session,
     automation_factory,
     ai_step,
+    monkeypatch,
 ) -> None:
-    """Until Task 4b there is nothing to signal, so the run stays `running`."""
+    """The executor has to unwind the step it is inside, so the run stays `running`."""
     automation = await automation_factory([ai_step("step_aaaaa")])
     run = await runs_svc.create_run(session, automation, trigger="manual")
     run.status = "running"
     await session.flush()
 
+    signalled: list[str] = []
+    monkeypatch.setattr(
+        runs_svc.executor, "request_cancel", lambda run_id: bool(signalled.append(run_id)) or True
+    )
+
     assert await runs_svc.cancel_run(session, run.id) == "running"
+    assert signalled == [run.id]
+    assert run.status == "running"
+
+
+async def test_cancelling_a_running_run_nothing_owns_cancels_it_outright(
+    session,
+    automation_factory,
+    ai_step,
+) -> None:
+    """A `running` run with no task behind it is a leftover: nothing will ever finish it.
+
+    Leaving it `running` would both lie to the client and block every future run of the
+    automation, so `cancel_run` finishes it itself. With no executor task registered,
+    `request_cancel` returns False, which is the signal that this is that case.
+    """
+    automation = await automation_factory([ai_step("step_aaaaa")])
+    run = await runs_svc.create_run(session, automation, trigger="manual")
+    run.status = "running"
+    await session.flush()
+
+    assert await runs_svc.cancel_run(session, run.id) == "cancelled"
+
+    steps = (
+        (await session.execute(select(RunStep).where(RunStep.run_id == run.id)))
+        .scalars()
+        .all()
+    )
+    assert {s.status for s in steps} == {"cancelled"}
+    assert automation.last_run_status == "cancelled"

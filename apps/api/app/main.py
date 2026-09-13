@@ -83,6 +83,27 @@ async def _apply_runtime_migrations() -> None:
             log.info("legacy_tasks_migrated", converted=converted)
 
 
+async def _enforce_one_active_run() -> None:
+    """Add the partial unique index that makes "one active run per automation" durable.
+
+    Runs *after* `_recover_interrupted_runs`, not alongside the other runtime migrations:
+    a database written by an older build can hold several `running` runs of the same
+    automation (each a crash's leftovers), and a unique index cannot be built over rows
+    that already violate it. By this point recovery has failed all of them, so there is at
+    most one active run per automation — usually none — and the index always builds.
+    Counterpart: the `runs_one_active_per_automation` entry in revision
+    `0003_automations_v2`, which demotes duplicates itself for the `alembic upgrade` path.
+    """
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS runs_one_active_per_automation "
+                "ON runs (automation_id) WHERE status IN ('queued', 'running')"
+            )
+        )
+
+
 async def _recover_interrupted_runs() -> None:
     """Fail any run left `queued`/`running` by the previous process.
 
@@ -107,6 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning("runtime_migrations_failed", exc_info=True)
     try:
         await _recover_interrupted_runs()
+        await _enforce_one_active_run()
     except Exception:  # noqa: BLE001
         log.warning("run_recovery_failed", exc_info=True)
     # Schedules are a feature, not a prerequisite: an API that boots without a scheduler

@@ -63,6 +63,23 @@ ADD_COLUMNS = (
     "ALTER TABLE automations ADD COLUMN IF NOT EXISTS valid BOOLEAN NOT NULL DEFAULT true",
 )
 
+# Only one run of an automation may be `queued`/`running` at a time (see `Run` in
+# `app.db.models`). A database that predates the index may hold rows that violate it —
+# a crash leaves runs `running` forever — so the duplicates are failed first. Nothing is
+# executing them by the time a migration runs, which is exactly what
+# `app.services.runs.mark_orphaned_runs_failed` does on every startup.
+DEMOTE_DUPLICATE_ACTIVE_RUNS = """
+UPDATE runs SET status = 'failed', error = 'Interrupted by server restart', ended_at = now()
+WHERE id IN (
+    SELECT id FROM (
+        SELECT id, row_number() OVER (
+            PARTITION BY automation_id ORDER BY created_at DESC
+        ) AS rn
+        FROM runs WHERE status IN ('queued', 'running')
+    ) ranked WHERE rn > 1
+)
+"""
+
 INDEXES = (
     "CREATE INDEX IF NOT EXISTS automations_updated_idx ON automations (updated_at)",
     "CREATE INDEX IF NOT EXISTS automation_versions_automation_idx "
@@ -70,6 +87,8 @@ INDEXES = (
     "CREATE INDEX IF NOT EXISTS runs_automation_created_idx "
     "ON runs (automation_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS run_steps_run_idx ON run_steps (run_id, index)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS runs_one_active_per_automation "
+    "ON runs (automation_id) WHERE status IN ('queued', 'running')",
 )
 
 
@@ -205,6 +224,7 @@ def create_schema(conn: sa.Connection) -> None:
     _create_run_steps(conn)
     for statement in ADD_COLUMNS:
         op.execute(statement)
+    op.execute(DEMOTE_DUPLICATE_ACTIVE_RUNS)
     for statement in INDEXES:
         op.execute(statement)
 
@@ -219,6 +239,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(RENAME_TASKS_BACK)
     op.execute("ALTER TABLE settings DROP COLUMN IF EXISTS timezone")
+    op.execute("DROP INDEX IF EXISTS runs_one_active_per_automation")
     op.execute("DROP TABLE IF EXISTS run_steps")
     op.execute("DROP TABLE IF EXISTS runs")
     op.execute("DROP TABLE IF EXISTS automation_versions")

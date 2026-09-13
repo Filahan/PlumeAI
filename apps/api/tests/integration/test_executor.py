@@ -21,17 +21,20 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy import select
 
-from app.db.models import Run
-from app.errors import ProviderError
+from app.db.models import Run, RunStep, UsageEntry
+from app.errors import Conflict, ProviderError, ValidationFailure
 from app.llm.events import AgentEvent
 from app.agent import runner as agent_runner
 from app.services import automations as svc
 from app.services import executor, run_events, step_runner
 from app.services import runs as runs_svc
 from app.services.executor import start_run_in_background
+from app.services.refs import RefError
 from app.tools.base import ToolResult
+from app.utils import LoopLocal
 
 # --- fixtures ----------------------------------------------------------------------------
 
@@ -1051,7 +1054,7 @@ async def test_a_run_executes_its_pinned_version_not_the_current_draft(
 async def test_a_run_that_overruns_its_budget_fails(
     session, make_document, registry, monkeypatch
 ) -> None:
-    monkeypatch.setattr(executor, "RUN_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(executor, "RUN_TIMEOUT_SECONDS", 0.5)
 
     async def hang() -> ToolResult:
         await asyncio.sleep(5)
@@ -1160,3 +1163,500 @@ async def test_the_trigger_context_uses_the_schedules_timezone(
     await executor.execute_run(run_id)
 
     assert registry.calls[0][1]["tz"] == "Asia/Tokyo"
+
+
+# --- one active run per automation ------------------------------------------------------
+
+
+async def test_two_concurrent_create_run_calls_leave_exactly_one_winner(
+    session, session_factory, make_document
+) -> None:
+    """The guard that matters: two transactions that both see "no active run".
+
+    Separate sessions, so neither sees the other's uncommitted insert and the in-process
+    lock is deliberately bypassed — all that stands between them is the
+    `runs_one_active_per_automation` partial unique index, and it has to turn the loser
+    into a clean 409 rather than a 500.
+    """
+    automation = await svc.create_automation(
+        session, document=make_document("Demo", [ai_text_step("step_aaaaa")])
+    )
+    automation_id = automation.id
+    await session.commit()
+
+    async def attempt() -> str:
+        async with session_factory() as own:
+            mine = await svc.get_automation(own, automation_id)
+            try:
+                run = await runs_svc.create_run(own, mine, trigger="manual")
+            except Conflict:
+                return "conflict"
+            await own.commit()
+            return run.id
+
+    first, second = await asyncio.gather(attempt(), attempt(), return_exceptions=True)
+    outcomes = [first, second]
+    assert not any(isinstance(o, BaseException) for o in outcomes), outcomes
+    assert sum(o == "conflict" for o in outcomes) == 1, outcomes
+
+    session.expire_all()
+    runs = list(
+        (
+            await session.execute(select(Run).where(Run.automation_id == automation_id))
+        )
+        .scalars()
+        .all()
+    )
+    assert len(runs) == 1
+    assert runs[0].status == "queued"
+
+
+async def test_the_loser_of_the_race_leaves_no_orphaned_steps(
+    session, session_factory, make_document
+) -> None:
+    """The savepoint has to take the loser's `run_steps` rows down with its run."""
+    automation = await svc.create_automation(
+        session,
+        document=make_document("Demo", [ai_text_step("step_aaaaa"), ai_text_step("step_bbbbb")]),
+    )
+    automation_id = automation.id
+    await session.commit()
+
+    winner = await runs_svc.create_run(session, automation, trigger="manual")
+    winner_id = winner.id
+    await session.commit()
+
+    async with session_factory() as own:
+        mine = await svc.get_automation(own, automation_id)
+        with pytest.raises(Conflict):
+            await runs_svc.create_run(own, mine, trigger="schedule")
+
+    session.expire_all()
+    step_run_ids = set(
+        (await session.execute(select(RunStep.run_id))).scalars().all()
+    )
+    assert step_run_ids == {winner_id}
+
+
+async def test_a_finished_run_does_not_block_the_next_one(
+    session, make_document, registry
+) -> None:
+    """The index is partial, so any number of *finished* runs coexist."""
+    registry.script("http", ToolResult(ok=True, content="{}", data={}))
+    automation = await svc.create_automation(
+        session,
+        document=make_document(
+            "Demo",
+            [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})],
+        ),
+    )
+    automation_id = automation.id
+    await session.commit()
+
+    for _ in range(3):
+        run = await runs_svc.create_run(session, automation, trigger="manual")
+        run_id = run.id
+        await session.commit()
+        await executor.execute_run(run_id)
+        await session.refresh(automation)
+
+    total = (
+        await session.execute(
+            select(sa.func.count()).select_from(Run).where(Run.automation_id == automation_id)
+        )
+    ).scalar_one()
+    assert total == 3
+
+
+# --- concurrency cap --------------------------------------------------------------------
+
+
+async def test_runs_over_the_concurrency_cap_wait_in_queued(
+    session, session_factory, make_document, registry, monkeypatch
+) -> None:
+    """A run waiting for a slot must not hold a connection, and must still read `queued`."""
+    monkeypatch.setattr(executor, "MAX_CONCURRENT_RUNS", 1)
+    monkeypatch.setattr(executor, "_run_slots", LoopLocal(lambda: asyncio.Semaphore(1)))
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hang() -> ToolResult:
+        entered.set()
+        await release.wait()
+        return ToolResult(ok=True, content="{}", data={})
+
+    registry.script("http", hang)
+
+    steps = [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})]
+    first = await svc.create_automation(session, document=make_document("One", steps))
+    second = await svc.create_automation(session, document=make_document("Two", steps))
+    await session.commit()
+    run_one = (await runs_svc.create_run(session, first, trigger="manual")).id
+    run_two = (await runs_svc.create_run(session, second, trigger="manual")).id
+    await session.commit()
+
+    task_one = start_run_in_background(run_one)
+    task_two = start_run_in_background(run_two)
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    # The second run is behind the cap: still `queued`, nothing started.
+    async with session_factory() as watcher:
+        waiting, waiting_steps = await runs_svc.get_run(watcher, run_two)
+        assert waiting.status == "queued"
+        assert waiting.started_at is None
+        assert [s.status for s in waiting_steps] == ["pending"]
+
+    release.set()
+    await asyncio.wait_for(asyncio.gather(task_one, task_two), timeout=10)
+
+    async with session_factory() as watcher:
+        for run_id in (run_one, run_two):
+            done, _ = await runs_svc.get_run(watcher, run_id)
+            assert done.status == "succeeded"
+
+
+async def test_cancelling_a_run_that_is_still_waiting_for_a_slot_records_it(
+    session, make_document, registry, monkeypatch
+) -> None:
+    monkeypatch.setattr(executor, "_run_slots", LoopLocal(lambda: asyncio.Semaphore(1)))
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hang() -> ToolResult:
+        entered.set()
+        await release.wait()
+        return ToolResult(ok=True, content="{}", data={})
+
+    registry.script("http", hang)
+    steps = [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})]
+    first = await svc.create_automation(session, document=make_document("One", steps))
+    second = await svc.create_automation(session, document=make_document("Two", steps))
+    await session.commit()
+    run_one = (await runs_svc.create_run(session, first, trigger="manual")).id
+    run_two = (await runs_svc.create_run(session, second, trigger="manual")).id
+    await session.commit()
+
+    task_one = start_run_in_background(run_one)
+    task_two = start_run_in_background(run_two)
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    assert executor.request_cancel(run_two) is True
+    await asyncio.wait_for(task_two, timeout=5)
+
+    session.expire_all()
+    cancelled, steps_two = await runs_svc.get_run(session, run_two)
+    assert cancelled.status == "cancelled"
+    assert cancelled.ended_at is not None
+    assert [s.status for s in steps_two] == ["cancelled"]
+
+    release.set()
+    await asyncio.wait_for(task_one, timeout=10)
+
+
+async def test_cancel_all_stops_every_run_in_flight(
+    session, make_document, registry
+) -> None:
+    entered = asyncio.Event()
+
+    async def hang() -> ToolResult:
+        entered.set()
+        await asyncio.sleep(30)
+        return ToolResult(ok=True, content="{}", data={})
+
+    registry.script("http", hang)
+    automation = await svc.create_automation(
+        session,
+        document=make_document(
+            "Demo",
+            [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})],
+        ),
+    )
+    await session.commit()
+    run_id = (await runs_svc.create_run(session, automation, trigger="manual")).id
+    await session.commit()
+
+    task = start_run_in_background(run_id)
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    await executor.cancel_all(timeout=5)
+
+    assert task.done()
+    session.expire_all()
+    run, steps = await runs_svc.get_run(session, run_id)
+    assert run.status == "cancelled"
+    assert [s.status for s in steps] == ["cancelled"]
+
+
+async def test_cancel_all_with_nothing_running_is_a_no_op() -> None:
+    await executor.cancel_all()
+
+
+# --- permanent failures -----------------------------------------------------------------
+
+
+async def test_a_tool_that_rejected_the_request_is_not_retried(
+    registry, run_automation
+) -> None:
+    """`retryable=False` means the tool will refuse identically next time."""
+    registry.script("http", ToolResult(ok=False, content="Unknown tool: http", retryable=False))
+
+    run, steps = await run_automation(
+        [
+            action_step(
+                "step_aaaaa",
+                "http",
+                {"url": {"kind": "literal", "value": "u"}},
+                retry={"max_attempts": 3, "backoff_seconds": 10},
+            )
+        ]
+    )
+
+    assert run.status == "failed"
+    assert steps[0].attempt == 1
+    assert len(registry.calls) == 1
+    attempts = [e for e in steps[0].trace if e["kind"] == "attempt"]
+    assert len(attempts) == 1
+    assert "retryInSeconds" not in attempts[0]
+
+
+async def test_the_real_registry_marks_a_rejected_request_permanent() -> None:
+    """The classification the executor depends on, asserted on the real registry."""
+    from app.tools.registry import execute_tool as real_execute_tool
+
+    unknown = await real_execute_tool("no_such_tool", "{}", None)
+    assert unknown.ok is False
+    assert unknown.retryable is False
+
+    # The SSRF guard rejects the URL itself — the same URL fails the same way forever.
+    blocked = await real_execute_tool(
+        "http", json.dumps({"method": "GET", "url": "http://localhost/secret"}), None
+    )
+    assert blocked.ok is False
+    assert blocked.retryable is False
+
+
+def test_is_retryable_classifies_each_kind_of_failure() -> None:
+    from app.errors import BadRequest, NotFound, ToolNotConfigured
+
+    # Deterministic: another attempt fails identically.
+    assert executor._is_retryable(RefError("no such step")) is False
+    assert executor._is_retryable(ValidationFailure("bad schema")) is False
+    assert executor._is_retryable(step_runner.PermanentStepFailure("rejected")) is False
+    assert executor._is_retryable(ProviderError("x", extra={"reason": "invalid_output"})) is False
+    assert executor._is_retryable(ProviderError("x", extra={"reason": "max_tokens"})) is False
+    assert executor._is_retryable(NotFound("no API key for openai")) is False
+    assert executor._is_retryable(BadRequest("unknown provider")) is False
+    assert executor._is_retryable(ToolNotConfigured("gmail is not connected")) is False
+
+    # Transient: worth another attempt.
+    assert executor._is_retryable(ProviderError("x", extra={"reason": "upstream"})) is True
+    assert executor._is_retryable(step_runner.StepFailure("502")) is True
+    assert executor._is_retryable(TimeoutError()) is True
+    assert executor._is_retryable(RuntimeError("boom")) is True
+
+
+# --- finalization of last resort --------------------------------------------------------
+
+
+async def test_a_run_whose_own_session_cannot_commit_is_still_finalized(
+    session, make_document, registry, monkeypatch
+) -> None:
+    """A poisoned transaction must not leave a run `running` forever.
+
+    `record_usage` is replaced by one that adds a row violating a NOT NULL constraint, so
+    the commit at the end of `finalize` raises exactly the way a real integrity problem
+    would. The run's *work* all succeeded, and only its bookkeeping commit failed — so the
+    terminal state has to be written through a fresh session. Without that, the row would
+    sit `running` and the active-run guard would block this automation forever.
+    """
+    registry.script("http", ToolResult(ok=True, content="{}", data={"ok": True}))
+
+    async def poison(sess, **_kwargs) -> None:
+        sess.add(
+            UsageEntry(id="poison", provider=None, model=None, input_tokens=1, output_tokens=1)
+        )
+
+    monkeypatch.setattr(executor, "record_usage", poison)
+
+    automation = await svc.create_automation(
+        session,
+        document=make_document(
+            "Demo",
+            [
+                action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}}),
+                action_step("step_bbbbb", "http", {"url": {"kind": "literal", "value": "v"}}),
+            ],
+        ),
+    )
+    automation_id = automation.id
+    await session.commit()
+    run_id = (await runs_svc.create_run(session, automation, trigger="manual")).id
+    await session.commit()
+
+    await executor.execute_run(run_id)
+
+    session.expire_all()
+    run, steps = await runs_svc.get_run(session, run_id)
+    assert run.status == "succeeded"
+    assert run.ended_at is not None
+    # Both steps committed as they went, so nothing is left mid-flight.
+    assert [s.status for s in steps] == ["succeeded", "succeeded"]
+    # The point of all of it: the automation is runnable again.
+    refreshed = await svc.get_automation(session, automation_id)
+    again = await runs_svc.create_run(session, refreshed, trigger="manual")
+    assert again.status == "queued"
+
+
+async def test_a_failed_run_whose_session_dies_still_skips_its_pending_steps(
+    session, make_document, registry, monkeypatch
+) -> None:
+    """The fallback has to tidy the step rows too, not just the run."""
+    registry.script("http", ToolResult(ok=False, content="down", retryable=False))
+
+    async def poison(sess, **_kwargs) -> None:
+        sess.add(
+            UsageEntry(id="poison2", provider=None, model=None, input_tokens=1, output_tokens=1)
+        )
+
+    monkeypatch.setattr(executor, "record_usage", poison)
+    # A failing step commits its own `failed` row before finalization, so force a poison
+    # that lands while a later step is still `pending`.
+    monkeypatch.setattr(executor._Execution, "skip_from", _no_skip)
+
+    automation = await svc.create_automation(
+        session,
+        document=make_document(
+            "Demo",
+            [
+                action_step(
+                    "step_aaaaa",
+                    "http",
+                    {"url": {"kind": "literal", "value": "u"}},
+                    retry={"max_attempts": 1, "backoff_seconds": 0},
+                ),
+                action_step("step_bbbbb", "http", {"url": {"kind": "literal", "value": "v"}}),
+            ],
+        ),
+    )
+    await session.commit()
+    run_id = (await runs_svc.create_run(session, automation, trigger="manual")).id
+    await session.commit()
+
+    await executor.execute_run(run_id)
+
+    session.expire_all()
+    run, steps = await runs_svc.get_run(session, run_id)
+    assert run.status == "failed"
+    assert run.ended_at is not None
+    assert [s.status for s in steps] == ["failed", "skipped"]
+
+
+async def _no_skip(self, index: int) -> None:
+    """Stand-in for `_Execution.skip_from` that leaves the remaining steps pending."""
+    return None
+
+
+async def test_force_finalize_never_walks_back_a_terminal_run(
+    session, make_document, registry
+) -> None:
+    registry.script("http", ToolResult(ok=True, content="{}", data={}))
+    automation = await svc.create_automation(
+        session,
+        document=make_document(
+            "Demo",
+            [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})],
+        ),
+    )
+    await session.commit()
+    run_id = (await runs_svc.create_run(session, automation, trigger="manual")).id
+    await session.commit()
+    await executor.execute_run(run_id)
+
+    await executor._force_finalize(run_id, "cancelled", "should not apply")
+
+    session.expire_all()
+    run, steps = await runs_svc.get_run(session, run_id)
+    assert run.status == "succeeded"
+    assert run.error is None
+    assert [s.status for s in steps] == ["succeeded"]
+
+
+# --- last run pointer -------------------------------------------------------------------
+
+
+async def test_an_older_run_finishing_late_does_not_overwrite_the_newer_result(
+    session, make_document, registry
+) -> None:
+    """`last_run_status` reports the *latest* run, whatever order they finish in."""
+    registry.script("http", ToolResult(ok=True, content="{}", data={}))
+    automation = await svc.create_automation(
+        session,
+        document=make_document(
+            "Demo",
+            [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})],
+        ),
+    )
+    automation_id = automation.id
+    await session.commit()
+
+    older = await runs_svc.create_run(session, automation, trigger="manual")
+    older_id = older.id
+    await session.commit()
+    # Finish it out of band so a second run can be queued past the active-run guard.
+    older.status = "failed"
+    await session.commit()
+
+    newer_id = (await runs_svc.create_run(session, automation, trigger="manual")).id
+    await session.commit()
+    await executor.execute_run(newer_id)
+    await session.refresh(automation)
+    assert automation.last_run_id == newer_id
+
+    # Now replay the older run, as a restarted worker might. It must not claim the pointer.
+    older.status = "queued"
+    older.ended_at = None
+    await session.execute(
+        sa.update(RunStep).where(RunStep.run_id == older_id).values(status="pending")
+    )
+    await session.commit()
+    await executor.execute_run(older_id)
+
+    await session.refresh(automation)
+    refreshed = await svc.get_automation(session, automation_id)
+    assert refreshed.last_run_id == newer_id
+    assert refreshed.last_run_status == "succeeded"
+
+
+# --- redaction --------------------------------------------------------------------------
+
+
+async def test_a_nested_credential_is_redacted_too(registry, run_automation) -> None:
+    registry.script("http", ToolResult(ok=True, content="{}", data={}))
+
+    _, steps = await run_automation(
+        [
+            action_step(
+                "step_aaaaa",
+                "http",
+                {
+                    "url": {"kind": "literal", "value": "https://api.example.com"},
+                    "headers": {
+                        "kind": "literal",
+                        "value": {
+                            "Accept": "application/json",
+                            "Authorization_token": "Bearer hunter2",
+                        },
+                    },
+                },
+            )
+        ]
+    )
+
+    assert steps[0].resolved_input == {
+        "url": "https://api.example.com",
+        "headers": {"Accept": "application/json", "Authorization_token": "***"},
+    }
+    # The tool still received the real header.
+    assert registry.calls[0][1]["headers"]["Authorization_token"] == "Bearer hunter2"

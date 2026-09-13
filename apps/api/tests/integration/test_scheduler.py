@@ -10,6 +10,8 @@ a live jobstore and computes fire times but never actually runs a job.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -334,13 +336,19 @@ async def test_reload_all_uses_the_workspace_timezone(
 
 @pytest.fixture
 def executed(monkeypatch) -> list[str]:
-    """Record the run ids `run_scheduled` hands to the executor instead of running them."""
+    """Record the run ids `run_scheduled` hands to the executor instead of running them.
+
+    Patched at `start_run_in_background`, which is how `run_scheduled` starts a run — going
+    through the executor's task registry is what makes a scheduled run cancellable, so the
+    fake still has to hand back a real awaitable task.
+    """
     seen: list[str] = []
 
-    async def fake_execute_run(run_id: str) -> None:
+    def fake_start(run_id: str) -> asyncio.Task[None]:
         seen.append(run_id)
+        return asyncio.create_task(asyncio.sleep(0))
 
-    monkeypatch.setattr(sched, "execute_run", fake_execute_run)
+    monkeypatch.setattr(sched, "start_run_in_background", fake_start)
     return seen
 
 
@@ -427,14 +435,44 @@ def test_the_jobstore_url_uses_a_sync_driver() -> None:
     assert "asyncpg" not in url
 
 
-def test_job_defaults_prevent_overlap_and_catch_up_once() -> None:
-    assert sched.JOB_DEFAULTS["max_instances"] == 1
-    assert sched.JOB_DEFAULTS["coalesce"] is True
-    assert sched.JOB_DEFAULTS["misfire_grace_time"] == 60
+async def test_a_real_job_cannot_overlap_itself_and_catches_up_once(
+    scheduler, automation_factory
+) -> None:
+    """Asserted on the job APScheduler actually built, not on the defaults dict."""
+    automation = await automation_factory(interval_document(1, "UTC"))
+
+    sched.sync_job(automation)
+
+    job = scheduler.get_job(automation.id)
+    assert job.max_instances == 1
+    assert job.coalesce is True
+    assert job.misfire_grace_time == 60
 
 
-async def test_start_survives_a_jobstore_that_cannot_start(monkeypatch) -> None:
-    """A broken jobstore must cost us persistence, not the whole scheduler."""
+async def test_an_unreachable_jobstore_falls_back_to_memory(monkeypatch) -> None:
+    """Losing persistence is survivable; losing schedules is not."""
+
+    def _explode(**_kwargs):
+        raise RuntimeError("driver missing")
+
+    monkeypatch.setattr(
+        "apscheduler.jobstores.sqlalchemy.SQLAlchemyJobStore", _explode, raising=True
+    )
+
+    built = sched.build_scheduler()
+    try:
+        assert isinstance(built._jobstores["default"], MemoryJobStore)
+    finally:
+        if built.running:
+            built.shutdown(wait=False)
+
+
+async def test_start_survives_a_jobstore_that_cannot_start(engine, monkeypatch) -> None:
+    """A broken jobstore must cost us persistence, not the whole scheduler.
+
+    Takes `engine` because `start()` ends in `reload_all()`, which opens a session — without
+    it the reload would read the *development* database instead of the throwaway one.
+    """
     broken = sched.build_scheduler(MemoryJobStore())
 
     def _explode(*_a, **_k):
@@ -455,3 +493,120 @@ async def test_start_survives_a_jobstore_that_cannot_start(monkeypatch) -> None:
 async def test_shutdown_is_a_no_op_when_nothing_is_running() -> None:
     sched.configure_scheduler(None)
     await sched.shutdown()
+
+
+# --- the scheduled path, end to end -----------------------------------------------------
+
+
+async def test_a_firing_job_runs_the_automation_all_the_way_to_a_terminal_row(
+    scheduler, session, monkeypatch
+) -> None:
+    """The whole scheduled path with nothing faked but the outside world.
+
+    A real job on the real scheduler, fired the way APScheduler fires it, through
+    `run_scheduled` → `create_run` → the real executor → a terminal `runs` row. Only the
+    tool registry is stubbed, so the automation "does" something without leaving the box.
+    """
+    from app.agent import runner as agent_runner
+    from app.services import executor, step_runner
+    from app.tools.base import ToolResult
+
+    calls: list[dict] = []
+
+    async def fake_execute_tool(name: str, raw_args: str, _session) -> ToolResult:
+        calls.append({"tool": name, "args": json.loads(raw_args)})
+        return ToolResult(ok=True, content="{}", data={"fetched": True})
+
+    monkeypatch.setattr(step_runner, "execute_tool", fake_execute_tool)
+    monkeypatch.setattr(agent_runner, "execute_tool", fake_execute_tool)
+
+    document = _document({"type": "schedule", "settings": {"mode": "interval", "every_minutes": 1}})
+    document["steps"] = [
+        {
+            "id": "step_fetch0",
+            "name": "Fetch",
+            "type": "action",
+            "settings": {
+                "integration": "builtin",
+                "action": "http",
+                "input": {"url": {"kind": "literal", "value": "https://example.com"}},
+            },
+        }
+    ]
+    automation = await svc.create_automation(session, document=document)
+    automation_id = automation.id
+    await session.commit()
+
+    sched.sync_job(automation, timezone="UTC")
+    job = scheduler.get_job(automation_id)
+    assert job is not None
+
+    # Fire it exactly as the scheduler would: by its stored function reference and args.
+    await sched.run_scheduled(*job.args)
+
+    session.expire_all()
+    runs = await runs_svc.list_runs(session, automation_id)
+    assert len(runs) == 1
+    run, steps = await runs_svc.get_run(session, runs[0].id)
+    assert run.trigger == "schedule"
+    assert run.status == "succeeded"
+    assert run.ended_at is not None
+    assert [s.status for s in steps] == ["succeeded"]
+    assert steps[0].output == {"fetched": True}
+    assert calls == [{"tool": "http", "args": {"url": "https://example.com"}}]
+    # The run went through the executor's registry, so it was cancellable throughout.
+    assert executor.RUNNING_TASKS == {}
+
+
+async def test_a_scheduled_run_is_registered_so_it_can_be_cancelled(
+    scheduler, session, monkeypatch
+) -> None:
+    """A scheduled run must be reachable by `POST /runs/{id}/cancel` like a manual one."""
+    from app.services import executor, step_runner
+    from app.tools.base import ToolResult
+
+    entered = asyncio.Event()
+    seen: list[dict[str, asyncio.Task]] = []
+
+    async def hanging_tool(name: str, raw_args: str, _session) -> ToolResult:
+        entered.set()
+        seen.append(dict(executor.RUNNING_TASKS))
+        await asyncio.sleep(30)
+        return ToolResult(ok=True, content="{}", data={})
+
+    monkeypatch.setattr(step_runner, "execute_tool", hanging_tool)
+
+    document = _document({"type": "schedule", "settings": {"mode": "interval", "every_minutes": 1}})
+    document["steps"] = [
+        {
+            "id": "step_fetch0",
+            "name": "Fetch",
+            "type": "action",
+            "settings": {
+                "integration": "builtin",
+                "action": "http",
+                "input": {"url": {"kind": "literal", "value": "https://example.com"}},
+            },
+        }
+    ]
+    automation = await svc.create_automation(session, document=document)
+    automation_id = automation.id
+    await session.commit()
+
+    job = asyncio.create_task(sched.run_scheduled(automation_id))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert len(seen[0]) == 1
+        run_id = next(iter(seen[0]))
+        assert executor.request_cancel(run_id) is True
+        await asyncio.wait_for(job, timeout=5)
+
+        session.expire_all()
+        run, steps = await runs_svc.get_run(session, run_id)
+        assert run.status == "cancelled"
+        assert [s.status for s in steps] == ["cancelled"]
+    finally:
+        job.cancel()
+        for task in list(executor.RUNNING_TASKS.values()):
+            task.cancel()
+        executor.RUNNING_TASKS.clear()

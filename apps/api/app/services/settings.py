@@ -78,6 +78,7 @@ async def get_settings_for_client(session: AsyncSession) -> SettingsPayload:
         default_model=DefaultModel.model_validate(row.default_model),
         tools=tools,
         tool_credentials=tool_credentials,
+        timezone=row.timezone or "UTC",
     )
 
 
@@ -113,6 +114,9 @@ async def save_settings(session: AsyncSession, payload: SettingsPayload) -> None
 
     row.providers = encrypted_providers
     row.default_model = payload.default_model.model_dump(by_alias=True)
+    # Already validated as a real IANA zone by `SettingsPayload`, so the scheduler can
+    # build a trigger with it without a second check.
+    row.timezone = payload.timezone
     # tools is managed by the OAuth flows + disconnect_tool; ignore client-supplied value.
 
 

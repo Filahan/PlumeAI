@@ -192,8 +192,20 @@ class Run(Base):
 
     # Newest-first listing per automation — DESC so the common `ORDER BY created_at DESC`
     # scan is a plain forward index read.
+    #
+    # The partial unique index is the *durable* form of "one automation executes at most
+    # one run at a time": `create_run` checks for an active run first, but two concurrent
+    # requests can both pass that check in their own transactions, and only the database
+    # can arbitrate between them. It covers `queued` and `running` only, so any number of
+    # finished runs coexist.
     __table_args__ = (
         Index("runs_automation_created_idx", "automation_id", text("created_at DESC")),
+        Index(
+            "runs_one_active_per_automation",
+            "automation_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
 

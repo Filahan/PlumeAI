@@ -74,10 +74,16 @@ def _compact(value: Any) -> str:
 
 
 def _clip(text: str, limit: int) -> str:
+    """Cap `text` at `limit` characters, marking it as cut. Idempotent.
+
+    Already-clipped text keeps a single marker instead of collecting one per pass — the
+    budget loop below can clip the same entry twice.
+    """
     if len(text) <= limit:
         return text
+    body = text[: -len(_TRUNCATION_SUFFIX)] if text.endswith(_TRUNCATION_SUFFIX) else text
     keep = max(0, limit - len(_TRUNCATION_SUFFIX))
-    return text[:keep] + _TRUNCATION_SUFFIX
+    return body[:keep] + _TRUNCATION_SUFFIX
 
 
 def render_prior_outputs(
@@ -93,6 +99,12 @@ def render_prior_outputs(
     because the step a prompt is about is almost always the most recent one. A shrunk entry
     becomes a JSON *string* ending in `…[truncated]` instead of the original value, so the
     result stays valid JSON and the model can see that it is looking at a fragment.
+
+    Both caps are **approximate**, and deliberately so. They count characters of rendered
+    JSON, not tokens, and `MIN_STEP_OUTPUT_CHARS` is a floor no entry drops below — so a
+    run with many steps can exceed `total_cap` rather than render steps the prompt can't
+    identify. The point is to stop one enormous output from swallowing the context window,
+    not to hit a byte target.
     """
     # `raw` is the value's compact JSON; once an entry has been clipped it is rendered as
     # a JSON *string* holding that clipped text instead, so the block stays parseable and

@@ -6,6 +6,7 @@ so the frontend can render consistent toasts and the request_id allows correlati
 
 from __future__ import annotations
 
+import json
 import traceback
 from typing import Any
 
@@ -144,21 +145,34 @@ async def starlette_http_error_handler(
     )
 
 
+def _jsonable_errors(errors: Any) -> Any:
+    """Request-validation errors, guaranteed to survive JSON encoding.
+
+    Pydantic puts the *original exception object* into `ctx` for a field validator that
+    raised (`ValueError("unknown timezone: ...")`), and `JSONResponse` cannot encode that
+    — so without this the handler whose whole job is reporting a 422 would itself 500.
+    Anything the encoder doesn't recognize is rendered with `str()`, which is exactly the
+    validator's message.
+    """
+    return json.loads(json.dumps(errors, default=str))
+
+
 async def validation_error_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     rid = _request_id(request)
+    errors = _jsonable_errors(exc.errors())
     body = {
         "type": f"{PROBLEM_BASE}/validation-failed",
         "title": "Validation failed",
         "status": 422,
         "detail": "Request body did not match the expected schema.",
         "instance": request.url.path,
-        "errors": exc.errors(),
+        "errors": errors,
     }
     if rid:
         body["request_id"] = rid
-    log.info("validation_error", errors=exc.errors(), request_id=rid)
+    log.info("validation_error", errors=errors, request_id=rid)
     return JSONResponse(
         status_code=422, content=body, headers={"Content-Type": "application/problem+json"}
     )
