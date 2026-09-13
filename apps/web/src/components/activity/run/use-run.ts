@@ -15,15 +15,26 @@ const POLL_MS = 2_000;
  *  grows between polls instead of sitting still for two seconds at a time. */
 const TICK_MS = 500;
 
+/** What one completed load left behind. Held as a single value so `loading` can be
+ *  derived — `key` is the run it answers, and anything else means "still fetching". */
+interface Loaded {
+  key: string;
+  run: RunWithAutomation | null;
+  notFound: boolean;
+  error: string | null;
+}
+
+const EMPTY: Loaded = { key: '', run: null, notFound: false, error: null };
+
 export interface RunLoad {
   run: RunWithAutomation | null;
-  /** True only on the first load — a poll never blanks the page. */
+  /** True until the first answer arrives — a poll never blanks the page. */
   loading: boolean;
   /** The run id is not one we have. A state, not an error. */
   notFound: boolean;
   /** Anything else that went wrong, in a sentence. */
   error: string | null;
-  /** Re-read against this instead of `Date.now()`: it only moves while the run does. */
+  /** Lay out against this rather than `Date.now()`: it only moves while the run does. */
   now: number;
 }
 
@@ -31,14 +42,14 @@ export interface RunLoad {
  *
  *  The poll stops the moment the run reaches a terminal status and on unmount, and a
  *  failed poll is swallowed — a blip in the network is not a reason to replace a run
- *  that is already on screen with an error. */
+ *  that is already on screen with an error.
+ */
 export function useRun(runId: string): RunLoad {
-  const [run, setRun] = useState<RunWithAutomation | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<Loaded>(EMPTY);
   const [now, setNow] = useState(() => Date.now());
 
+  const loading = loaded.key !== runId;
+  const run = loading ? null : loaded.run;
   // Whether to keep polling is the run's own business, so it is read off the loaded run
   // rather than tracked separately — one source of truth, and no way for the two to
   // disagree about whether the thing is still going.
@@ -46,23 +57,25 @@ export function useRun(runId: string): RunLoad {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setNotFound(false);
-    setError(null);
-    setRun(null);
 
     activity
       .run(runId)
       .then((detail) => {
-        if (cancelled) return;
-        setRun(detail);
-        setLoading(false);
+        if (!cancelled) setLoaded({ key: runId, run: detail, notFound: false, error: null });
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        if (reason instanceof ApiError && reason.status === 404) setNotFound(true);
-        else setError(reason instanceof Error ? reason.message : 'Could not load this run.');
-        setLoading(false);
+        const notFound = reason instanceof ApiError && reason.status === 404;
+        setLoaded({
+          key: runId,
+          run: null,
+          notFound,
+          error: notFound
+            ? null
+            : reason instanceof Error
+              ? reason.message
+              : 'Could not load this run.',
+        });
       });
 
     return () => {
@@ -78,7 +91,11 @@ export function useRun(runId: string): RunLoad {
       activity
         .run(runId)
         .then((detail) => {
-          if (!cancelled) setRun(detail);
+          // Keyed, so a poll that lands after the route changed cannot overwrite the run
+          // that replaced it.
+          if (!cancelled) {
+            setLoaded((prev) => (prev.key === runId ? { ...prev, run: detail } : prev));
+          }
         })
         .catch(() => {
           /* one missed poll changes nothing — the next one will say the same thing */
@@ -93,5 +110,5 @@ export function useRun(runId: string): RunLoad {
     };
   }, [active, runId]);
 
-  return { run, loading, notFound, error, now };
+  return { run, loading, notFound: loaded.notFound && !loading, error: loading ? null : loaded.error, now };
 }

@@ -199,8 +199,7 @@ export const HOUR_TICKS = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00']
 
 // ─── Links ──────────────────────────────────────────────────────────────────────────
 
-/** Where a square, a mark or the banner's button sends you: the automation's editor,
- *  with the run it should select. */
+/** Where a square, a mark or the banner's button sends you: that run's own page. */
 export function runHref(automationId: string, runId: string): string {
-  return `/automations/${encodeURIComponent(automationId)}?run=${encodeURIComponent(runId)}`;
+  return `/activity/runs/${encodeURIComponent(runId)}`;
 }
