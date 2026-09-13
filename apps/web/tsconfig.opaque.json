@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "es2021",
+    "outDir": "./.opaque-out",
+    "jsx": "react-jsx",
+    "isolatedModules": false,
+    "verbatimModuleSyntax": false,
+    "declaration": false,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["opaque-harness.ts", "src/components/automations/inspector/schema-form/opaque-field.ts"]
+}

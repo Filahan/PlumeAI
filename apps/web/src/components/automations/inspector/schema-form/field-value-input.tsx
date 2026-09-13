@@ -1,10 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import type { FieldValue } from '@/lib/automations/types';
+import { useCatalog, useCurrentAutomation } from '@/lib/automations/store';
 import { TextAreaField } from '../text-field';
 import FieldModeToggle, { MODE_META, type FieldMode } from './mode-toggle';
 import LiteralInput from './literal-input';
+import { OPAQUE_AI_STEP_HINT, opaqueFieldState } from './opaque-field';
 import RefField from './ref-field';
 import { isCompleteRef } from './samples';
 import { emptyLiteral, type SchemaField } from './schema';
@@ -35,7 +38,16 @@ function asString(value: unknown): string {
  *  (`literal` / `ref` / `ai`). The document schema refuses a `ref` that isn't a complete
  *  `{{ path }}` and an `ai` instruction that is empty, so a mode the user has only just
  *  picked lives in local state until it holds something the server will accept — that
- *  way choosing "From step" never bounces off the API. */
+ *  way choosing "From step" never bounces off the API.
+ *
+ *  "Ask AI" is withheld on one kind of field: an opaque identifier (`channel_id`,
+ *  `page_id`, `thread_ts`) that no earlier step could supply. There is nothing for the
+ *  model to derive such a value from, so it invents one — a run that fails, or worse, a
+ *  message posted to whatever real thing the invented id happens to name. See
+ *  `opaque-field.ts` for how the field is recognised and how "no earlier step could
+ *  supply it" is decided. A document already saved in `ai` mode is never rewritten
+ *  behind the user's back: it keeps the mode and gets the warning, which is the
+ *  explanation for the run that failed. */
 export default function FieldValueInput({
   field,
   value,
@@ -45,7 +57,15 @@ export default function FieldValueInput({
   onDraft,
   onFlush,
 }: FieldValueInputProps) {
+  const current = useCurrentAutomation();
+  const catalog = useCatalog();
   const [pending, setPending] = useState<{ mode: FieldMode; text: string } | null>(null);
+  const steps = current?.document.steps;
+  const run = current?.activeRun;
+  const opaque = useMemo(
+    () => opaqueFieldState(field.name, field.schema, steps ?? [], stepId, catalog, run),
+    [field.name, field.schema, steps, stepId, catalog, run]
+  );
   // A pending mode stops mattering the moment the document comes back holding it — no
   // need to clear the state, just stop reading it.
   const active = pending !== null && value?.kind !== pending.mode ? pending : null;
@@ -87,7 +107,13 @@ export default function FieldValueInput({
 
   return (
     <div className="space-y-1.5">
-      <FieldModeToggle mode={mode} modes={modes} onChange={switchMode} label={field.label} />
+      <FieldModeToggle
+        mode={mode}
+        modes={modes}
+        onChange={switchMode}
+        label={field.label}
+        unavailable={opaque.block === null ? undefined : { ai: opaque.block }}
+      />
 
       {mode === 'literal' && (
         <LiteralInput
@@ -125,7 +151,16 @@ export default function FieldValueInput({
             onChange={(next) => setText(next, next.trim().length > 0, true)}
             onFlush={() => onFlush()}
           />
-          <p className="text-[11px] text-[color:var(--muted-foreground)]">{MODE_META.ai.hint}.</p>
+          {opaque.block !== null ? (
+            <p className="flex items-start gap-1.5 rounded-lg bg-[#FFFBEB] px-2 py-1 text-[11px] leading-snug text-[#92400E]">
+              <AlertTriangle size={12} strokeWidth={2} className="mt-[2px] shrink-0" />
+              <span className="min-w-0 break-words">{opaque.block}</span>
+            </p>
+          ) : (
+            <p className="text-[11px] leading-snug text-[color:var(--muted-foreground)]">
+              {opaque.opaque ? OPAQUE_AI_STEP_HINT : `${MODE_META.ai.hint}.`}
+            </p>
+          )}
         </div>
       )}
     </div>
