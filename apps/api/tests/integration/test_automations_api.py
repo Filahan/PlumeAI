@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import select
 
 from app.db.models import Automation, Run, RunStep
-from tests.integration.conftest import ai_step, document
 
 
 async def _create(client, **body) -> dict:
@@ -40,8 +39,8 @@ async def test_create_blank_automation_returns_a_usable_draft(client) -> None:
     assert doc["model"]["provider"] in {"openai", "anthropic"}
 
 
-async def test_create_with_a_document_keeps_it_verbatim(client) -> None:
-    detail = await _create(client, document=document("Digest", [ai_step("step_aaaaa")]))
+async def test_create_with_a_document_keeps_it_verbatim(client, ai_step, make_document) -> None:
+    detail = await _create(client, document=make_document("Digest", [ai_step("step_aaaaa")]))
 
     assert detail["name"] == "Digest"
     assert [s["id"] for s in detail["document"]["steps"]] == ["step_aaaaa"]
@@ -74,7 +73,7 @@ async def test_get_unknown_automation_is_404(client) -> None:
 # --- operations --------------------------------------------------------------------------
 
 
-async def test_operations_add_update_remove_bump_versions_and_summarize(client) -> None:
+async def test_operations_add_update_remove_bump_versions_and_summarize(client, ai_step) -> None:
     created = await _create(client, name="Demo")
     aid = created["id"]
 
@@ -188,11 +187,11 @@ async def test_put_an_invalid_document_is_422_with_issues(client) -> None:
     assert detail["versionNumber"] == 1
 
 
-async def test_put_a_valid_document_creates_a_new_version(client) -> None:
+async def test_put_a_valid_document_creates_a_new_version(client, ai_step, make_document) -> None:
     created = await _create(client, name="Demo")
     resp = await client.put(
         f"/automations/{created['id']}",
-        json={"document": document("Replaced", [ai_step("step_ccccc")])},
+        json={"document": make_document("Replaced", [ai_step("step_ccccc")])},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -207,7 +206,7 @@ async def test_put_a_valid_document_creates_a_new_version(client) -> None:
 # --- validate ------------------------------------------------------------------------------
 
 
-async def test_validate_reports_issues_without_persisting(client) -> None:
+async def test_validate_reports_issues_without_persisting(client, make_document) -> None:
     created = await _create(client, name="Demo")
     broken = {
         "id": "step_ddddd",
@@ -216,7 +215,7 @@ async def test_validate_reports_issues_without_persisting(client) -> None:
         "settings": {"integration": "gmail", "action": "no_such_action", "input": {}},
     }
     resp = await client.post(
-        "/automations/validate", json={"document": document("Scratch", [broken])}
+        "/automations/validate", json={"document": make_document("Scratch", [broken])}
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -229,16 +228,22 @@ async def test_validate_reports_issues_without_persisting(client) -> None:
     assert detail["versionNumber"] == 1
 
 
-async def test_validate_route_is_not_shadowed_by_the_id_route(client) -> None:
+async def test_validate_route_is_not_shadowed_by_the_id_route(client, make_document) -> None:
     """`/automations/validate` must resolve to the validate endpoint, not to an id."""
-    resp = await client.post("/automations/validate", json={"document": document()})
+    resp = await client.post("/automations/validate", json={"document": make_document()})
     assert resp.status_code == 200
+
+
+async def test_validate_a_malformed_document_is_422(client) -> None:
+    resp = await client.post("/automations/validate", json={"document": {"name": "x"}})
+    assert resp.status_code == 422
+    assert resp.json()["extra"]["issues"]
 
 
 # --- versions ------------------------------------------------------------------------------
 
 
-async def test_versions_list_fetch_and_restore(client) -> None:
+async def test_versions_list_fetch_and_restore(client, ai_step) -> None:
     created = await _create(client, name="Demo")
     aid = created["id"]
     await client.post(
@@ -290,8 +295,13 @@ async def test_patch_toggles_enabled(client) -> None:
     assert rows[0]["enabled"] is False
 
 
-async def test_delete_cascades_versions_runs_and_steps(client, session) -> None:
-    created = await _create(client, document=document("Demo", [ai_step("step_fffff")]))
+async def test_delete_cascades_versions_runs_and_steps(
+    client,
+    session,
+    ai_step,
+    make_document,
+) -> None:
+    created = await _create(client, document=make_document("Demo", [ai_step("step_fffff")]))
     aid = created["id"]
     await client.post(f"/automations/{aid}/runs", json={"trigger": "manual"})
 
@@ -310,9 +320,14 @@ async def test_delete_cascades_versions_runs_and_steps(client, session) -> None:
 # --- runs ------------------------------------------------------------------------------------
 
 
-async def test_start_run_queues_it_with_pending_steps(client, session) -> None:
+async def test_start_run_queues_it_with_pending_steps(
+    client,
+    session,
+    ai_step,
+    make_document,
+) -> None:
     created = await _create(
-        client, document=document("Demo", [ai_step("step_ggggg"), ai_step("step_hhhhh")])
+        client, document=make_document("Demo", [ai_step("step_ggggg"), ai_step("step_hhhhh")])
     )
     aid = created["id"]
 
@@ -329,13 +344,13 @@ async def test_start_run_queues_it_with_pending_steps(client, session) -> None:
     assert {s["status"] for s in detail["steps"]} == {"pending"}
     assert [s["index"] for s in detail["steps"]] == [0, 1]
 
-    # The automation now points at its last run.
+    # The automation now points at its last run (still running, so no end time yet).
     rows = (await client.get("/automations")).json()
-    assert rows[0]["lastRun"]["status"] == "queued"
+    assert rows[0]["lastRun"] == {"status": "queued", "endedAt": None}
 
 
-async def test_second_start_while_one_is_in_flight_is_409(client) -> None:
-    created = await _create(client, document=document("Demo", [ai_step("step_iiiii")]))
+async def test_second_start_while_one_is_in_flight_is_409(client, ai_step, make_document) -> None:
+    created = await _create(client, document=make_document("Demo", [ai_step("step_iiiii")]))
     aid = created["id"]
 
     assert (await client.post(f"/automations/{aid}/runs", json={})).status_code == 202
@@ -344,8 +359,8 @@ async def test_second_start_while_one_is_in_flight_is_409(client) -> None:
     assert conflict.json()["extra"]["runId"]
 
 
-async def test_runs_list_is_newest_first_and_pageable(client) -> None:
-    created = await _create(client, document=document("Demo", [ai_step("step_jjjjj")]))
+async def test_runs_list_is_newest_first_and_pageable(client, ai_step, make_document) -> None:
+    created = await _create(client, document=make_document("Demo", [ai_step("step_jjjjj")]))
     aid = created["id"]
 
     ids = []
@@ -367,8 +382,12 @@ async def test_runs_list_is_newest_first_and_pageable(client) -> None:
     assert page[0]["id"] not in [r["id"] for r in older]
 
 
-async def test_cancelling_a_queued_run_cancels_it_and_its_steps(client) -> None:
-    created = await _create(client, document=document("Demo", [ai_step("step_kkkkk")]))
+async def test_cancelling_a_queued_run_cancels_it_and_its_steps(
+    client,
+    ai_step,
+    make_document,
+) -> None:
+    created = await _create(client, document=make_document("Demo", [ai_step("step_kkkkk")]))
     aid = created["id"]
     run_id = (await client.post(f"/automations/{aid}/runs", json={})).json()["runId"]
 
@@ -380,6 +399,11 @@ async def test_cancelling_a_queued_run_cancels_it_and_its_steps(client) -> None:
     assert detail["status"] == "cancelled"
     assert {s["status"] for s in detail["steps"]} == {"cancelled"}
 
+    # A finished run reports its end time through the automation's `lastRun`.
+    summary = (await client.get("/automations")).json()[0]
+    assert summary["lastRun"]["status"] == "cancelled"
+    assert isinstance(summary["lastRun"]["endedAt"], int)
+
     # Cancelling again is a no-op, and the automation can now be run afresh.
     assert (
         await client.post(f"/automations/{aid}/runs/{run_id}/cancel")
@@ -387,8 +411,8 @@ async def test_cancelling_a_queued_run_cancels_it_and_its_steps(client) -> None:
     assert (await client.post(f"/automations/{aid}/runs", json={})).status_code == 202
 
 
-async def test_a_run_from_another_automation_is_404(client) -> None:
-    a = await _create(client, document=document("A", [ai_step("step_lllll")]))
+async def test_a_run_from_another_automation_is_404(client, ai_step, make_document) -> None:
+    a = await _create(client, document=make_document("A", [ai_step("step_lllll")]))
     b = await _create(client, name="B")
     run_id = (await client.post(f"/automations/{a['id']}/runs", json={})).json()["runId"]
 
@@ -414,8 +438,12 @@ async def test_start_run_rejects_the_schedule_trigger(client) -> None:
 # --- SSE ---------------------------------------------------------------------------------
 
 
-async def test_events_stream_sends_a_snapshot_and_ends_for_a_finished_run(client) -> None:
-    created = await _create(client, document=document("Demo", [ai_step("step_mmmmm")]))
+async def test_events_stream_sends_a_snapshot_and_ends_for_a_finished_run(
+    client,
+    ai_step,
+    make_document,
+) -> None:
+    created = await _create(client, document=make_document("Demo", [ai_step("step_mmmmm")]))
     aid = created["id"]
     run_id = (await client.post(f"/automations/{aid}/runs", json={})).json()["runId"]
     await client.post(f"/automations/{aid}/runs/{run_id}/cancel")

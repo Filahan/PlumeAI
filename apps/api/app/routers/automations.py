@@ -70,10 +70,29 @@ def _sse(event: dict[str, Any]) -> dict[str, str]:
     return {"data": json.dumps(event, separators=(",", ":"), default=str)}
 
 
-def _last_run(automation: Automation) -> LastRunPayload | None:
-    if not automation.last_run_status:
-        return None
-    return LastRunPayload(status=automation.last_run_status, ended_at=None)
+async def _last_runs(
+    session: AsyncSession, automations: list[Automation]
+) -> dict[str, LastRunPayload]:
+    """`automation.id` → its last run, resolved in one query for the whole page.
+
+    `last_run_status` is denormalized onto the automation so the list view needs no join
+    at all, but `endedAt` isn't — one extra `IN` query keeps the row payload complete
+    without making it O(rows) round trips.
+    """
+    ids = {a.last_run_id for a in automations if a.last_run_id and a.last_run_status}
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Run.id, Run.automation_id, Run.status, Run.ended_at).where(Run.id.in_(ids))
+        )
+    ).all()
+    return {
+        row.automation_id: LastRunPayload(
+            status=row.status, ended_at=to_ms(row.ended_at) if row.ended_at else None
+        )
+        for row in rows
+    }
 
 
 def _document_is_valid(document: dict[str, Any]) -> bool:
@@ -85,7 +104,9 @@ def _document_is_valid(document: dict[str, Any]) -> bool:
     return all(step.get("valid", True) for step in (document.get("steps") or []))
 
 
-def _summary(automation: Automation) -> AutomationSummary:
+def _summary(
+    automation: Automation, last_run: LastRunPayload | None
+) -> AutomationSummary:
     document = automation.document or {}
     trigger_summary = "manual trigger"
     try:
@@ -100,7 +121,7 @@ def _summary(automation: Automation) -> AutomationSummary:
         enabled=automation.enabled,
         trigger_summary=trigger_summary,
         next_run_at=scheduler.next_run_at(automation.id),
-        last_run=_last_run(automation),
+        last_run=last_run,
         valid=_document_is_valid(document),
         updated_at=to_ms(automation.updated_at),
     )
@@ -118,6 +139,7 @@ async def _detail(session: AsyncSession, automation: Automation) -> AutomationDe
         validated, issues = await svc.validate_draft(session, parsed)
         document = dump_document(validated)
 
+    last_runs = await _last_runs(session, [automation])
     return AutomationDetail(
         id=automation.id,
         name=automation.name,
@@ -127,7 +149,7 @@ async def _detail(session: AsyncSession, automation: Automation) -> AutomationDe
         issues=issues,
         next_run_at=scheduler.next_run_at(automation.id),
         assistant_messages=list(automation.assistant_messages or []),
-        last_run=_last_run(automation),
+        last_run=last_runs.get(automation.id),
         created_at=to_ms(automation.created_at),
         updated_at=to_ms(automation.updated_at),
     )
@@ -221,7 +243,9 @@ async def _run_in_automation(
 async def list_automations_route(
     user: CurrentUser, session: DBSession
 ) -> list[AutomationSummary]:
-    return [_summary(a) for a in await svc.list_automations(session)]
+    automations = await svc.list_automations(session)
+    last_runs = await _last_runs(session, automations)
+    return [_summary(a, last_runs.get(a.id)) for a in automations]
 
 
 @router.post(
@@ -247,7 +271,7 @@ async def validate_route(
 
     Declared before the `/{automation_id}` routes so "validate" is never read as an id.
     """
-    doc = AutomationDocument.model_validate(body.document)
+    doc = svc.parse_document(body.document)
     validated, issues = await svc.validate_draft(session, doc)
     return ValidateResponse(document=dump_document(validated), issues=issues)
 
@@ -449,7 +473,8 @@ async def cancel_run_route(
     automation_id: str, run_id: str, user: CurrentUser, session: DBSession
 ) -> CancelRunResponse:
     await _run_in_automation(session, automation_id, run_id)
-    return CancelRunResponse(status=await runs_svc.cancel_run(session, run_id))  # type: ignore[arg-type]
+    status_after = await runs_svc.cancel_run(session, run_id)
+    return CancelRunResponse(status=status_after)  # type: ignore[arg-type]
 
 
 @router.get("/{automation_id}/runs/{run_id}/events")

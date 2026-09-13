@@ -141,24 +141,45 @@ async def client(session_factory) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides.pop(get_session, None)
 
 
-# --- document helpers used across the integration tests ---------------------------------
+# --- document builders ---------------------------------------------------------------------
+#
+# Exposed as fixtures rather than importable helpers: the integration suite must not be
+# imported from by name, or it starts competing with `tests/conftest.py` for the
+# top-level `conftest` module the pure suite imports.
 
 
-def ai_step(step_id: str, name: str = "Draft a reply", instructions: str = "Say hi") -> dict:
-    """A minimal valid `ai` step — needs no catalog entry, so it validates cleanly."""
-    return {
-        "id": step_id,
-        "name": name,
-        "type": "ai",
-        "settings": {"instructions": instructions, "tools": [], "output": {"mode": "text"}},
-    }
+@pytest.fixture
+def ai_step():
+    """Build a minimal valid `ai` step — needs no catalog entry, so it validates cleanly."""
+
+    def build(
+        step_id: str, name: str = "Draft a reply", instructions: str = "Say hi"
+    ) -> dict:
+        return {
+            "id": step_id,
+            "name": name,
+            "type": "ai",
+            "settings": {
+                "instructions": instructions,
+                "tools": [],
+                "output": {"mode": "text"},
+            },
+        }
+
+    return build
 
 
-def document(name: str = "Test automation", steps: list[dict] | None = None) -> dict:
-    return {
-        "name": name,
-        "description": "",
-        "model": {"provider": "openai", "model": "gpt-4o-mini"},
-        "trigger": {"type": "manual"},
-        "steps": steps if steps is not None else [],
-    }
+@pytest.fixture
+def make_document():
+    """Build a manual-trigger document around the given steps."""
+
+    def build(name: str = "Test automation", steps: list[dict] | None = None) -> dict:
+        return {
+            "name": name,
+            "description": "",
+            "model": {"provider": "openai", "model": "gpt-4o-mini"},
+            "trigger": {"type": "manual"},
+            "steps": steps if steps is not None else [],
+        }
+
+    return build

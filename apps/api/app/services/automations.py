@@ -197,6 +197,15 @@ async def get_version(
     return row
 
 
+def parse_document(raw: Any) -> AutomationDocument:
+    """Parse a client-supplied document, turning a schema mismatch into a 422.
+
+    Used by the dry-run `POST /automations/validate`, which has no automation to attach
+    a draft to and so cannot fall back to "save it anyway and report issues".
+    """
+    return _coerce_document(raw, created_by="json")
+
+
 async def validate_draft(
     session: AsyncSession, doc: AutomationDocument
 ) -> tuple[AutomationDocument, list[ValidationIssue]]:

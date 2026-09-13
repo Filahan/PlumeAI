@@ -11,22 +11,31 @@ from app.db.models import Run, RunStep
 from app.errors import Conflict
 from app.services import automations as svc
 from app.services import runs as runs_svc
-from tests.integration.conftest import ai_step, document
 
 
-async def _automation(session, steps: list[dict] | None = None):
-    automation = await svc.create_automation(
-        session, document=document("Demo", steps if steps is not None else [])
-    )
-    await session.flush()
-    return automation
+@pytest.fixture
+def automation_factory(session, make_document):
+    """Create a persisted automation whose document holds `steps`."""
+
+    async def build(steps: list[dict] | None = None):
+        automation = await svc.create_automation(
+            session, document=make_document("Demo", steps if steps is not None else [])
+        )
+        await session.flush()
+        return automation
+
+    return build
 
 
 # --- create_run ---------------------------------------------------------------------------
 
 
-async def test_create_run_snapshots_the_current_version(session) -> None:
-    automation = await _automation(session, [ai_step("step_aaaaa"), ai_step("step_bbbbb")])
+async def test_create_run_snapshots_the_current_version(
+    session,
+    automation_factory,
+    ai_step,
+) -> None:
+    automation = await automation_factory([ai_step("step_aaaaa"), ai_step("step_bbbbb")])
     version_id = automation.current_version_id
 
     run = await runs_svc.create_run(session, automation, trigger="manual")
@@ -53,16 +62,21 @@ async def test_create_run_snapshots_the_current_version(session) -> None:
     assert all(s.attempt == 0 and s.trace == [] for s in steps)
 
 
-async def test_editing_the_document_does_not_change_a_run_in_flight(session) -> None:
+async def test_editing_the_document_does_not_change_a_run_in_flight(
+    session,
+    automation_factory,
+    ai_step,
+    make_document,
+) -> None:
     """The whole point of pinning `version_id`: a run executes the document as it was."""
-    automation = await _automation(session, [ai_step("step_aaaaa")])
+    automation = await automation_factory([ai_step("step_aaaaa")])
     run = await runs_svc.create_run(session, automation, trigger="manual")
     pinned_version = run.version_id
 
     await svc.save_document(
         session,
         automation,
-        document("Demo", [ai_step("step_aaaaa"), ai_step("step_ccccc")]),
+        make_document("Demo", [ai_step("step_aaaaa"), ai_step("step_ccccc")]),
         created_by="user",
     )
 
@@ -72,8 +86,12 @@ async def test_editing_the_document_does_not_change_a_run_in_flight(session) -> 
     assert [s.step_id for s in steps] == ["step_aaaaa"]
 
 
-async def test_create_run_conflicts_with_an_active_run(session) -> None:
-    automation = await _automation(session, [ai_step("step_aaaaa")])
+async def test_create_run_conflicts_with_an_active_run(
+    session,
+    automation_factory,
+    ai_step,
+) -> None:
+    automation = await automation_factory([ai_step("step_aaaaa")])
     first = await runs_svc.create_run(session, automation, trigger="manual")
 
     with pytest.raises(Conflict) as exc:
@@ -86,8 +104,8 @@ async def test_create_run_conflicts_with_an_active_run(session) -> None:
     assert await runs_svc.create_run(session, automation, trigger="test")
 
 
-async def test_create_run_for_an_empty_document_has_no_steps(session) -> None:
-    automation = await _automation(session)
+async def test_create_run_for_an_empty_document_has_no_steps(session, automation_factory) -> None:
+    automation = await automation_factory()
     run = await runs_svc.create_run(session, automation, trigger="manual")
     _, steps = await runs_svc.get_run(session, run.id)
     assert steps == []
@@ -96,12 +114,12 @@ async def test_create_run_for_an_empty_document_has_no_steps(session) -> None:
 # --- restart recovery ----------------------------------------------------------------------
 
 
-async def test_mark_orphaned_runs_failed(session) -> None:
-    automation = await _automation(session, [ai_step("step_aaaaa"), ai_step("step_bbbbb")])
+async def test_mark_orphaned_runs_failed(session, automation_factory, ai_step) -> None:
+    automation = await automation_factory([ai_step("step_aaaaa"), ai_step("step_bbbbb")])
     queued = await runs_svc.create_run(session, automation, trigger="manual")
 
     # A second automation with a run that got as far as "running".
-    other = await _automation(session, [ai_step("step_ccccc")])
+    other = await automation_factory([ai_step("step_ccccc")])
     running = await runs_svc.create_run(session, other, trigger="manual")
     running.status = "running"
     _, running_steps = await runs_svc.get_run(session, running.id)
@@ -109,7 +127,7 @@ async def test_mark_orphaned_runs_failed(session) -> None:
     await session.flush()
 
     # ... and one that already finished, which must be left alone.
-    done = await _automation(session)
+    done = await automation_factory()
     finished = await runs_svc.create_run(session, done, trigger="manual")
     finished.status = "succeeded"
     await session.flush()
@@ -128,16 +146,19 @@ async def test_mark_orphaned_runs_failed(session) -> None:
     assert automation.last_run_status == "failed"
 
 
-async def test_mark_orphaned_runs_failed_is_a_noop_when_nothing_is_active(session) -> None:
-    await _automation(session)
+async def test_mark_orphaned_runs_failed_is_a_noop_when_nothing_is_active(
+    session,
+    automation_factory,
+) -> None:
+    await automation_factory()
     assert await runs_svc.mark_orphaned_runs_failed(session) == 0
 
 
 # --- pruning -------------------------------------------------------------------------------
 
 
-async def test_prune_runs_keeps_the_newest(session) -> None:
-    automation = await _automation(session, [ai_step("step_aaaaa")])
+async def test_prune_runs_keeps_the_newest(session, automation_factory, ai_step) -> None:
+    automation = await automation_factory([ai_step("step_aaaaa")])
     base = datetime.now(timezone.utc)
 
     created = []
@@ -161,9 +182,13 @@ async def test_prune_runs_keeps_the_newest(session) -> None:
     assert {s.run_id for s in surviving_steps} == {created[-1].id, created[-2].id}
 
 
-async def test_prune_runs_leaves_other_automations_alone(session) -> None:
-    a = await _automation(session, [ai_step("step_aaaaa")])
-    b = await _automation(session, [ai_step("step_bbbbb")])
+async def test_prune_runs_leaves_other_automations_alone(
+    session,
+    automation_factory,
+    ai_step,
+) -> None:
+    a = await automation_factory([ai_step("step_aaaaa")])
+    b = await automation_factory([ai_step("step_bbbbb")])
     for automation in (a, b):
         run = await runs_svc.create_run(session, automation, trigger="manual")
         run.status = "succeeded"
@@ -176,8 +201,8 @@ async def test_prune_runs_leaves_other_automations_alone(session) -> None:
     )
 
 
-async def test_prune_runs_below_the_threshold_deletes_nothing(session) -> None:
-    automation = await _automation(session)
+async def test_prune_runs_below_the_threshold_deletes_nothing(session, automation_factory) -> None:
+    automation = await automation_factory()
     await runs_svc.create_run(session, automation, trigger="manual")
     assert await runs_svc.prune_runs(session, automation.id, keep=200) == 0
 
@@ -185,8 +210,11 @@ async def test_prune_runs_below_the_threshold_deletes_nothing(session) -> None:
 # --- listing / cancel ----------------------------------------------------------------------
 
 
-async def test_list_runs_is_newest_first_and_honours_the_cursor(session) -> None:
-    automation = await _automation(session)
+async def test_list_runs_is_newest_first_and_honours_the_cursor(
+    session,
+    automation_factory,
+) -> None:
+    automation = await automation_factory()
     base = datetime.now(timezone.utc)
     runs = []
     for i in range(3):
@@ -206,9 +234,13 @@ async def test_list_runs_is_newest_first_and_honours_the_cursor(session) -> None
     assert len(await runs_svc.list_runs(session, automation.id, limit=1)) == 1
 
 
-async def test_cancel_a_running_run_only_signals_the_executor(session) -> None:
+async def test_cancel_a_running_run_only_signals_the_executor(
+    session,
+    automation_factory,
+    ai_step,
+) -> None:
     """Until Task 4b there is nothing to signal, so the run stays `running`."""
-    automation = await _automation(session, [ai_step("step_aaaaa")])
+    automation = await automation_factory([ai_step("step_aaaaa")])
     run = await runs_svc.create_run(session, automation, trigger="manual")
     run.status = "running"
     await session.flush()
