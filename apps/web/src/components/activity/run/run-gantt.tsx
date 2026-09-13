@@ -55,8 +55,10 @@ function Track({ lane }: { lane: StepLane }) {
         <span
           key={segment.n}
           title={
-            lane.estimated
-              ? `Try ${segment.n} — about ${formatDuration(Math.round(segment.durationMs))}`
+            lane.segments.length > 1 || lane.estimated
+              ? `Try ${segment.n} — ${lane.estimated ? 'about ' : ''}${formatDuration(
+                  Math.round(segment.durationMs)
+                )}`
               : formatDuration(Math.round(segment.durationMs))
           }
           className={`absolute top-[2px] h-3 rounded-[4px] ${

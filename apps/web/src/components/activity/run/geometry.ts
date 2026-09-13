@@ -25,8 +25,8 @@ export interface AttemptSegment {
   /** Percentages of the whole run, ready for `left` / `width`. */
   leftPct: number;
   widthPct: number;
-  /** What this attempt is believed to have taken. Derived, not measured — see
-   *  `attemptSegments` for why. */
+  /** How long this attempt took: recorded, or reconstructed on an old run — the lane's
+   *  `estimated` flag says which. */
   durationMs: number;
   error: string | null;
 }
@@ -49,9 +49,10 @@ export interface StepLane {
   attempts: number;
   /** False for a step the run never reached — it gets the words "never ran". */
   ran: boolean;
-  /** True when the per-attempt widths were derived by dividing the step's span rather
-   *  than measured — see `attemptSegments`. A single bar spanning the whole step is not
-   *  estimated: that one is exactly what the API reported. */
+  /** Which of the two paths in `attemptSegments` drew this lane. False means every bar
+   *  sits on a timestamp the executor recorded; true means the widths were reconstructed
+   *  from the step's span, for a run stored before those timestamps existed. A single bar
+   *  spanning the whole step is not estimated either: that one is the step's own span. */
   estimated: boolean;
 }
 
@@ -87,6 +88,41 @@ function backoffMs(step: RunStep): number[] {
     .map((s) => s * 1000);
 }
 
+/** One `attempt` entry that carries the wall-clock bounds the executor stamped on it. */
+interface TimedAttempt {
+  n: number;
+  startedAt: number;
+  endedAt: number;
+  error: string | null;
+  retryInSeconds: number | null;
+}
+
+/** The step's attempts, in order, only if *every* one of them was recorded with bounds.
+ *
+ *  All or nothing on purpose: a half-timed trace would mix bars that mean "this is when
+ *  it happened" with bars that mean "this is roughly where it must have been", and there
+ *  is no honest way to draw those on one track. Empty means "use the reconstruction". */
+function timedAttempts(step: RunStep): TimedAttempt[] {
+  const entries = attemptEntries(step.trace);
+  if (entries.length === 0) return [];
+  const timed: TimedAttempt[] = [];
+  for (const entry of entries) {
+    const { startedAt, endedAt } = entry;
+    if (typeof startedAt !== 'number' || typeof endedAt !== 'number') return [];
+    timed.push({
+      n: entry.n,
+      startedAt,
+      // `endedAt` is stamped a hair after the attempt returned, so it is never before
+      // the start — but a clock that stepped backwards should not produce a bar with a
+      // negative width.
+      endedAt: Math.max(endedAt, startedAt),
+      error: entry.error ?? null,
+      retryInSeconds: typeof entry.retryInSeconds === 'number' ? entry.retryInSeconds : null,
+    });
+  }
+  return timed;
+}
+
 /** When a step stopped, as far as this render is concerned. */
 function stepEnd(step: RunStep, now: number): number {
   if (step.endedAt != null) return step.endedAt;
@@ -95,24 +131,98 @@ function stepEnd(step: RunStep, now: number): number {
   return step.startedAt + (step.durationMs ?? 0);
 }
 
-/** Split one step into per-attempt bars.
+/** The bars of a step whose attempts were all recorded with their own bounds.
  *
- *  What the API actually gives us: the step's `startedAt`, `endedAt`/`durationMs`, its
- *  final `attempt` number, and a trace of `{kind: "attempt", n, error, retryInSeconds}`
- *  entries. What it does **not** give us is a timestamp per attempt — so the attempts
- *  themselves cannot be measured, only reconstructed:
+ *  The only thing here that is not read straight off the trace is the attempt that is
+ *  *still going*: a step in flight has no entry for it yet, but the previous entry says
+ *  when it ended and how long the executor meant to wait, so where the in-flight attempt
+ *  began is known exactly — and it has lasted until now. Without that the lane would go
+ *  quiet for the whole of a retry, which is the one moment someone is watching.
+ *
+ *  A step cancelled mid-attempt simply never records its last one. Nothing is invented to
+ *  cover the gap: the lane shows the attempts that happened, and the row's own duration
+ *  column still reports the step's full span. */
+function recordedSegments(
+  recorded: TimedAttempt[],
+  step: RunStep,
+  runStart: number,
+  totalMs: number,
+  now: number
+): Pick<StepLane, 'segments' | 'waits' | 'estimated'> {
+  const pct = (ms: number) => (ms / totalMs) * 100;
+  const bounds = recorded.map((attempt) => ({
+    n: attempt.n,
+    startedAt: attempt.startedAt,
+    endedAt: attempt.endedAt,
+    error: attempt.error,
+    retryInSeconds: attempt.retryInSeconds,
+    inFlight: false,
+  }));
+
+  const last = recorded[recorded.length - 1];
+  if (step.status === 'running' && last.retryInSeconds != null) {
+    const begun = last.endedAt + last.retryInSeconds * 1000;
+    if (now > begun) {
+      bounds.push({
+        n: last.n + 1,
+        startedAt: begun,
+        endedAt: Math.max(now, begun),
+        error: null,
+        retryInSeconds: null,
+        inFlight: true,
+      });
+    }
+  }
+
+  const segments: AttemptSegment[] = bounds.map((attempt) => ({
+    n: attempt.n,
+    // The recorded attempts that are not the last one always failed — that is why there
+    // was another. The last one failed only if the step did, and an in-flight one has
+    // not failed yet.
+    failed: attempt.inFlight ? false : attempt.error != null,
+    leftPct: pct(attempt.startedAt - runStart),
+    widthPct: pct(attempt.endedAt - attempt.startedAt),
+    durationMs: attempt.endedAt - attempt.startedAt,
+    error: attempt.error,
+  }));
+
+  const waits: WaitSegment[] = [];
+  for (let i = 0; i < bounds.length - 1; i += 1) {
+    const gapMs = Math.max(bounds[i + 1].startedAt - bounds[i].endedAt, 0);
+    waits.push({
+      leftPct: pct(bounds[i].endedAt - runStart),
+      widthPct: pct(gapMs),
+      // The policy's own number where it exists: "waits 10s" reads better than the
+      // 10.003s the clock actually measured, and it is the number the user configured.
+      seconds: bounds[i].retryInSeconds ?? Math.round(gapMs / 1000),
+    });
+  }
+
+  return { segments, waits, estimated: false };
+}
+
+/** Split one step into per-attempt bars — two paths, and the lane says which it used.
+ *
+ *  **Recorded.** The executor stamps every `attempt` trace entry with `startedAt` and
+ *  `endedAt` in the same epoch milliseconds as everything else in the payload, one entry
+ *  per attempt including the winning one. When they are all there, the bars go exactly
+ *  where the attempts happened and the dashes span the real gap between one attempt
+ *  ending and the next beginning — no arithmetic, nothing inferred.
+ *
+ *  **Reconstructed.** Runs recorded before that change are not migrated, and they still
+ *  have to draw. Those traces carry the backoffs and nothing else, so:
  *
  *      step span = attempt₁ + wait₁ + attempt₂ + wait₂ + … + attemptₙ
  *
- *  The waits are known exactly (`retryInSeconds`), so the work left over — the span
- *  minus every wait — is what the attempts shared, and it is divided evenly between
- *  them. That is honest for the failure this actually happens to (an argument the tool
- *  rejects, rejected just as fast every time) and it is at worst a plausible ordering
- *  for anything else: the bars are in the right places and the *waits*, which are the
- *  part worth looking at, are exact.
+ *  the waits are known exactly (`retryInSeconds`), and the work left over — the span
+ *  minus every wait — is divided evenly between the attempts. Honest for the failure
+ *  this actually happens to (an argument the tool rejects, rejected just as fast every
+ *  time), and at worst a plausible ordering for anything else: the bars are in the right
+ *  places and the waits, which are the part worth looking at, are exact. The lane is
+ *  flagged `estimated`, and the tooltip hedges.
  *
- *  When the trace carries no waits — one attempt, or a step from before traces — the
- *  step gets a single bar spanning it, and that bar is exact. */
+ *  Either way a step with nothing to split — one attempt, or no trace at all — gets a
+ *  single bar spanning it, which is the step's own measured span. */
 function attemptSegments(
   step: RunStep,
   runStart: number,
@@ -125,11 +235,17 @@ function attemptSegments(
 
   const offset = startedAt - runStart;
   const spanMs = Math.max(stepEnd(step, now) - startedAt, 0);
+  const failedStep = step.status === 'failed';
+
+  const recorded = timedAttempts(step);
+  if (recorded.length > 0) {
+    return recordedSegments(recorded, step, runStart, totalMs, now);
+  }
+
   const waits = backoffMs(step);
   const entries = attemptEntries(step.trace);
   const totalWait = waits.reduce((sum, ms) => sum + ms, 0);
   const workMs = spanMs - totalWait;
-  const failedStep = step.status === 'failed';
 
   // Not enough to split on, or a span that cannot hold the waits it claims (a clock that
   // disagrees with itself): one bar for the whole step rather than a fiction.
@@ -222,15 +338,26 @@ export function runGeometry(run: RunWithAutomation, now: number): RunGeometry {
       position: index + 1,
       segments,
       waits,
-      attempts: Math.max(step.attempt || 1, backoffMs(step).length + 1),
+      // What the pill counts. On a recorded lane the bars *are* the attempts, so a step
+      // cancelled while waiting to retry says "1 try" — the retry it was about to make
+      // never happened. Only the reconstruction has to infer a count from the backoffs,
+      // and there the retry it waited for did happen.
+      attempts: Math.max(
+        step.attempt || 1,
+        segments.length,
+        estimated ? backoffMs(step).length + 1 : 0
+      ),
       ran: step.startedAt != null,
       estimated,
     };
   });
 
+  // The policy, not the drawn dashes: a step cancelled while waiting to retry has a
+  // backoff it never got to finish, and the footer is still describing the rule it was
+  // following. Longest chain any one step declared wins.
   let backoffSeconds: number[] = [];
-  for (const lane of lanes) {
-    const seconds = lane.waits.map((wait) => wait.seconds);
+  for (const step of run.steps) {
+    const seconds = backoffMs(step).map((ms) => ms / 1000);
     if (seconds.length > backoffSeconds.length) backoffSeconds = seconds;
   }
 
@@ -304,10 +431,13 @@ export function fieldLabel(field: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase();
 }
 
-/** The gantt footer's second half: the backoff this run actually used. */
+/** The gantt footer's second half: the backoff rule this run was actually following.
+ *
+ *  Phrased as the policy rather than as something that finished happening, because a run
+ *  can be cancelled part way through a wait and the rule was still the rule. */
 export function retryPolicyLine(backoffSeconds: number[]): string {
   if (backoffSeconds.length === 0) return 'No step needed a second try.';
   const parts = backoffSeconds.map((s) => `${s}s`);
-  if (parts.length === 1) return `The retry waited ${parts[0]}.`;
+  if (parts.length === 1) return `A retry waits ${parts[0]}.`;
   return `Retries wait ${parts.slice(0, -1).join(', ')}, then ${parts[parts.length - 1]}.`;
 }

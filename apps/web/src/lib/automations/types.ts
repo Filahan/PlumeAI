@@ -307,9 +307,21 @@ export interface RunSummary {
   createdAt: number;
 }
 
-/** One entry of a step's `trace`: retry attempts and the AI step's tool calls. */
+/** One entry of a step's `trace`: retry attempts and the AI step's tool calls.
+ *
+ *  An `attempt` entry is written once per attempt, in order — including the one that
+ *  succeeded, which carries `error: null` and no `retryInSeconds`. `startedAt`/`endedAt`
+ *  are Unix milliseconds, and are optional because runs recorded before the executor
+ *  started stamping them are not migrated: a reader has to cope with both shapes. */
 export type TraceEntry =
-  | { kind: 'attempt'; n: number; error?: string; retryInSeconds?: number }
+  | {
+      kind: 'attempt';
+      n: number;
+      error?: string | null;
+      retryInSeconds?: number;
+      startedAt?: number;
+      endedAt?: number;
+    }
   | { kind: 'tool_call'; id: string; tool: string; args?: string }
   | { kind: 'tool_result'; id: string; tool: string; ok?: boolean; result?: string }
   | { kind: string; [key: string]: unknown };
