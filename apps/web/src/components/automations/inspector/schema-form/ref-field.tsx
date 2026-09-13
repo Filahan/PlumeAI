@@ -1,20 +1,27 @@
 'use client';
 
 import { useState } from 'react';
-import { Pencil } from 'lucide-react';
-import { useCurrentAutomation } from '@/lib/automations/store';
+import { AlertTriangle, Pencil } from 'lucide-react';
+import { useCatalog, useCurrentAutomation } from '@/lib/automations/store';
 import { TextField } from '../text-field';
 import ReferencePicker from './reference-picker';
 import { previewValue, resolveRefSample } from './samples';
+import type { JsonSchema } from './schema';
+import { refMismatch } from './step-output-shape';
 
 /** The "From step" side of a field: a `{{step_x.output.path}}` template.
  *
  *  Shown as a chip rather than an input, because the braces are noise to a
- *  non-technical reader — Edit reveals the raw text for anyone who wants it. */
+ *  non-technical reader — Edit reveals the raw text for anyone who wants it.
+ *
+ *  A reference that cannot fit the field — the whole output of an AI text step, which is
+ *  the object `{"text": …}`, dropped into a string input — carries its warning here, next
+ *  to the chip. The run would only say so after three retries. */
 export default function RefField({
   stepId,
   label,
   value,
+  fieldSchema,
   onChange,
   onDraft,
   onFlush,
@@ -23,19 +30,30 @@ export default function RefField({
   stepId: string;
   label: string;
   value: string;
+  /** JSON schema of the field this reference fills, when the form knows one. */
+  fieldSchema?: JsonSchema | null;
   onChange(next: string): void;
   onDraft(next: string): void;
   onFlush(): void;
 }) {
   const current = useCurrentAutomation();
+  const catalog = useCatalog();
   const [editing, setEditing] = useState(false);
   const sample = resolveRefSample(current?.activeRun, value);
+  const mismatch = refMismatch(
+    current?.document.steps ?? [],
+    catalog,
+    current?.activeRun,
+    value,
+    fieldSchema
+  );
 
   if (!editing && value.trim().length === 0) {
     return (
       <div className="flex items-center gap-1.5">
         <ReferencePicker
           beforeStepId={stepId}
+          fieldSchema={fieldSchema}
           label="Choose a step value"
           onPick={(ref) => onChange(ref)}
         />
@@ -67,6 +85,7 @@ export default function RefField({
           />
           <ReferencePicker
             beforeStepId={stepId}
+            fieldSchema={fieldSchema}
             label="Pick"
             onPick={(ref) => {
               onChange(ref);
@@ -90,10 +109,20 @@ export default function RefField({
           </button>
           <ReferencePicker
             beforeStepId={stepId}
+            fieldSchema={fieldSchema}
             label="Change"
             onPick={(ref) => onChange(ref)}
           />
         </div>
+      )}
+
+      {mismatch !== null && (
+        <p className="flex items-start gap-1.5 rounded-lg bg-[#FFFBEB] px-2 py-1 text-[11px] leading-snug text-[#92400E]">
+          <AlertTriangle size={12} strokeWidth={2} className="mt-[2px] shrink-0" />
+          <span className="min-w-0 break-words">
+            This value doesn&apos;t fit {label}: {mismatch}.
+          </span>
+        </p>
       )}
 
       {sample !== undefined && (

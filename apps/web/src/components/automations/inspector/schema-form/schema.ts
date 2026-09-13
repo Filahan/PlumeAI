@@ -41,7 +41,7 @@ function asString(value: unknown): string {
 }
 
 /** `type` may be a string or a union like `["string", "null"]`. */
-function schemaType(schema: JsonSchema): string {
+export function schemaType(schema: JsonSchema): string {
   const raw = schema.type;
   if (typeof raw === 'string') return raw;
   if (Array.isArray(raw)) {

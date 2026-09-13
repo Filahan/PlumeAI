@@ -108,6 +108,7 @@ export default function FieldValueInput({
           stepId={stepId}
           label={field.label}
           value={text}
+          fieldSchema={field.schema}
           onChange={(next) => setText(next, isCompleteRef(next), false)}
           onDraft={(next) => setText(next, isCompleteRef(next), true)}
           onFlush={onFlush}

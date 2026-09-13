@@ -11,62 +11,58 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useCatalog, useCurrentAutomation } from '@/lib/automations/store';
-import {
-  findCatalogAction,
-  stepLabel,
-  type AutomationStep,
-  type Catalog,
-} from '@/lib/automations/types';
+import { stepLabel, type AutomationStep, type Catalog } from '@/lib/automations/types';
 import { cn } from '@/lib/utils';
+import { isCompleteRef, stepOutput } from './samples';
+import type { JsonSchema } from './schema';
 import {
-  isCompleteRef,
-  sampleFields,
-  schemaFieldPaths,
-  stepOutput,
-  type SampleField,
-} from './samples';
+  pickableRows,
+  stepOutputShape,
+  type PickableRow,
+} from './step-output-shape';
 
-const TRIGGER_FIELDS: SampleField[] = [
-  { path: 'now', label: 'now', preview: 'when the run started (ISO timestamp)' },
-  { path: 'date', label: 'date', preview: "the run's date (YYYY-MM-DD)" },
-  { path: 'timezone', label: 'timezone', preview: 'the schedule timezone' },
+const TRIGGER_FIELDS: PickableRow[] = [
+  {
+    path: 'now',
+    label: 'now',
+    preview: 'when the run started (ISO timestamp)',
+    valueType: 'string',
+    warning: null,
+  },
+  {
+    path: 'date',
+    label: 'date',
+    preview: "the run's date (YYYY-MM-DD)",
+    valueType: 'string',
+    warning: null,
+  },
+  {
+    path: 'timezone',
+    label: 'timezone',
+    preview: 'the schedule timezone',
+    valueType: 'string',
+    warning: null,
+  },
 ];
-
-/** Where a step's field names came from — shown so the user knows how solid they are. */
-function fieldsForStep(
-  step: AutomationStep,
-  catalog: Catalog | null,
-  sample: unknown
-): { fields: SampleField[]; source: 'schema' | 'run' | 'none' } {
-  if (step.type === 'action') {
-    const action = findCatalogAction(catalog, step.settings.integration, step.settings.action);
-    const fromSchema = schemaFieldPaths(action?.outputSchema ?? null);
-    if (fromSchema.length > 0) return { fields: fromSchema, source: 'schema' };
-  }
-  if (step.type === 'ai' && step.settings.output.mode === 'json') {
-    const fromSchema = schemaFieldPaths(step.settings.output.schema ?? null);
-    if (fromSchema.length > 0) return { fields: fromSchema, source: 'schema' };
-  }
-  const fromRun = sampleFields(sample);
-  if (fromRun.length > 0) return { fields: fromRun, source: 'run' };
-  if (step.type === 'ai') {
-    return { fields: [{ path: '.text', label: 'text', preview: "the AI step's answer" }], source: 'schema' };
-  }
-  return { fields: [], source: 'none' };
-}
 
 /** Dialog that builds a `{{step_id.output.path}}` reference from an earlier step.
  *
- *  Field names come from the catalog's `outputSchema` when a tool declares one, else
- *  from what the step returned in the last run, else the user types the path. */
+ *  What each step can offer — and in which order — is `stepOutputShape`: the value people
+ *  actually want first, the whole output object last. Rows that cannot fit the field being
+ *  filled sink below the rest and say why, but stay pickable: the warning travels with the
+ *  choice into the field (see `RefField`) rather than blocking it. */
 export default function ReferencePicker({
   beforeStepId,
+  fieldSchema,
   onPick,
   label,
   className,
 }: {
   /** Only steps strictly before this one may be referenced; omit for "all steps". */
   beforeStepId?: string;
+  /** JSON schema of the field being filled, when there is one — what makes an object in a
+   *  string field visible before the run rather than after it. */
+  fieldSchema?: JsonSchema | null;
   onPick(ref: string): void;
   label: string;
   className?: string;
@@ -122,7 +118,7 @@ export default function ReferencePicker({
               {TRIGGER_FIELDS.map((f) => (
                 <FieldRow
                   key={f.path}
-                  field={f}
+                  row={f}
                   onClick={() => choose(`{{trigger.${f.path}}}`)}
                 />
               ))}
@@ -139,8 +135,9 @@ export default function ReferencePicker({
                 key={step.id}
                 step={step}
                 index={index}
-                label={stepLabel(step, catalog)}
-                fields={fieldsForStep(step, catalog, stepOutput(current?.activeRun, step.id))}
+                catalog={catalog}
+                sample={stepOutput(current?.activeRun, step.id)}
+                fieldSchema={fieldSchema}
                 onPick={choose}
               />
             ))}
@@ -208,33 +205,36 @@ function Source({
 function StepSource({
   step,
   index,
-  label,
-  fields,
+  catalog,
+  sample,
+  fieldSchema,
   onPick,
 }: {
   step: AutomationStep;
   index: number;
-  label: string;
-  fields: { fields: SampleField[]; source: 'schema' | 'run' | 'none' };
+  catalog: Catalog | null;
+  /** What this step returned in the last run, when it ran. */
+  sample: unknown;
+  fieldSchema?: JsonSchema | null;
   onPick(ref: string): void;
 }) {
+  const label = stepLabel(step, catalog);
+  const shape = stepOutputShape(step, catalog, sample, label);
+  const rows = pickableRows(shape, fieldSchema);
+
   return (
     <Source
       title={`${index + 1}. ${step.name}`}
-      subtitle={fields.source === 'run' ? 'from the last run' : label}
+      subtitle={shape.source === 'run' ? 'from the last run' : label}
     >
-      <FieldRow
-        field={{ path: '', label: 'Whole result', preview: label }}
-        onClick={() => onPick(`{{${step.id}.output}}`)}
-      />
-      {fields.fields.map((f) => (
+      {rows.map((row) => (
         <FieldRow
-          key={f.path}
-          field={f}
-          onClick={() => onPick(`{{${step.id}.output${f.path}}}`)}
+          key={row.path}
+          row={row}
+          onClick={() => onPick(`{{${step.id}.output${row.path}}}`)}
         />
       ))}
-      {fields.source === 'none' && (
+      {shape.source === 'none' && (
         <p className="px-2.5 py-2 text-[11px] text-[color:var(--muted-foreground)]">
           No sample yet. Run the automation once, or type the path below.
         </p>
@@ -243,18 +243,38 @@ function StepSource({
   );
 }
 
-function FieldRow({ field, onClick }: { field: SampleField; onClick(): void }) {
+function FieldRow({ row, onClick }: { row: PickableRow; onClick(): void }) {
+  const note = row.warning ?? row.hint;
   return (
     <button
       type="button"
       onClick={onClick}
-      className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-[color:var(--surface-muted)]/70 transition"
+      className={cn(
+        'w-full px-2.5 py-1.5 text-left hover:bg-[color:var(--surface-muted)]/70 transition',
+        row.warning !== null && 'opacity-70'
+      )}
     >
-      <CornerDownRight size={11} strokeWidth={2} className="shrink-0 text-[color:var(--muted-foreground)]" />
-      <span className="text-[12px] font-mono truncate">{field.label}</span>
-      {field.preview && (
-        <span className="ml-auto text-[11px] text-[color:var(--muted-foreground)] truncate max-w-[45%]">
-          {field.preview}
+      <span className="flex items-center gap-1.5">
+        <CornerDownRight
+          size={11}
+          strokeWidth={2}
+          className="shrink-0 text-[color:var(--muted-foreground)]"
+        />
+        <span className="text-[12px] font-mono truncate">{row.label}</span>
+        {row.preview && (
+          <span className="ml-auto text-[11px] text-[color:var(--muted-foreground)] truncate max-w-[45%]">
+            {row.preview}
+          </span>
+        )}
+      </span>
+      {note && (
+        <span
+          className={cn(
+            'mt-0.5 block pl-[18px] text-[11px] leading-snug',
+            row.warning !== null ? 'text-[#92400E]' : 'text-[color:var(--muted-foreground)]'
+          )}
+        >
+          {note}
         </span>
       )}
     </button>
