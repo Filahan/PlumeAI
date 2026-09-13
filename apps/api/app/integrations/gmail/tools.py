@@ -18,11 +18,44 @@ from app.tools.base import ActionDisplayMeta, ToolResult, cap
 GMAIL_ACTION_META: dict[str, ActionDisplayMeta] = {
     "gmail_search": ActionDisplayMeta(
         label="Search emails",
-        output_description="Matching messages with id, sender, subject, date, and snippet.",
+        output_description=(
+            "`count` plus `messages`: id, thread_id, from, subject, date, and snippet."
+        ),
+        output_schema={
+            "type": "object",
+            "properties": {
+                "count": {"type": "number"},
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "thread_id": {"type": "string"},
+                            "from": {"type": "string"},
+                            "subject": {"type": "string"},
+                            "date": {"type": "string"},
+                            "snippet": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
     ),
     "gmail_get": ActionDisplayMeta(
         label="Get an email",
-        output_description="Full message: subject, from, to, date, labels, and body.",
+        output_description="The message's id, from, to, subject, date, and plain-text body.",
+        output_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "date": {"type": "string"},
+                "body": {"type": "string"},
+            },
+        },
     ),
     "gmail_send": ActionDisplayMeta(
         label="Send an email",
@@ -231,7 +264,9 @@ async def _gmail_search(
     data = r.json()
     messages = data.get("messages") or []
     if not messages:
-        return ToolResult(ok=True, content="No messages matched.")
+        return ToolResult(
+            ok=True, content="No messages matched.", data={"count": 0, "messages": []}
+        )
 
     async def _meta(mid: str) -> dict[str, str]:
         rr = await self.authed_fetch(
@@ -248,6 +283,7 @@ async def _gmail_search(
         headers = body.get("payload", {}).get("headers", [])
         return {
             "id": mid,
+            "thread_id": body.get("threadId", ""),
             "from": _header(headers, "From"),
             "subject": _header(headers, "Subject"),
             "date": _header(headers, "Date"),
@@ -255,6 +291,9 @@ async def _gmail_search(
         }
 
     metas = await asyncio.gather(*(_meta(m["id"]) for m in messages[:max_results]))
+    # `data` is what `{{step.output.count}}` / `{{step.output.messages[0].id}}` refs read;
+    # `content` below stays the human/LLM-facing rendering.
+    found = [m for m in metas if "error" not in m]
     lines: list[str] = []
     for i, m in enumerate(metas, 1):
         if "error" in m:
@@ -266,7 +305,11 @@ async def _gmail_search(
                 f"   date: {m.get('date')}\n"
                 f"   {m.get('snippet')}"
             )
-    return ToolResult(ok=True, content=cap("\n\n".join(lines)))
+    return ToolResult(
+        ok=True,
+        content=cap("\n\n".join(lines)),
+        data={"count": len(found), "messages": found},
+    )
 
 
 async def _gmail_get(
@@ -293,7 +336,18 @@ async def _gmail_get(
             body,
         ]
     )
-    return ToolResult(ok=True, content=cap(text))
+    return ToolResult(
+        ok=True,
+        content=cap(text),
+        data={
+            "id": j.get("id", mid),
+            "from": _header(headers, "From"),
+            "to": _header(headers, "To"),
+            "subject": _header(headers, "Subject"),
+            "date": _header(headers, "Date"),
+            "body": body,
+        },
+    )
 
 
 async def _gmail_send(

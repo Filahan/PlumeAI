@@ -184,10 +184,22 @@ async def _drive_search(
     if not r.is_success:
         return ToolResult(ok=False, content=f"drive_search HTTP {r.status_code}: {cap(r.text)}")
     files = r.json().get("files", [])
+    # `data` feeds `{{step.output.count}}` / `{{step.output.files[0].id}}` refs; `content`
+    # stays the rendering the LLM reads.
+    rows = [
+        {
+            "id": f.get("id"),
+            "name": f.get("name"),
+            "mime_type": f.get("mimeType"),
+            "modified_time": f.get("modifiedTime"),
+        }
+        for f in files
+    ]
+    data = {"count": len(rows), "files": rows}
     if not files:
-        return ToolResult(ok=True, content="No files matched.")
+        return ToolResult(ok=True, content="No files matched.", data=data)
     lines = [_format_file_row(i, f) for i, f in enumerate(files, 1)]
-    return ToolResult(ok=True, content=cap("\n\n".join(lines)))
+    return ToolResult(ok=True, content=cap("\n\n".join(lines)), data=data)
 
 
 async def _drive_list(

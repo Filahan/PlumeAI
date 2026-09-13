@@ -18,7 +18,30 @@ from app.tools.base import ActionDisplayMeta, ToolResult, cap
 CALENDAR_ACTION_META: dict[str, ActionDisplayMeta] = {
     "calendar_list_events": ActionDisplayMeta(
         label="List events",
-        output_description="Events in the window with id, summary, start/end, and location.",
+        output_description=(
+            "`count` plus `events`: id, summary, start, end, location, attendee count, link."
+        ),
+        output_schema={
+            "type": "object",
+            "properties": {
+                "count": {"type": "number"},
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "start": {"type": "string"},
+                            "end": {"type": "string"},
+                            "location": {"type": "string"},
+                            "attendees": {"type": "number"},
+                            "link": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
     ),
     "calendar_get_event": ActionDisplayMeta(
         label="Get an event",
@@ -300,10 +323,24 @@ async def _calendar_list_events(
     if not r.is_success:
         return ToolResult(ok=False, content=f"calendar_list_events HTTP {r.status_code}: {cap(r.text)}")
     events = r.json().get("items", [])
+    # `data` feeds `{{step.output.count}}` / `{{step.output.events[0].id}}` refs.
+    rows = [
+        {
+            "id": e.get("id"),
+            "summary": e.get("summary") or "",
+            "start": _format_when(e.get("start", {})),
+            "end": _format_when(e.get("end", {})),
+            "location": e.get("location") or "",
+            "attendees": len(e.get("attendees") or []),
+            "link": e.get("htmlLink") or "",
+        }
+        for e in events
+    ]
+    data = {"count": len(rows), "events": rows}
     if not events:
-        return ToolResult(ok=True, content="No events in the requested window.")
+        return ToolResult(ok=True, content="No events in the requested window.", data=data)
     lines = [_format_event_row(i, e) for i, e in enumerate(events, 1)]
-    return ToolResult(ok=True, content=cap("\n\n".join(lines)))
+    return ToolResult(ok=True, content=cap("\n\n".join(lines)), data=data)
 
 
 async def _calendar_get_event(

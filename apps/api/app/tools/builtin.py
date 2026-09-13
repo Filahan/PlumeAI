@@ -109,11 +109,30 @@ BUILTIN_ACTION_META: dict[str, ActionDisplayMeta] = {
     ),
     "web_fetch": ActionDisplayMeta(
         label="Fetch a web page",
-        output_description="Readable text content of the page.",
+        output_description="The fetched `url`, the page `title`, and its readable `text`.",
+        output_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "title": {"type": "string"},
+                "text": {"type": "string"},
+            },
+        },
     ),
     "http": ActionDisplayMeta(
         label="HTTP request",
-        output_description="Response status code and body text.",
+        output_description=(
+            "The response `status`, a subset of its `headers`, and `body` — parsed JSON "
+            "when the response is JSON, otherwise text."
+        ),
+        output_schema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "number"},
+                "headers": {"type": "object"},
+                "body": {},
+            },
+        },
     ),
 }
 
@@ -126,6 +145,7 @@ def describe_builtin_actions() -> list[CatalogAction]:
 # ───────────────────── tiny HTML helpers ─────────────────────
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_TITLE_RE = re.compile(r"<title[^>]*>([\s\S]*?)</title>", re.IGNORECASE)
 _SCRIPT_RE = re.compile(r"<script[\s\S]*?</script>", re.IGNORECASE)
 _STYLE_RE = re.compile(r"<style[\s\S]*?</style>", re.IGNORECASE)
 _COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
@@ -154,6 +174,39 @@ def html_to_text(html: str) -> str:
     s = _WS_RE.sub(" ", s)
     s = _BLANK_LINES_RE.sub("\n\n", s)
     return s.strip()
+
+
+def html_title(html: str) -> str:
+    """Text of the document's <title>, or "" when there is none."""
+    m = _TITLE_RE.search(html)
+    return _decode_entities(_TAG_RE.sub("", m.group(1))).strip() if m else ""
+
+
+# Response headers worth handing to a later step; the rest is noise (and can leak
+# cookies), so `data.headers` is this subset only.
+_KEPT_HEADERS = (
+    "content-type",
+    "content-length",
+    "location",
+    "etag",
+    "last-modified",
+    "retry-after",
+)
+
+
+def _header_subset(headers: Any) -> dict[str, str]:
+    return {k: headers[k] for k in _KEPT_HEADERS if k in headers}
+
+
+def _parsed_body(response: httpx.Response) -> Any:
+    """Parsed JSON when the response says it is JSON, else the (capped) raw text."""
+    ctype = response.headers.get("content-type", "")
+    if "json" in ctype:
+        try:
+            return response.json()
+        except ValueError:
+            return cap(response.text)
+    return cap(response.text)
 
 
 # ───────────────────── web_search (DuckDuckGo HTML, zero-config) ─────────────────────
@@ -223,8 +276,19 @@ async def web_fetch(args: dict[str, Any]) -> ToolResult:
         )
     ctype = r.headers.get("content-type", "")
     raw = r.text
-    text = html_to_text(raw) if "html" in ctype else raw
-    return ToolResult(ok=r.is_success, content=cap(f"HTTP {r.status_code} {url}\n\n{text}"))
+    is_html = "html" in ctype
+    text = html_to_text(raw) if is_html else raw
+    # `data` is what `{{step.output.text}}` refs read; `content` keeps the HTTP-status
+    # preamble the LLM is used to.
+    data: dict[str, Any] = {"url": url, "text": cap(text)}
+    title = html_title(raw) if is_html else ""
+    if title:
+        data["title"] = title
+    return ToolResult(
+        ok=r.is_success,
+        content=cap(f"HTTP {r.status_code} {url}\n\n{text}"),
+        data=data,
+    )
 
 
 # ───────────────────── http (arbitrary method) ─────────────────────
@@ -258,6 +322,13 @@ async def http_request(args: dict[str, Any]) -> ToolResult:
     return ToolResult(
         ok=r.is_success,
         content=cap(f"HTTP {r.status_code} {method} {url}\n\n{text}"),
+        # `data.body` is parsed JSON when the response is JSON, so a later step can ref
+        # `{{step.output.body.id}}` instead of re-parsing the text itself.
+        data={
+            "status": r.status_code,
+            "headers": _header_subset(r.headers),
+            "body": _parsed_body(r),
+        },
     )
 
 

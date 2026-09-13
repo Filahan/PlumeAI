@@ -23,6 +23,7 @@ from app.schemas.documents import (
     ManualTrigger,
     ModelRef,
 )
+from app.services import mcp_servers as mcp_service
 from app.services.catalog import Catalog, CatalogIntegration
 from app.services.documents import validate_document
 from app.tools.base import BUILTIN_INTEGRATION, ActionDisplayMeta, describe_action
@@ -47,7 +48,9 @@ def test_gmail_describe_actions_derives_name_label_input_schema_from_schemas() -
     assert search_action.description == search_schema["function"]["description"]
     assert search_action.input_schema == search_schema["function"]["parameters"]
     assert search_action.output_description  # non-empty, from ActionDisplayMeta
-    assert search_action.output_schema is None
+    # gmail_search returns structured `data`, so it also publishes an output schema.
+    assert search_action.output_schema is not None
+    assert set(search_action.output_schema["properties"]) == {"count", "messages"}
 
 
 def test_describe_actions_input_schema_is_not_shared_by_reference() -> None:
@@ -221,6 +224,12 @@ async def test_get_tools_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
             integ, "is_configured", _connected if integ.name == "gmail" else _not_connected
         )
 
+    # The catalog also lists MCP servers from the DB; no test in this file touches it.
+    async def _no_mcp_servers(_session: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(mcp_service, "list_servers", _no_mcp_servers)
+
     app.dependency_overrides[get_session] = _dummy_session
     try:
         transport = ASGITransport(app=app)
@@ -232,7 +241,14 @@ async def test_get_tools_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 200
     body = resp.json()
 
-    assert {i["name"] for i in body["integrations"]} == {"gmail", "drive", "calendar", "discord"}
+    assert {i["name"] for i in body["integrations"]} == {
+        "gmail",
+        "drive",
+        "calendar",
+        "slack",
+        "discord",
+        "notion",
+    }
 
     gmail = next(i for i in body["integrations"] if i["name"] == "gmail")
     assert gmail["connected"] is True

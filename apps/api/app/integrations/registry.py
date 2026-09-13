@@ -9,13 +9,17 @@ from app.integrations.calendar import calendar_integration
 from app.integrations.discord import discord_integration
 from app.integrations.drive import drive_integration
 from app.integrations.gmail import gmail_integration
+from app.integrations.notion import notion_integration
+from app.integrations.slack import slack_integration
 
 # Add new integrations here. Each must extend the `Integration` ABC.
 INTEGRATIONS: list[Integration] = [
     gmail_integration,
     drive_integration,
     calendar_integration,
+    slack_integration,
     discord_integration,
+    notion_integration,
 ]
 
 
