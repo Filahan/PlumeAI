@@ -7,6 +7,7 @@ interface ProviderLogoProps {
 }
 
 export function ProviderLogo({ provider, size = 16, className = '' }: ProviderLogoProps) {
+  // OpenAI — official glyph (Simple Icons).
   if (provider === 'openai') {
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
@@ -14,20 +15,10 @@ export function ProviderLogo({ provider, size = 16, className = '' }: ProviderLo
       </svg>
     );
   }
-  if (provider === 'anthropic') {
-    return (
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-        <path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5527h3.7442L10.5363 3.541Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z" />
-      </svg>
-    );
-  }
-  // OpenRouter
+  // Anthropic — official glyph (Simple Icons).
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
-      <path d="M3 12h6m6 0h6" />
-      <path d="M9 8l-3 4 3 4" />
-      <path d="M15 8l3 4-3 4" />
-      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
-    </svg>
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+        <path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.541Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z" />
+      </svg>
   );
 }

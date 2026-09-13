@@ -17,8 +17,8 @@ interface UsageChartProps {
 
 const PALETTE = [
   '#10A37F', // OpenAI teal
-  '#D97706', // Anthropic orange
-  '#6366f1', // OpenRouter indigo
+  '#D97757', // Anthropic / Claude terracotta
+  '#6366f1',
   '#0EA5E9',
   '#EC4899',
   '#F59E0B',

@@ -292,7 +292,7 @@ export default function ChatView({
     const assistantMsgId = onAddMessage(convId, { role: 'assistant', content: '' });
 
     // Single code path: every chat goes through FastAPI /chat/stream, which handles tool
-    // calling for OpenAI/OpenRouter and accepts {text|image} parts for all providers.
+    // calling for OpenAI and accepts {text|image} parts for all providers.
     const priorMessages = conversation?.messages ?? [];
 
     let assistantText = '';

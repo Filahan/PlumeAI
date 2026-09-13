@@ -19,11 +19,10 @@ export default function ProviderOnboarding({ settings, setSettings }: ProviderOn
         <div className="inline-flex items-center justify-center gap-2 mb-4">
           <ProviderLogo provider="openai" size={22} className={PROVIDER_ACCENT.openai} />
           <ProviderLogo provider="anthropic" size={22} className={PROVIDER_ACCENT.anthropic} />
-          <ProviderLogo provider="openrouter" size={22} className={PROVIDER_ACCENT.openrouter} />
         </div>
         <h1 className="text-[22px] font-semibold mb-1 tracking-tight">Connect a provider</h1>
         <p className="text-[13px] text-[color:var(--muted-foreground)]">
-          PlumeAI needs an API key to chat. Add one from OpenAI, Anthropic or OpenRouter —
+          PlumeAI needs an API key to chat. Add one from OpenAI or Anthropic —
           it stays on your server, encrypted at rest.
         </p>
       </div>

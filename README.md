@@ -22,7 +22,7 @@
 
 ---
 
-PlumeAI is a self-hosted alternative to ChatGPT/Claude. Bring your own keys (OpenAI, Anthropic, OpenRouter), use a tool-calling agent that talks to Gmail, Drive, Calendar, and Discord, design recurring **automations** through a guided interview, and track your token spend — all from a single `docker compose up`. Your data stays on your machine.
+PlumeAI is a self-hosted alternative to ChatGPT/Claude. Bring your own keys (OpenAI, Anthropic), use a tool-calling agent that talks to Gmail, Drive, Calendar, and Discord, design recurring **automations** through a guided interview, and track your token spend — all from a single `docker compose up`. Your data stays on your machine.
 
 ## Quick start
 
