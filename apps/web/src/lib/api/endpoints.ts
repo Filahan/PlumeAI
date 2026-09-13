@@ -21,6 +21,7 @@ import type {
   McpTestResult,
   Operation,
   RunDetail,
+  RunStatus,
   RunSummary,
   RunWithAutomation,
   RunsPage,
@@ -183,7 +184,9 @@ export interface RunsQuery {
   limit?: number;
   before?: number;
   automationId?: string;
-  status?: string;
+  /** One status, or several — the API takes `status` repeated, and 422s on a value that
+   *  is not a `RunStatus`. */
+  status?: RunStatus | RunStatus[];
 }
 
 function runsQuery(opts: RunsQuery | undefined): string {
@@ -191,7 +194,7 @@ function runsQuery(opts: RunsQuery | undefined): string {
   if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
   if (opts?.before !== undefined) qs.set('before', String(opts.before));
   if (opts?.automationId) qs.set('automationId', opts.automationId);
-  if (opts?.status) qs.set('status', opts.status);
+  for (const status of [opts?.status ?? []].flat()) qs.append('status', status);
   return qs.size > 0 ? `?${qs.toString()}` : '';
 }
 
