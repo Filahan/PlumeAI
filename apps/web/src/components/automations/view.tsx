@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AutomationDetail,
   AutomationDocument,
@@ -248,7 +248,7 @@ function AutomationPanel({ id, api }: { id: string; api: AutomationsApi }) {
     try {
       await api.cancelRun(id, selectedRunId);
       const r = await api.getRun(id, selectedRunId);
-      setSelectedRun(r);
+      setRunDetails((prev) => ({ ...prev, [selectedRunId]: r }));
       const rows = await api.listRuns(id);
       setRuns(rows);
     } catch (e) {
@@ -411,9 +411,10 @@ function NameEditor({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
 
-  useEffect(() => {
-    if (!editing) setDraft(name);
-  }, [name, editing]);
+  const startEditing = () => {
+    setDraft(name);
+    setEditing(true);
+  };
 
   const commit = async () => {
     setEditing(false);
@@ -454,7 +455,7 @@ function NameEditor({
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={startEditing}
       title="Click to rename"
       className="text-[18px] font-semibold tracking-tight text-left hover:bg-[color:var(--surface-muted)] rounded px-0.5 -mx-0.5 transition"
     >
