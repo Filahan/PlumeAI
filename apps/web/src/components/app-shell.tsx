@@ -1,32 +1,26 @@
 'use client';
 
 import { ReactNode, useState, useEffect, useCallback } from 'react';
-import { useConversationsStore, useSettingsStore } from '@/lib/store-provider';
-import { NavRail, ConversationListPanel } from '@/components/sidebar';
+import { useSettingsStore } from '@/lib/store-provider';
+import { NavRail } from '@/components/sidebar';
 
 const SIDEBAR_OPEN_KEY = 'webui-sidebar-open';
 
 interface AppShellProps {
-  /** The currently-active conversation id, or null when not on a conversation route. */
-  currentId: string | null;
-  onSelect: (id: string) => void;
-  /** Starts a new chat — rendered as the "+ New" button in the conversation list header. */
-  onNewChat: () => void;
-  onDelete: (id: string) => void;
-  /** Replaces the conversation list in the left panel (e.g. the automations list on `/`). */
+  /** The left panel (e.g. the automations list on `/`). Pages with nothing to put there
+   *  omit it and the shell renders the nav rail alone. */
   leftPanel?: ReactNode;
-  /** Optional controlled state for the Settings dialog (used by the chat to open it from the composer). */
+  /** Optional controlled state for the Settings dialog (the editor's assistant drawer
+   *  opens it to point at a missing API key). */
   settingsOpen?: boolean;
   onSettingsOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }
 
 export default function AppShell({
-  currentId, onSelect, onNewChat, onDelete, leftPanel, settingsOpen, onSettingsOpenChange, children,
+  leftPanel, settingsOpen, onSettingsOpenChange, children,
 }: AppShellProps) {
-  const { conversations, loaded: conversationsLoaded } = useConversationsStore();
-  const { settings, setSettings, loaded: settingsLoaded } = useSettingsStore();
-  const ready = conversationsLoaded && settingsLoaded;
+  const { settings, setSettings, loaded: ready } = useSettingsStore();
   const [internalSettingsOpen, setInternalSettingsOpen] = useState(false);
   const settingsDialogOpen = settingsOpen ?? internalSettingsOpen;
   const setSettingsDialogOpen = onSettingsOpenChange ?? setInternalSettingsOpen;
@@ -54,16 +48,7 @@ export default function AppShell({
         onSettingsOpenChange={setSettingsDialogOpen}
         onToggleSidebar={toggleSidebar}
       />
-      {sidebarOpen && (leftPanel ?? (
-        <ConversationListPanel
-          conversations={conversations}
-          currentId={currentId}
-          onSelect={onSelect}
-          onNewChat={onNewChat}
-          onDelete={onDelete}
-          ready={ready}
-        />
-      ))}
+      {sidebarOpen && leftPanel}
       <main className="relative flex-1 flex flex-col min-w-0 overflow-hidden">
         {children}
       </main>

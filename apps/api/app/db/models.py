@@ -1,8 +1,7 @@
 """SQLAlchemy ORM models.
 
-`conversations`, `messages`, `settings` and `usage_entries` are a 1:1 mirror of the
-original drizzle schema — same table names and column types, so the existing `pgdata`
-volume is reused as-is.
+`settings` and `usage_entries` are a 1:1 mirror of the original drizzle schema — same
+table names and column types, so the existing `pgdata` volume is reused as-is.
 
 The automation-builder tables (`automations`, `automation_versions`, `runs`,
 `run_steps`) are new in revision `0003_automations_v2`, which also converts the legacy
@@ -12,6 +11,10 @@ the migration reaches the old rows through Core table definitions instead (see
 `app.services.legacy_migration`).
 
 `mcp_servers` is new in revision `0004_mcp_servers`.
+
+The `Conversation` and `Message` models are gone the same way the legacy `Task` one is:
+the standalone chat feature was replaced by the builder's assistant, so `create_all` must
+never recreate `conversations`/`messages` and revision `0006_drop_chat_tables` drops them.
 """
 
 from __future__ import annotations
@@ -25,39 +28,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from app.db.base import Base
-
-
-class Conversation(Base):
-    __tablename__ = "conversations"
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    provider: Mapped[str] = mapped_column(Text, nullable=False)
-    model: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class Message(Base):
-    __tablename__ = "messages"
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(Text, nullable=False)
-    role: Mapped[str] = mapped_column(Text, nullable=False)  # 'user' | 'assistant'
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    attachments: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    __table_args__ = (
-        Index("messages_conversation_idx", "conversation_id"),
-        Index("messages_timestamp_idx", "timestamp"),
-    )
 
 
 class Settings(Base):
@@ -85,6 +55,10 @@ class UsageEntry(Base):
     __tablename__ = "usage_entries"
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Free-text correlation id with no foreign key: a run id for automation runs, an
+    # automation id for the builder assistant. Named after the chat conversations it used
+    # to point at — the column is kept as-is so the existing rows and the usage dashboard
+    # do not need a rewrite.
     conversation_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)

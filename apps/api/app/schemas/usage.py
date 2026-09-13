@@ -7,6 +7,8 @@ from app.schemas.base import APISchema
 
 class UsageEntryPayload(APISchema):
     timestamp: int  # unix ms
+    # Correlation id, not a foreign key: run id for runs, automation id for the
+    # builder assistant. See `app.services.usage.record_usage`.
     conversation_id: str | None = None
     provider: str
     model: str

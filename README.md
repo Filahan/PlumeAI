@@ -179,9 +179,9 @@ Everything else — provider API keys, OAuth credentials, bot tokens, MCP server
 timezone — is configured at runtime from inside the app (Settings and Tools), not through
 environment variables. Credentials are AES-GCM encrypted before they reach the database.
 
-**Providers.** PlumeAI is bring-your-own-key. Chat supports OpenAI, Anthropic and OpenRouter;
-automations currently pick a model from OpenAI or Anthropic. Add a key under Settings, and it
-becomes available to pick as an automation's model and in the model dropdown elsewhere.
+**Providers.** PlumeAI is bring-your-own-key. Automations (and the assistant that builds them)
+currently pick a model from OpenAI or Anthropic. Add a key under Settings, and it becomes
+available to pick as an automation's model and in the model dropdown elsewhere.
 
 **Timezone.** The workspace has one IANA timezone (Settings → Timezone), used for any schedule
 trigger that doesn't set its own timezone, and for what "today" and "now" mean inside a run
@@ -217,7 +217,7 @@ apps/api/app/
   integrations/  First-party connectors (gmail, drive, calendar, discord, slack, notion)
   mcp/           MCP client (manager, schemas)
   tools/         Tool registry + builtin actions (web search/fetch, http)
-  agent/         The tool-using chat/AI-step agent loop
+  agent/         The tool-using agent loop shared by the assistant drawer and AI steps
   llm/           Provider clients (OpenAI, Anthropic) + structured output
   alembic/       Schema migrations
 

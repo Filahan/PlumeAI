@@ -312,7 +312,7 @@ Postgres tables relevant to automations (`app/db/models.py`):
 | `run_steps` | One row per document step per run, created up front as `pending`; carries `resolved_input` (redacted), `output`, `error`, `trace` |
 | `mcp_servers` | Registered MCP servers; `config_enc` is AES-GCM encrypted, `cached_tools` is the last successful sync |
 | `settings` | Singleton row: provider keys, OAuth/tool credentials (encrypted), workspace `timezone` |
-| `conversations` / `messages` / `usage_entries` | Chat (unrelated to automations, pre-existing) |
+| `usage_entries` | Token usage per model call, correlated by `conversation_id` — a free-text column with no foreign key, holding a run id for automation runs or an automation id for assistant turns (named after the now-removed chat conversations it used to point at; kept as-is so existing rows and the usage dashboard don't need a rewrite) |
 
 ## API endpoints
 
@@ -350,8 +350,6 @@ All under `/api` (nginx strips the prefix before it reaches FastAPI).
 | DELETE | `/mcp/servers/{id}` | Unregister |
 | POST | `/mcp/servers/test` | Try a config without saving it |
 | GET/PUT | `/settings` | Provider keys, default model, timezone |
-| GET/POST/PATCH/DELETE | `/conversations`, `/conversations/{id}/messages` | Chat (pre-existing) |
-| POST | `/chat/stream` | Streaming chat completion (pre-existing) |
 | GET | `/usage` | Token usage entries |
 | GET | `/health` | Liveness probe |
 
@@ -382,7 +380,7 @@ See `apps/api/app/routers/*.py` for exact request/response shapes.
 - **JSON editor** (`components/automations/json/`) — a CodeMirror JSON editor, seeded from the
   draft, parsed continuously (a bad parse shows an error and leaves the draft alone), applied
   explicitly via the header's Save.
-- **Assistant** (`components/automations/assistant/`) — a chat-style drawer; each turn shows the
+- **Assistant** (`components/automations/assistant/`) — a conversational drawer; each turn shows the
   model's reply, an "Applied" list of what changed (with Undo on the newest turn, back to the
   version before it), and a link to the test run it started if any.
 - **Run stream** (`components/automations/runs/`, `lib/automations/run-stream.ts` folded into the

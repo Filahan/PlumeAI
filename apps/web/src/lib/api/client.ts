@@ -126,22 +126,8 @@ export const api = {
       await fetch(`${BASE}${path}`, { method: 'DELETE', credentials: 'same-origin' })
     );
   },
-  /** SSE helper — returns the raw Response so callers can iterate `body.getReader()`. */
-  async sse(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
-    const res = await fetch(`${BASE}${path}`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal,
-    });
-    if (!res.ok || !res.body) {
-      const problem = await res.json().catch(() => ({}));
-      throw new ApiError(res.status, problem);
-    }
-    return res;
-  },
-  /** GET-based SSE helper (e.g. run event streams) — same contract as `sse`. */
+  /** GET-based SSE helper (run event streams) — returns the raw Response so callers
+   *  can iterate `body.getReader()`, or hand it to `parseSSE`. */
   async sseGet(path: string, signal?: AbortSignal): Promise<Response> {
     const res = await fetch(`${BASE}${path}`, {
       method: 'GET',

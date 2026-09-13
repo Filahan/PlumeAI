@@ -17,8 +17,6 @@ from app.logging import configure_logging, get_logger
 from app.mcp import manager as mcp_manager
 from app.middleware import RequestLoggingMiddleware
 from app.routers import automations as automations_router
-from app.routers import chat as chat_router
-from app.routers import conversations as conversations_router
 from app.routers import mcp as mcp_router
 from app.routers import settings as settings_router
 from app.routers import tools as tools_router
@@ -46,9 +44,9 @@ async def _apply_runtime_migrations() -> None:
     Cheaper than running Alembic from the container entrypoint and keeps schema
     drift in sync for self-hosted users who don't run migrations manually. Every
     statement here has a counterpart in an Alembic revision (currently
-    `0002_tool_credentials`, `0003_automations_v2` and `0005_drop_tasks_legacy`) and
-    both paths are guarded the same way, so whichever runs first wins and the other is
-    a no-op.
+    `0002_tool_credentials`, `0003_automations_v2`, `0005_drop_tasks_legacy` and
+    `0006_drop_chat_tables`) and both paths are guarded the same way, so whichever runs
+    first wins and the other is a no-op.
     """
     engine = get_engine()
     async with engine.begin() as conn:
@@ -108,6 +106,21 @@ async def _apply_runtime_migrations() -> None:
             if automations_count > 0 or legacy_count == 0:
                 await conn.execute(text("DROP TABLE tasks_legacy"))
                 get_logger("app.lifespan").info("tasks_legacy_dropped")
+
+        # Drop the standalone-chat tables. The chat feature is gone (the builder's
+        # assistant replaced it), so nothing in the app reads `conversations` or
+        # `messages` any more and their ORM models are off `Base.metadata` — `create_all`
+        # above will not bring them back. `messages` first: it carries the conversation
+        # id. Guarded with `to_regclass` for the same reason as the drops above — safe on
+        # a fresh database that never had them, safe after `alembic upgrade` already ran
+        # `0006_drop_chat_tables`, and safe twice in a row.
+        for table in ("messages", "conversations"):
+            exists = (
+                await conn.execute(text(f"SELECT to_regclass('public.{table}')"))
+            ).scalar()
+            if exists is not None:
+                await conn.execute(text(f"DROP TABLE {table}"))
+                get_logger("app.lifespan").info("chat_table_dropped", table=table)
 
 
 async def _enforce_one_active_run() -> None:
@@ -211,9 +224,7 @@ async def healthcheck() -> dict[str, str]:
 
 app.include_router(health)
 app.include_router(settings_router.router)
-app.include_router(chat_router.router)
 app.include_router(tools_router.router)
 app.include_router(mcp_router.router)
 app.include_router(automations_router.router)
 app.include_router(usage_router.router)
-app.include_router(conversations_router.router)

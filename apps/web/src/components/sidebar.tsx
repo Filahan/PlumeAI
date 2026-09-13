@@ -1,17 +1,14 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
-import { Conversation, Settings } from '@/lib/types';
+import { useCallback } from 'react';
+import { Settings } from '@/lib/types';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import SettingsContent from '@/components/settings-content';
-import {
-  SquarePen, Activity, Workflow, Plug, MessageSquare, Settings as SettingsIcon, Trash2,
-  type LucideIcon,
-} from 'lucide-react';
+import { Activity, Workflow, Plug, Settings as SettingsIcon, type LucideIcon } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 
 interface NavRailProps {
@@ -56,7 +53,7 @@ export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenCha
         <button
           type="button"
           onClick={onToggleSidebar}
-          aria-label="Toggle conversation list"
+          aria-label="Toggle sidebar"
           className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[color:var(--surface-muted)] transition-colors mb-2"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -71,12 +68,6 @@ export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenCha
             label="Automations"
             active={pathname === '/' || pathname.startsWith('/automations')}
             onClick={() => router.push('/')}
-          />
-          <RailIcon
-            icon={MessageSquare}
-            label="Chat"
-            active={pathname.startsWith('/chat')}
-            onClick={() => router.push('/chat')}
           />
           <RailIcon icon={Plug} label="Tools" active={pathname === '/tools'} onClick={() => router.push('/tools')} />
           <RailIcon icon={Activity} label="Usage" active={pathname === '/usage'} onClick={() => router.push('/usage')} />
@@ -109,89 +100,5 @@ export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenCha
         </DialogContent>
       </Dialog>
     </>
-  );
-}
-
-interface ConversationListPanelProps {
-  conversations: Conversation[];
-  currentId: string | null;
-  onSelect: (id: string) => void;
-  onNewChat: () => void;
-  onDelete: (id: string) => void;
-  ready: boolean;
-}
-
-export function ConversationListPanel({
-  conversations, currentId, onSelect, onNewChat, onDelete, ready,
-}: ConversationListPanelProps) {
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const resetTimerRef = useRef<number | undefined>(undefined);
-  const armDelete = (id: string) => {
-    setPendingDelete(id);
-    if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
-    resetTimerRef.current = window.setTimeout(() => setPendingDelete(null), 2000);
-  };
-  return (
-    <aside className="w-[260px] shrink-0 h-full flex flex-col bg-[color:var(--surface-muted)] border-r border-[color:var(--border)]">
-      <div className="flex items-center justify-between px-4 pt-4 pb-1">
-        <span className="text-[11px] font-semibold tracking-[0.08em] uppercase text-[color:var(--muted-foreground)]">
-          Chat
-        </span>
-        <button
-          type="button"
-          onClick={onNewChat}
-          aria-label="New chat"
-          className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium text-[color:var(--muted-foreground)] hover:bg-white hover:text-[color:var(--foreground)] transition"
-        >
-          <SquarePen size={13} strokeWidth={2} /> New
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto px-2 pb-3">
-        {!ready ? null : conversations.length === 0 ? (
-          <p className="px-3 py-2 text-[12px] text-[color:var(--muted-foreground)]">No conversations yet</p>
-        ) : (
-          conversations.map((conv) => {
-            const isActive = conv.id === currentId;
-            return (
-              <div
-                key={conv.id}
-                className={`group relative rounded-lg transition-colors ${
-                  isActive ? 'bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)]' : 'hover:bg-white/60'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => onSelect(conv.id)}
-                  className={`w-full text-left truncate text-[13px] px-3 py-2 pr-9 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ring)] ${
-                    isActive ? 'font-medium' : ''
-                  }`}
-                >
-                  {conv.title}
-                </button>
-                {pendingDelete === conv.id ? (
-                  <button
-                    type="button"
-                    onClick={() => { onDelete(conv.id); setPendingDelete(null); }}
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 px-2 inline-flex items-center justify-center rounded-md bg-red-600 text-white text-[11px] font-medium hover:bg-red-700 transition"
-                    aria-label={`Confirm delete: ${conv.title}`}
-                  >
-                    Delete?
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => armDelete(conv.id)}
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center rounded-md text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] hover:text-red-600 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
-                    aria-label={`Delete conversation: ${conv.title}`}
-                  >
-                    <Trash2 size={13} strokeWidth={1.75} />
-                  </button>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-    </aside>
   );
 }

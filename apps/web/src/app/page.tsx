@@ -1,24 +1,14 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import AppShell from '@/components/app-shell';
 import { AutomationsSidebar } from '@/components/automations/list/automations-sidebar';
 import AutomationsHome from '@/components/automations/home/automations-home';
-import { useConversationsStore } from '@/lib/store-provider';
 
-/** `/` — automations home. The chat lives at `/chat`. */
+/** `/` — automations home: the list in the left panel, the "what should it do?" prompt
+ *  in the main area. */
 export default function Home() {
-  const router = useRouter();
-  const { deleteConversation } = useConversationsStore();
-
   return (
-    <AppShell
-      currentId={null}
-      onSelect={(id) => router.push(`/chat/${id}`)}
-      onNewChat={() => router.push('/chat')}
-      onDelete={(id) => deleteConversation(id)}
-      leftPanel={<AutomationsSidebar />}
-    >
+    <AppShell leftPanel={<AutomationsSidebar />}>
       <AutomationsHome />
     </AppShell>
   );

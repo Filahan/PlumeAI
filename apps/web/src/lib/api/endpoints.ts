@@ -1,15 +1,14 @@
 /** Typed wrappers for every FastAPI endpoint, grouped by domain.
  *
  *  Usage:
- *      import { settings, conversations, automations, usage, chat } from '@/lib/api';
- *      const all = await conversations.list();
- *      const res = await chat.stream(req, signal);
+ *      import { settings, automations, usage } from '@/lib/api';
+ *      const all = await automations.list();
  *
  *  SSE endpoints return a raw `Response` — combine with `parseSSE<Event>` from `./sse`.
  */
 
 import { api } from './client';
-import type { Conversation, Message, Provider, Settings, UsageEntry } from '@/lib/types';
+import type { Settings, UsageEntry } from '@/lib/types';
 import type {
   AssistantResponse,
   AutomationDetail,
@@ -45,49 +44,6 @@ export const settings = {
       application_id: string | null;
       invite_url: string | null;
     }>('/tools/discord/meta'),
-};
-
-// ─── Conversations ──────────────────────────────────────────────────────────────────
-
-export const conversations = {
-  list: () => api.get<Conversation[]>('/conversations'),
-
-  create: (id: string, provider: Provider, model: string) =>
-    api.post('/conversations', { id, provider, model }),
-
-  addMessage: (
-    conversationId: string,
-    message: Omit<Message, 'timestamp'>
-  ): Promise<{ firstUserMessage: boolean }> =>
-    api.post<{ firstUserMessage: boolean }>(
-      `/conversations/${encodeURIComponent(conversationId)}/messages`,
-      {
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        ...(message.attachments ? { attachments: message.attachments } : {}),
-      }
-    ),
-
-  updateMessage: (
-    conversationId: string,
-    messageId: string,
-    chunk: string,
-    replace = false
-  ): Promise<void> =>
-    api.patch(
-      `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
-      { chunk, replace }
-    ),
-
-  rename: (id: string, title: string): Promise<void> =>
-    title ? api.patch(`/conversations/${encodeURIComponent(id)}`, { title }) : Promise.resolve(),
-
-  setModel: (id: string, provider: Provider, model: string): Promise<void> =>
-    api.patch(`/conversations/${encodeURIComponent(id)}`, { provider, model }),
-
-  delete: (id: string): Promise<void> =>
-    api.delete(`/conversations/${encodeURIComponent(id)}`),
 };
 
 // ─── Tool catalog ───────────────────────────────────────────────────────────────────
@@ -219,24 +175,4 @@ export const automations = {
 
 export const usage = {
   list: () => api.get<UsageEntry[]>('/usage'),
-};
-
-// ─── Chat (raw streaming) ───────────────────────────────────────────────────────────
-
-export type ContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'image'; mime: string; base64: string };
-export type ChatContent = string | ContentPart[];
-
-export interface ChatStreamRequest {
-  provider: Provider;
-  model: string;
-  history: Array<{ role: 'user' | 'assistant'; content: ChatContent }>;
-  newMessage: ChatContent;
-  conversationId?: string | null;
-}
-
-export const chat = {
-  stream: (req: ChatStreamRequest, signal?: AbortSignal) =>
-    api.sse('/chat/stream', req, signal),
 };

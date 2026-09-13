@@ -1,7 +1,7 @@
 /** Server-Sent Events consumer.
  *
  *  Yields parsed events from an SSE response (`data: <json>\n\n` per record). Aborts
- *  cleanly when the AbortSignal fires. Used by both /chat/stream and /automations/run.
+ *  cleanly when the AbortSignal fires. Used by the automation run event stream.
  */
 
 export async function* parseSSE<T = unknown>(
