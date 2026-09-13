@@ -1437,6 +1437,19 @@ async def test_the_real_registry_marks_a_rejected_request_permanent() -> None:
     assert blocked.retryable is False
 
 
+def test_registry_keeps_upstream_provider_errors_retryable() -> None:
+    """A `ProviderError` raised inside a tool (e.g. Google's token endpoint returning a
+    5xx during refresh) is an upstream hiccup, not a rejection: another attempt may land."""
+    from app.errors import BadRequest, ToolError, ToolNotConfigured
+    from app.tools import registry
+
+    assert registry._is_retryable(ProviderError("Google token endpoint: 503")) is True
+    assert registry._is_retryable(ToolError("timed out")) is True
+    assert registry._is_retryable(ToolError("blocked", extra={"retryable": False})) is False
+    assert registry._is_retryable(ToolNotConfigured("gmail")) is False
+    assert registry._is_retryable(BadRequest("bad url")) is False
+
+
 def test_is_retryable_classifies_each_kind_of_failure() -> None:
     from app.errors import BadRequest, NotFound, ToolNotConfigured
 

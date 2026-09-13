@@ -7,7 +7,7 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.errors import AppError, ToolError
+from app.errors import AppError, ProviderError, ToolError
 from app.integrations.registry import (
     find_integration_for_function,
     list_configured_integrations,
@@ -40,6 +40,10 @@ def _is_retryable(exc: AppError) -> bool:
     (`NotFound`) — is the tool rejecting the request, which it will do identically next
     time. `extra={"retryable": False}` lets a `ToolError` opt out (the SSRF guard does).
     """
+    if isinstance(exc, ProviderError):
+        # An upstream service misbehaved mid-call (e.g. Google's token endpoint returned a
+        # 5xx while refreshing) — its 502 semantics: the next attempt may well succeed.
+        return True
     if not isinstance(exc, ToolError):
         return False
     return bool(exc.extra.get("retryable", True))
