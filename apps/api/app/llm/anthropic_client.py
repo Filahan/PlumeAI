@@ -14,12 +14,30 @@ import structlog
 from anthropic import AsyncAnthropic
 
 from app.errors import ProviderError
-from app.llm.base import ChatMessage, LLMProvider
+from app.llm.base import (
+    ChatMessage,
+    LLMProvider,
+    NormalizedToolChoice,
+    ToolChoice,
+    normalize_tool_choice,
+)
 from app.llm.events import AgentEvent
 
 log = structlog.get_logger("app.llm.anthropic")
 
 MAX_TOKENS = 8192
+
+# Anthropic rejects a tool_result with empty content, and an empty result is a real
+# outcome (a tool that returns nothing), so give it a visible placeholder.
+NO_OUTPUT = "(no output)"
+
+# Our normalized mode -> Anthropic's `tool_choice`. Anthropic spells "required" as "any";
+# "none" is a real wire value (ToolChoiceNoneParam), so tools can stay in the request.
+_ANTHROPIC_TOOL_CHOICE: dict[str, dict[str, Any]] = {
+    "auto": {"type": "auto"},
+    "none": {"type": "none"},
+    "required": {"type": "any"},
+}
 
 
 def _text_of(content: str | list[dict[str, Any]] | None) -> str:
@@ -93,12 +111,21 @@ def tool_calls_to_blocks(m: ChatMessage) -> list[dict[str, Any]]:
 
 
 def tool_result_block(m: ChatMessage) -> dict[str, Any]:
-    """A `role='tool'` turn → one Anthropic `tool_result` block."""
-    return {
-        "type": "tool_result",
-        "tool_use_id": m.tool_call_id or "",
-        "content": _text_of(m.content),
-    }
+    """A `role='tool'` turn → one Anthropic `tool_result` block.
+
+    Multimodal results (a tool that returns a screenshot, say) keep their image parts:
+    Anthropic accepts a list of text/image blocks as `tool_result` content.
+    """
+    content: str | list[dict[str, Any]]
+    if isinstance(m.content, list):
+        blocks = [part_to_anthropic(p) for p in m.content]
+        # Drop blank text blocks so an image-only result isn't padded with empty text.
+        blocks = [b for b in blocks if b["type"] != "text" or b["text"].strip()]
+        content = blocks if blocks else NO_OUTPUT
+    else:
+        text = m.content or ""
+        content = text if text.strip() else NO_OUTPUT
+    return {"type": "tool_result", "tool_use_id": m.tool_call_id or "", "content": content}
 
 
 def messages_to_anthropic(messages: list[ChatMessage]) -> list[dict[str, Any]]:
@@ -156,59 +183,79 @@ def tools_to_anthropic(tools: list[dict[str, Any]] | None) -> list[dict[str, Any
 
 
 def tool_choice_to_anthropic(
-    tool_choice: dict[str, Any] | None, has_tools: bool
+    tool_choice: ToolChoice | NormalizedToolChoice | None, has_tools: bool
 ) -> dict[str, Any] | None:
-    """OpenAI `tool_choice` → Anthropic `tool_choice`.
+    """Any accepted `tool_choice` spelling → Anthropic's `tool_choice`.
 
-    `{"type": "function", "function": {"name": n}}` forces tool `n`; `None` and any other
-    recognized shape fall back to `auto` when tools are on the table, and to nothing when
-    they aren't. A `tool_choice` that isn't a dict is a caller bug, not a preference, so it
-    raises rather than silently degrading to `auto`.
+    Returns `None` when the field should be omitted: no tools on the table, or no
+    preference expressed. Raises `BadRequest` on an unsupported value.
     """
-    if tool_choice is not None and not isinstance(tool_choice, dict):
-        raise ValueError(f"tool_choice must be a dict or None, got {type(tool_choice).__name__}")
-    if not has_tools:
+    choice = (
+        tool_choice
+        if isinstance(tool_choice, NormalizedToolChoice)
+        else normalize_tool_choice(tool_choice)
+    )
+    if not has_tools or choice is None:
         return None
-    if isinstance(tool_choice, dict):
-        name = (tool_choice.get("function") or {}).get("name") or tool_choice.get("name")
-        if tool_choice.get("type") in ("function", "tool") and name:
-            return {"type": "tool", "name": name}
-        if tool_choice.get("type") in ("auto", "any", "none"):
-            return {"type": tool_choice["type"]}
-    return {"type": "auto"}
+    if choice.mode == "tool":
+        return {"type": "tool", "name": choice.tool}
+    return _ANTHROPIC_TOOL_CHOICE[choice.mode]
 
 
-class AnthropicProvider:
+def build_request(
+    model: str,
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]] | None,
+    tool_choice: ToolChoice | None,
+    *,
+    max_tokens: int = MAX_TOKENS,
+) -> dict[str, Any]:
+    """Assemble the full Messages API payload. Pure — raises on a bad request eagerly."""
+    choice = normalize_tool_choice(tool_choice)
+    system, rest = split_system(messages)
+    params: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages_to_anthropic(rest),
+    }
+    # Omit `system` entirely rather than sending an empty string.
+    if system:
+        params["system"] = system
+    anthropic_tools = tools_to_anthropic(tools)
+    if anthropic_tools:
+        params["tools"] = anthropic_tools
+        wire_choice = tool_choice_to_anthropic(choice, has_tools=True)
+        if wire_choice is not None:
+            params["tool_choice"] = wire_choice
+    return params
+
+
+class AnthropicProvider(LLMProvider):
     """Streaming Anthropic Messages API client, including tool use."""
 
     def __init__(self, api_key: str) -> None:
         self.client = AsyncAnthropic(api_key=api_key)
 
-    async def stream_chat(
+    def stream_chat(
         self,
         model: str,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]] | None = None,
         *,
-        tool_choice: dict[str, Any] | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        system, rest = split_system(messages)
-        params: dict[str, Any] = {
-            "model": model,
-            "max_tokens": MAX_TOKENS,
-            "system": system or "",
-            "messages": messages_to_anthropic(rest),
-        }
-        anthropic_tools = tools_to_anthropic(tools)
-        if anthropic_tools:
-            params["tools"] = anthropic_tools
-            choice = tool_choice_to_anthropic(tool_choice, has_tools=True)
-            if choice is not None:
-                params["tool_choice"] = choice
+        # Build (and therefore validate) the request eagerly so a bad `tool_choice` raises
+        # here rather than on the consumer's first `__anext__`.
+        params = build_request(model, messages, tools, tool_choice)
+        return self._stream(params)
 
+    async def _stream(self, params: dict[str, Any]) -> AsyncIterator[AgentEvent]:
+        model = params["model"]
         # Anthropic streams tool arguments as `input_json_delta` fragments keyed by the
         # content-block index; accumulate per index and flush on content_block_stop.
         acc: dict[int, dict[str, str]] = {}
+        saw_event = False
+        final: Any = None
 
         # `messages.stream()` only builds the manager — the HTTP request (and therefore any
         # 4xx/5xx) happens on `__aenter__`, and transport errors can surface mid-iteration,
@@ -216,10 +263,13 @@ class AnthropicProvider:
         try:
             async with self.client.messages.stream(**params) as stream:
                 async for event in stream:
+                    saw_event = True
                     kind = getattr(event, "type", "")
 
                     # The SDK interleaves synthesized `text` / `input_json` events with the
-                    # raw ones below; we read only the raw events so nothing is counted twice.
+                    # raw ones below; we read only the raw events so nothing is counted
+                    # twice. Block types we don't model (thinking, server_tool_use, …)
+                    # simply never enter `acc` and fall through as no-ops.
                     if kind == "content_block_start":
                         block = getattr(event, "content_block", None)
                         if block is not None and getattr(block, "type", "") == "tool_use":
@@ -251,15 +301,42 @@ class AnthropicProvider:
                                 "args": entry["args"] or "{}",
                             }
 
-                final = await stream.get_final_message()
+                # `get_final_message()` asserts a message_start was seen, so only ask for it
+                # when the stream actually produced something.
+                if saw_event:
+                    final = await stream.get_final_message()
         except ProviderError:
             raise
+        # Deliberately `Exception`, never `BaseException`: a consumer that breaks out of
+        # `async for` closes this generator by throwing `GeneratorExit` (and task
+        # cancellation arrives as `CancelledError`) at the yield points above. Both are
+        # BaseExceptions and must propagate untouched — swallowing them into a ProviderError
+        # would turn a normal early exit, or a cancelled request, into a bogus 502.
         except Exception as exc:  # noqa: BLE001
             log.warning("anthropic_stream_failed", model=model, error=str(exc))
-            raise ProviderError(f"Anthropic request failed: {exc}") from exc
+            raise ProviderError(
+                f"Anthropic request failed: {exc}", extra={"reason": "upstream"}
+            ) from exc
+
+        if final is None:
+            log.warning("anthropic_empty_stream", model=model)
+            yield {"type": "usage", "inputTokens": 0, "outputTokens": 0}
+            return
 
         yield {
             "type": "usage",
             "inputTokens": final.usage.input_tokens or 0,
             "outputTokens": final.usage.output_tokens or 0,
         }
+
+        stop_reason = getattr(final, "stop_reason", None)
+        if stop_reason == "max_tokens":
+            # Whatever we streamed is truncated — a half-written JSON tool argument would
+            # burn a structured-output retry on something the model got right.
+            log.warning(
+                "anthropic_response_truncated", model=model, max_tokens=params["max_tokens"]
+            )
+            raise ProviderError(
+                f"Anthropic response hit the {params['max_tokens']}-token cap and is truncated.",
+                extra={"reason": "max_tokens"},
+            )

@@ -8,8 +8,27 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.errors import ProviderError
-from app.llm.base import ChatMessage, LLMProvider
+from app.llm.base import ChatMessage, LLMProvider, ToolChoice, normalize_tool_choice
 from app.llm.events import AgentEvent
+
+# Our normalized mode -> OpenAI's `tool_choice`. OpenAI takes the bare strings.
+_OPENAI_TOOL_CHOICE = {"auto": "auto", "none": "none", "required": "required"}
+
+
+def tool_choice_to_openai(
+    tool_choice: ToolChoice | None, has_tools: bool
+) -> str | dict[str, Any] | None:
+    """Any accepted `tool_choice` spelling → OpenAI's `tool_choice`.
+
+    Mirrors `tool_choice_to_anthropic` so both providers accept exactly the same inputs.
+    Returns `None` when the field should be omitted (no tools, or no preference).
+    """
+    choice = normalize_tool_choice(tool_choice)
+    if not has_tools or choice is None:
+        return None
+    if choice.mode == "tool":
+        return {"type": "function", "function": {"name": choice.tool}}
+    return _OPENAI_TOOL_CHOICE[choice.mode]
 
 
 def _part_to_openai(p: dict[str, Any]) -> dict[str, Any]:
@@ -37,33 +56,47 @@ def _msg_to_openai(m: ChatMessage) -> dict[str, Any]:
     return out
 
 
-class OpenAICompatProvider:
+def build_request(
+    model: str,
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]] | None,
+    tool_choice: ToolChoice | None,
+) -> dict[str, Any]:
+    """Assemble the chat-completions payload. Pure — raises on a bad request eagerly."""
+    params: dict[str, Any] = {
+        "model": model,
+        "messages": [_msg_to_openai(m) for m in messages],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if tools:
+        params["tools"] = tools
+    # Only set when expressed — sending `None` explicitly is not the same as omitting it.
+    wire_choice = tool_choice_to_openai(tool_choice, has_tools=bool(tools))
+    if wire_choice is not None:
+        params["tool_choice"] = wire_choice
+    return params
+
+
+class OpenAICompatProvider(LLMProvider):
     """OpenAI-compatible streaming client. Used for both OpenAI and OpenRouter."""
 
     def __init__(self, api_key: str, base_url: str | None = None) -> None:
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
-    async def stream_chat(
+    def stream_chat(
         self,
         model: str,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]] | None = None,
         *,
-        tool_choice: dict[str, Any] | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        params: dict[str, Any] = {
-            "model": model,
-            "messages": [_msg_to_openai(m) for m in messages],
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if tools:
-            params["tools"] = tools
-        # `tool_choice` is already in the OpenAI shape — forward verbatim, but only when
-        # set (sending `None` explicitly is not the same as omitting it).
-        if tool_choice is not None:
-            params["tool_choice"] = tool_choice
+        # Build (and therefore validate) the request eagerly so a bad `tool_choice` raises
+        # here rather than on the consumer's first `__anext__`.
+        return self._stream(build_request(model, messages, tools, tool_choice))
 
+    async def _stream(self, params: dict[str, Any]) -> AsyncIterator[AgentEvent]:
         # Accumulators for tool_calls — OpenAI streams the function name and arguments in
         # multiple chunks; we re-emit a single ToolCallEvent per complete call.
         tool_acc: dict[int, dict[str, str]] = {}
@@ -71,7 +104,9 @@ class OpenAICompatProvider:
         try:
             stream = await self.client.chat.completions.create(**params)
         except Exception as exc:  # noqa: BLE001
-            raise ProviderError(f"OpenAI request failed: {exc}") from exc
+            raise ProviderError(
+                f"OpenAI request failed: {exc}", extra={"reason": "upstream"}
+            ) from exc
 
         async for chunk in stream:
             # Usage chunk (sent at the end of the stream when stream_options.include_usage)

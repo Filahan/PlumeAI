@@ -1,20 +1,25 @@
-"""Unit tests for the OpenAI → Anthropic shape translation in `app.llm.anthropic_client`.
+"""Provider-client tests: OpenAI ↔ Anthropic shape translation and stream handling.
 
-Pure functions only — no network, no DB.
+Mostly `app.llm.anthropic_client` (the fiddly side of the translation), plus the
+`tool_choice` acceptance and event-sequence parity that both provider clients owe the
+agent runner. No network, no DB — the SDK streams are faked.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import anthropic
-import httpx2
+import httpx
 import pytest
 
-from app.errors import ProviderError
+from app.errors import BadRequest, ProviderError
 from app.llm.anthropic_client import (
     MAX_TOKENS,
+    NO_OUTPUT,
     AnthropicProvider,
+    build_request,
     messages_to_anthropic,
     part_to_anthropic,
     split_system,
@@ -24,6 +29,7 @@ from app.llm.anthropic_client import (
     tools_to_anthropic,
 )
 from app.llm.base import ChatMessage
+from app.llm.openai_client import OpenAICompatProvider, tool_choice_to_openai
 
 
 # --- tool schema conversion -------------------------------------------------------------
@@ -59,10 +65,13 @@ def test_tools_to_anthropic_handles_none_and_missing_fields() -> None:
 def test_tool_choice_forced_tool() -> None:
     choice = {"type": "function", "function": {"name": "emit"}}
     assert tool_choice_to_anthropic(choice, has_tools=True) == {"type": "tool", "name": "emit"}
+    assert tool_choice_to_openai(choice, has_tools=True) == choice
 
 
-def test_tool_choice_defaults_to_auto_when_tools_present() -> None:
-    assert tool_choice_to_anthropic(None, has_tools=True) == {"type": "auto"}
+def test_tool_choice_omitted_when_caller_expressed_no_preference() -> None:
+    """`None` means "provider default" — neither client should invent one."""
+    assert tool_choice_to_anthropic(None, has_tools=True) is None
+    assert tool_choice_to_openai(None, has_tools=True) is None
 
 
 def test_tool_choice_is_omitted_without_tools() -> None:
@@ -71,6 +80,43 @@ def test_tool_choice_is_omitted_without_tools() -> None:
         tool_choice_to_anthropic({"type": "function", "function": {"name": "x"}}, has_tools=False)
         is None
     )
+    assert tool_choice_to_openai("required", has_tools=False) is None
+
+
+@pytest.mark.parametrize(
+    ("given", "anthropic_wire", "openai_wire"),
+    [
+        ("auto", {"type": "auto"}, "auto"),
+        # Anthropic has a real `none` wire value (ToolChoiceNoneParam), so tools can stay
+        # on the request in both clients.
+        ("none", {"type": "none"}, "none"),
+        # Anthropic spells "required" as "any".
+        ("required", {"type": "any"}, "required"),
+        ("any", {"type": "any"}, "required"),
+        ({"type": "auto"}, {"type": "auto"}, "auto"),
+        ({"type": "tool", "name": "emit"}, {"type": "tool", "name": "emit"},
+         {"type": "function", "function": {"name": "emit"}}),
+    ],
+)
+def test_tool_choice_string_and_dict_forms(
+    given: Any, anthropic_wire: dict, openai_wire: Any
+) -> None:
+    assert tool_choice_to_anthropic(given, has_tools=True) == anthropic_wire
+    assert tool_choice_to_openai(given, has_tools=True) == openai_wire
+
+
+@pytest.mark.parametrize("bad", ["always", "AUTO", ["emit"], 7, {"type": "nonsense"}])
+def test_tool_choice_rejects_unsupported_values(bad: Any) -> None:
+    """Both clients reject the same inputs, as BadRequest (a 400, not a 502)."""
+    with pytest.raises(BadRequest):
+        tool_choice_to_anthropic(bad, has_tools=True)
+    with pytest.raises(BadRequest):
+        tool_choice_to_openai(bad, has_tools=True)
+
+
+def test_tool_choice_naming_a_tool_requires_a_name() -> None:
+    with pytest.raises(BadRequest, match="must name a tool"):
+        tool_choice_to_anthropic({"type": "function", "function": {}}, has_tools=True)
 
 
 # --- system extraction ------------------------------------------------------------------
@@ -376,7 +422,9 @@ async def test_stream_emits_text_tool_call_and_usage() -> None:
         },
         {"type": "usage", "inputTokens": 11, "outputTokens": 22},
     ]
-    assert params["tool_choice"] == {"type": "auto"}
+    # No preference was expressed, so the field is omitted (Anthropic already defaults to
+    # auto when tools are present).
+    assert "tool_choice" not in params
     assert params["tools"][0]["name"] == "web_search"
     assert params["max_tokens"] == MAX_TOKENS
 
@@ -455,8 +503,8 @@ async def _drain_with_manager(manager: object) -> list[dict]:
 
 
 async def test_api_status_error_on_enter_becomes_provider_error() -> None:
-    response = httpx2.Response(
-        401, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(
+        401, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     )
     err = anthropic.APIStatusError("invalid x-api-key", response=response, body=None)
 
@@ -489,14 +537,370 @@ async def test_provider_error_is_not_double_wrapped() -> None:
     assert exc.value is original
 
 
-# --- tool_choice input validation -------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad", ["auto", ["emit"], 7])
-def test_tool_choice_rejects_non_dict(bad: object) -> None:
-    with pytest.raises(ValueError, match="must be a dict or None"):
-        tool_choice_to_anthropic(bad, has_tools=True)  # type: ignore[arg-type]
+# --- tool results: empty and multimodal -------------------------------------------------
 
 
-def test_tool_choice_none_is_still_accepted() -> None:
-    assert tool_choice_to_anthropic(None, has_tools=True) == {"type": "auto"}
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t "])
+def test_tool_result_blank_text_becomes_placeholder(blank: str) -> None:
+    """Anthropic rejects an empty tool_result, and "returned nothing" is a real outcome."""
+    block = tool_result_block(ChatMessage(role="tool", tool_call_id="c", content=blank))
+    assert block["content"] == NO_OUTPUT
+
+
+def test_tool_result_none_content_becomes_placeholder() -> None:
+    assert tool_result_block(ChatMessage(role="tool", tool_call_id="c"))["content"] == NO_OUTPUT
+
+
+def test_tool_result_preserves_meaningful_whitespace() -> None:
+    block = tool_result_block(ChatMessage(role="tool", tool_call_id="c", content="  ok  "))
+    assert block["content"] == "  ok  "
+
+
+def test_tool_result_keeps_image_parts() -> None:
+    block = tool_result_block(
+        ChatMessage(
+            role="tool",
+            tool_call_id="c",
+            content=[
+                {"type": "text", "text": "screenshot:"},
+                {"type": "image", "mime": "image/png", "base64": "IMG"},
+            ],
+        )
+    )
+    assert block["content"] == [
+        {"type": "text", "text": "screenshot:"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "IMG"}},
+    ]
+
+
+def test_tool_result_image_only_drops_blank_text_block() -> None:
+    block = tool_result_block(
+        ChatMessage(
+            role="tool",
+            tool_call_id="c",
+            content=[
+                {"type": "text", "text": "   "},
+                {"type": "image", "mime": "image/png", "base64": "IMG"},
+            ],
+        )
+    )
+    assert [b["type"] for b in block["content"]] == ["image"]
+
+
+def test_tool_result_empty_part_list_becomes_placeholder() -> None:
+    assert tool_result_block(
+        ChatMessage(role="tool", tool_call_id="c", content=[])
+    )["content"] == NO_OUTPUT
+
+
+# --- request assembly -------------------------------------------------------------------
+
+
+def test_system_key_is_omitted_when_there_is_no_system_prompt() -> None:
+    params = build_request("m", [ChatMessage(role="user", content="hi")], None, None)
+    assert "system" not in params
+    assert "tools" not in params
+
+
+def test_bad_tool_choice_raises_eagerly_from_stream_chat() -> None:
+    """The generator body must not have to start for a bad request to surface."""
+    provider = AnthropicProvider(api_key="test")
+    with pytest.raises(BadRequest):
+        provider.stream_chat(
+            model="m",
+            messages=[ChatMessage(role="user", content="hi")],
+            tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+            tool_choice="whenever",
+        )
+
+
+def test_bad_tool_choice_raises_eagerly_from_openai_stream_chat() -> None:
+    provider = OpenAICompatProvider(api_key="test")
+    with pytest.raises(BadRequest):
+        provider.stream_chat(
+            model="m",
+            messages=[ChatMessage(role="user", content="hi")],
+            tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+            tool_choice="whenever",
+        )
+
+
+async def test_tool_choice_string_reaches_the_anthropic_wire() -> None:
+    out = await _run_stream(
+        [_block_start(0, type="text", text=""), _text_delta(0, "x"), _block_stop(0, type="text")],
+        model="m",
+        messages=[ChatMessage(role="user", content="hi")],
+        tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+        tool_choice="required",
+    )
+    assert out.pop()["tool_choice"] == {"type": "any"}
+
+
+# --- block types we don't model ---------------------------------------------------------
+
+
+async def test_thinking_and_unknown_blocks_are_no_ops() -> None:
+    events = [
+        SimpleNamespace(type="message_start"),
+        _block_start(0, type="thinking", thinking=""),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="thinking_delta", thinking="hmm"),
+        ),
+        SimpleNamespace(type="thinking", thinking="hmm", snapshot="hmm"),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="signature_delta", signature="sig"),
+        ),
+        _block_stop(0, type="thinking", thinking="hmm"),
+        _block_start(1, type="server_tool_use", id="srv_1", name="web_search"),
+        _block_stop(1, type="server_tool_use", id="srv_1", name="web_search"),
+        _block_start(2, type="text", text=""),
+        _text_delta(2, "answer"),
+        _block_stop(2, type="text", text="answer"),
+        SimpleNamespace(type="message_stop"),
+    ]
+    out = await _run_stream(events, model="m", messages=[ChatMessage(role="user", content="hi")])
+    out.pop()
+
+    # Only the real text survives: no thinking text leaks out, and the server-side tool
+    # block does not become a client-executable tool_call.
+    assert out == [
+        {"type": "text", "delta": "answer"},
+        {"type": "usage", "inputTokens": 11, "outputTokens": 22},
+    ]
+
+
+async def test_empty_text_delta_is_skipped() -> None:
+    out = await _run_stream(
+        [_block_start(0, type="text", text=""), _text_delta(0, ""), _block_stop(0, type="text")],
+        model="m",
+        messages=[ChatMessage(role="user", content="hi")],
+    )
+    out.pop()
+    assert out == [{"type": "usage", "inputTokens": 11, "outputTokens": 22}]
+
+
+# --- empty stream -----------------------------------------------------------------------
+
+
+class _EmptyStream(_FakeStream):
+    """A stream that yields nothing — `get_final_message()` would assert if called."""
+
+    async def get_final_message(self) -> SimpleNamespace:
+        raise AssertionError("get_final_message() must not be called on an empty stream")
+
+
+async def test_empty_stream_yields_zero_usage_without_asking_for_a_final_message() -> None:
+    provider = AnthropicProvider(api_key="test")
+    manager = _EmptyStream([], SimpleNamespace())
+    provider.client.messages.stream = lambda **params: manager  # type: ignore[assignment]
+
+    out = [ev async for ev in provider.stream_chat(model="m", messages=[])]
+
+    assert out == [{"type": "usage", "inputTokens": 0, "outputTokens": 0}]
+
+
+# --- truncation -------------------------------------------------------------------------
+
+
+async def _run_stream_with_final(events: list[SimpleNamespace], final: SimpleNamespace) -> list:
+    provider = AnthropicProvider(api_key="test")
+    provider.client.messages.stream = (  # type: ignore[assignment]
+        lambda **p: _FakeStream(events, final)
+    )
+    out = []
+    async for ev in provider.stream_chat(model="m", messages=[]):
+        out.append(ev)
+    return out
+
+
+async def test_max_tokens_stop_reason_raises_after_yielding_what_streamed() -> None:
+    events = [
+        _block_start(0, type="tool_use", id="toolu_1", name="emit"),
+        _json_delta(0, '{"answer": "half'),
+        _block_stop(0, type="tool_use", id="toolu_1", name="emit"),
+    ]
+    final = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=5, output_tokens=8192), stop_reason="max_tokens"
+    )
+    provider = AnthropicProvider(api_key="test")
+    provider.client.messages.stream = (  # type: ignore[assignment]
+        lambda **p: _FakeStream(events, final)
+    )
+
+    seen: list[dict] = []
+    with pytest.raises(ProviderError) as exc:
+        async for ev in provider.stream_chat(model="m", messages=[]):
+            seen.append(ev)
+
+    # The truncated tool call and the usage were still delivered before the raise, so the
+    # caller can account for the spend and see how far the model got.
+    assert [ev["type"] for ev in seen] == ["tool_call", "usage"]
+    assert seen[0]["args"] == '{"answer": "half'
+    assert exc.value.extra == {"reason": "max_tokens"}
+    assert "truncated" in exc.value.detail
+
+
+async def test_normal_stop_reason_does_not_raise() -> None:
+    events = [_block_start(0, type="text", text=""), _text_delta(0, "hi"), _block_stop(0)]
+    final = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=1, output_tokens=2), stop_reason="end_turn"
+    )
+    out = await _run_stream_with_final(events, final)
+    assert out[-1] == {"type": "usage", "inputTokens": 1, "outputTokens": 2}
+
+
+# --- partial delivery + cancellation ----------------------------------------------------
+
+
+async def test_partial_text_is_delivered_before_a_mid_stream_error() -> None:
+    provider = AnthropicProvider(api_key="test")
+    final = SimpleNamespace(usage=SimpleNamespace(input_tokens=0, output_tokens=0))
+    manager = _MidStreamFailure(
+        [
+            _block_start(0, type="text", text=""),
+            _text_delta(0, "half an "),
+            _text_delta(0, "answer"),
+        ],
+        final,
+    )
+    provider.client.messages.stream = lambda **p: manager  # type: ignore[assignment]
+
+    seen: list[dict] = []
+    with pytest.raises(ProviderError) as exc:
+        async for ev in provider.stream_chat(model="m", messages=[]):
+            seen.append(ev)
+
+    assert seen == [{"type": "text", "delta": "half an "}, {"type": "text", "delta": "answer"}]
+    assert exc.value.extra == {"reason": "upstream"}
+
+
+async def test_breaking_out_of_the_stream_closes_it_without_a_provider_error() -> None:
+    """A consumer abandoning the stream throws GeneratorExit — not an upstream failure."""
+    provider = AnthropicProvider(api_key="test")
+    final = SimpleNamespace(usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+    closed: list[bool] = []
+
+    class _TrackingStream(_FakeStream):
+        async def __aexit__(self, *exc: object) -> None:
+            closed.append(True)
+
+    manager = _TrackingStream(
+        [
+            _block_start(0, type="text", text=""),
+            _text_delta(0, "one"),
+            _text_delta(0, "two"),
+            _block_stop(0, type="text"),
+        ],
+        final,
+    )
+    provider.client.messages.stream = lambda **p: manager  # type: ignore[assignment]
+
+    gen = provider.stream_chat(model="m", messages=[])
+    seen = []
+    async for ev in gen:
+        seen.append(ev)
+        break
+    await gen.aclose()  # type: ignore[attr-defined]
+
+    assert seen == [{"type": "text", "delta": "one"}]
+    assert closed == [True]
+
+
+# --- cross-provider parity --------------------------------------------------------------
+
+
+class _FakeOpenAIStream:
+    """Async-iterable stand-in for the OpenAI streaming response."""
+
+    def __init__(self, chunks: list[SimpleNamespace]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):  # type: ignore[no-untyped-def]
+        for c in self._chunks:
+            yield c
+
+
+def _oa_chunk(
+    content: str | None = None,
+    tool_calls: list[SimpleNamespace] | None = None,
+    usage: SimpleNamespace | None = None,
+) -> SimpleNamespace:
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    return SimpleNamespace(usage=usage, choices=[SimpleNamespace(delta=delta)])
+
+
+def _oa_tool_delta(  # type: ignore[no-untyped-def]
+    index: int, id_: str | None, name: str | None, args: str | None
+):
+    return SimpleNamespace(
+        index=index, id=id_, function=SimpleNamespace(name=name, arguments=args)
+    )
+
+
+async def test_both_providers_emit_the_same_event_sequence() -> None:
+    """One logical response — two SDK wire formats — one AgentEvent sequence."""
+    anthropic_events = [
+        SimpleNamespace(type="message_start"),
+        _block_start(0, type="text", text=""),
+        _text_delta(0, "Looking"),
+        _synthetic_text("Looking", "Looking"),
+        _text_delta(0, " it up"),
+        _block_stop(0, type="text", text="Looking it up"),
+        _block_start(1, type="tool_use", id="call_1", name="web_search"),
+        _json_delta(1, '{"query":'),
+        _json_delta(1, ' "cats"}'),
+        _block_stop(1, type="tool_use", id="call_1", name="web_search"),
+        SimpleNamespace(type="message_stop"),
+    ]
+    anthropic_out = await _run_stream(
+        anthropic_events,
+        model="claude",
+        messages=[ChatMessage(role="user", content="find cats")],
+        tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+    )
+    anthropic_out.pop()  # drop the captured-params sentinel
+
+    openai_provider = OpenAICompatProvider(api_key="test")
+    chunks = [
+        _oa_chunk(content="Looking"),
+        _oa_chunk(content=" it up"),
+        _oa_chunk(tool_calls=[_oa_tool_delta(0, "call_1", "web_search", '{"query":')]),
+        _oa_chunk(tool_calls=[_oa_tool_delta(0, None, None, ' "cats"}')]),
+        _oa_chunk(usage=SimpleNamespace(prompt_tokens=11, completion_tokens=22)),
+    ]
+
+    async def fake_create(**params: object) -> _FakeOpenAIStream:
+        return _FakeOpenAIStream(chunks)
+
+    openai_provider.client.chat.completions.create = fake_create  # type: ignore[assignment]
+    openai_out = [
+        ev
+        async for ev in openai_provider.stream_chat(
+            model="gpt-4o",
+            messages=[ChatMessage(role="user", content="find cats")],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+        )
+    ]
+
+    expected = [
+        {"type": "text", "delta": "Looking"},
+        {"type": "text", "delta": " it up"},
+        {
+            "type": "tool_call",
+            "id": "call_1",
+            "tool": "web_search",
+            "args": '{"query": "cats"}',
+        },
+        {"type": "usage", "inputTokens": 11, "outputTokens": 22},
+    ]
+    # OpenAI flushes tool calls at end-of-stream, so usage arrives first there; compare as
+    # sets of events plus the text ordering, which is what the runner actually relies on.
+    assert anthropic_out == expected
+    assert sorted(openai_out, key=repr) == sorted(expected, key=repr)
+    assert [e for e in openai_out if e["type"] == "text"] == expected[:2]

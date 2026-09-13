@@ -6,63 +6,114 @@ force the model to call it, and read the arguments back. That works identically 
 OpenRouter and Anthropic because `LLMProvider.stream_chat` already normalizes tool calls.
 
 Anything the model gets wrong (malformed JSON, a payload that violates the schema) is fed
-back to it as a follow-up turn so it can try again.
+back to it as a follow-up turn so it can try again. Anything the *provider* gets wrong
+(auth, rate limits, a truncated response) propagates immediately — retrying won't help.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+from dataclasses import dataclass
 from typing import Any
 
-import jsonschema
 import structlog
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.errors import ProviderError
-from app.llm.base import ChatMessage
+from app.errors import ProviderError, ValidationFailure
+from app.llm.base import ChatMessage, LLMProvider
+from app.llm.events import AgentEvent
 from app.llm.factory import get_provider_for
 
 log = structlog.get_logger("app.llm.structured")
 
 RETRY_TEMPLATE = (
-    "Your previous output was invalid: {error} "
-    "Call the tool again with a valid payload."
+    "Your previous output was invalid: {error} Call the tool again with a valid payload."
 )
 
+NO_TOOL_CALL = "(no tool call)"
 
-async def _first_tool_call_args(stream: Any) -> tuple[str | None, str | None]:
-    """Drain a provider stream, returning (raw args of the first tool call, error message)."""
+
+@dataclass(frozen=True)
+class StructuredResult:
+    """The validated payload plus what the round trip (including retries) cost."""
+
+    data: dict[str, Any]
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class _Invalid:
+    """Why a payload was rejected.
+
+    `message` is written for the model and may quote the offending payload, so it goes in
+    the retry prompt only. The remaining fields are safe to log.
+    """
+
+    message: str
+    kind: str
+    json_path: str | None = None
+    validator: str | None = None
+
+
+@dataclass
+class _Attempt:
+    """What one streaming round produced."""
+
     raw: str | None = None
-    error: str | None = None
-    async for ev in stream:
-        kind = ev.get("type")
-        if kind == "tool_call" and raw is None:
-            raw = ev.get("args")
-        elif kind == "error":
-            error = ev.get("message")
-        elif kind == "done":
-            break
-    return raw, error
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
-def _validate(raw: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    """Parse + schema-check the tool arguments. Returns (payload, error message)."""
+async def _drain(stream: AsyncIterator[AgentEvent]) -> _Attempt:
+    """Consume a provider stream, keeping the first tool call's arguments and the usage.
+
+    `aclosing` guarantees the underlying async generator is finalized (closing the HTTP
+    response) even though we stop reading as soon as we have what we need.
+    """
+    attempt = _Attempt()
+    async with aclosing(stream) as events:
+        async for ev in events:
+            kind = ev.get("type")
+            if kind == "tool_call" and attempt.raw is None:
+                attempt.raw = ev.get("args")
+            elif kind == "usage":
+                attempt.input_tokens = ev["inputTokens"]
+                attempt.output_tokens = ev["outputTokens"]
+    return attempt
+
+
+def _check(
+    raw: str, validator: Draft202012Validator
+) -> tuple[dict[str, Any] | None, _Invalid | None]:
+    """Parse + schema-check the tool arguments."""
     try:
         payload = json.loads(raw)
     except ValueError as exc:
-        return None, f"the arguments were not valid JSON ({exc})."
+        return None, _Invalid(
+            message=f"the arguments were not valid JSON ({exc}).", kind="invalid_json"
+        )
     if not isinstance(payload, dict):
-        return None, "the arguments must be a JSON object, not a bare value or list."
-    try:
-        jsonschema.validate(payload, schema)
-    except jsonschema.ValidationError as exc:
-        return None, f"the payload did not match the schema ({exc.message})."
+        return None, _Invalid(
+            message="the arguments must be a JSON object, not a bare value or list.",
+            kind="not_an_object",
+        )
+    error: ValidationError | None = next(iter(validator.iter_errors(payload)), None)
+    if error is not None:
+        return None, _Invalid(
+            message=f"the payload did not match the schema ({error.message}).",
+            kind="schema_violation",
+            json_path=error.json_path,
+            validator=str(error.validator),
+        )
     return payload, None
 
 
 async def complete_json(
-    session: AsyncSession,
-    provider_name: str,
+    provider: LLMProvider,
     model: str,
     messages: list[ChatMessage],
     schema: dict[str, Any],
@@ -70,13 +121,20 @@ async def complete_json(
     name: str = "emit",
     description: str = "Return the result.",
     max_retries: int = 1,
-) -> dict[str, Any]:
+) -> StructuredResult:
     """Ask `model` for one object matching `schema`, retrying on invalid output.
 
-    Raises `ProviderError` when the model still hasn't produced a valid payload after
-    `max_retries` extra attempts.
+    Raises `ValidationFailure` when `schema` itself is not a valid JSON Schema, and
+    `ProviderError` when the model still hasn't produced a valid payload after
+    `max_retries` extra attempts (`extra={"reason": "invalid_output"}`) or when the
+    provider itself failed (`extra={"reason": "upstream"}`).
     """
-    provider = await get_provider_for(session, provider_name)
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ValidationFailure(f"Invalid output schema: {exc.message}") from exc
+    validator = Draft202012Validator(schema)
+
     tools = [
         {
             "type": "function",
@@ -86,41 +144,85 @@ async def complete_json(
     tool_choice = {"type": "function", "function": {"name": name}}
 
     convo = list(messages)
-    last_error = "the model returned no tool call."
+    total_in = 0
+    total_out = 0
+    invalid = _Invalid(message="the model returned no tool call.", kind="no_tool_call")
 
-    for attempt in range(max_retries + 1):
-        raw, stream_error = await _first_tool_call_args(
-            provider.stream_chat(
-                model=model, messages=convo, tools=tools, tool_choice=tool_choice
+    for attempt_no in range(max_retries + 1):
+        try:
+            attempt = await _drain(
+                provider.stream_chat(
+                    model=model, messages=convo, tools=tools, tool_choice=tool_choice
+                )
             )
-        )
+        except ProviderError as exc:
+            # An upstream failure is not something a reworded prompt can fix.
+            exc.extra.setdefault("reason", "upstream")
+            raise
 
-        if raw is None:
-            last_error = stream_error or "the model returned no tool call."
+        total_in += attempt.input_tokens
+        total_out += attempt.output_tokens
+
+        if attempt.raw is None:
+            invalid = _Invalid(message="the model returned no tool call.", kind="no_tool_call")
         else:
-            payload, last_error = _validate(raw, schema)
+            payload, invalid_now = _check(attempt.raw, validator)
             if payload is not None:
-                return payload
+                return StructuredResult(
+                    data=payload, input_tokens=total_in, output_tokens=total_out
+                )
+            assert invalid_now is not None
+            invalid = invalid_now
 
+        # Only the schema-shaped facts are logged — `invalid.message` can quote the
+        # model's payload, which may carry user data, so it stays in the prompt.
         log.warning(
             "structured_output_invalid",
-            provider=provider_name,
             model=model,
             tool=name,
-            attempt=attempt,
-            error=last_error,
+            attempt=attempt_no,
+            kind=invalid.kind,
+            json_path=invalid.json_path,
+            validator=invalid.validator,
         )
 
-        if attempt >= max_retries:
+        if attempt_no >= max_retries:
             break
 
         convo = [
             *convo,
-            ChatMessage(role="assistant", content=raw or "(no tool call)"),
-            ChatMessage(role="user", content=RETRY_TEMPLATE.format(error=last_error)),
+            ChatMessage(
+                role="assistant", content=attempt.raw if attempt.raw is not None else NO_TOOL_CALL
+            ),
+            ChatMessage(role="user", content=RETRY_TEMPLATE.format(error=invalid.message)),
         ]
 
     raise ProviderError(
-        f"{provider_name} did not return a valid `{name}` payload after "
-        f"{max_retries + 1} attempt(s): {last_error}"
+        f"{model} did not return a valid `{name}` payload after "
+        f"{max_retries + 1} attempt(s): {invalid.message}",
+        extra={"reason": "invalid_output"},
+    )
+
+
+async def complete_json_for(
+    session: AsyncSession,
+    provider_name: str,
+    model: str,
+    messages: list[ChatMessage],
+    schema: dict[str, Any],
+    *,
+    name: str = "emit",
+    description: str = "Return the result.",
+    max_retries: int = 1,
+) -> StructuredResult:
+    """`complete_json` against the provider the user has configured under `provider_name`."""
+    provider = await get_provider_for(session, provider_name)
+    return await complete_json(
+        provider,
+        model,
+        messages,
+        schema,
+        name=name,
+        description=description,
+        max_retries=max_retries,
     )
