@@ -99,6 +99,8 @@ html {
   --surface-muted: #F7F6FA;
   --accent-user: #E8DAF5;
   --accent-asst: #F2F2F5;
+  /* What shows in the 12px the app shell (`fixed inset-3`) leaves around itself. */
+  --app-backdrop: #F2F2F5;
 }
 
 .dark {
@@ -133,6 +135,7 @@ html {
   --sidebar-accent-foreground: #f5f5f0;
   --sidebar-border: #404040;
   --sidebar-ring: #737373;
+  --app-backdrop: #141414;
 }
 
 @layer base {
@@ -140,8 +143,7 @@ html {
     @apply border-border outline-ring/50;
   }
   body {
-    background: linear-gradient(135deg, #F5A8D8 0%, #B07CF0 35%, #7AC7F5 70%, #F2C76A 100%);
-    background-attachment: fixed;
+    background: var(--app-backdrop);
     color: var(--foreground);
     min-height: 100vh;
   }
