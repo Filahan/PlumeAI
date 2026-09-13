@@ -1,19 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { UsageEntry } from '@/lib/types';
-import { getCost, PricingMap } from '@/lib/pricing';
+import { PricingMap } from '@/lib/pricing';
 import { usage as usageApi } from '@/lib/api';
 
-export type UsageWindow = '30m' | '1h' | '6h' | '24h';
-export const USAGE_WINDOWS: { id: UsageWindow; label: string; ms: number }[] = [
-  { id: '30m', label: '30m', ms: 30 * 60 * 1000 },
-  { id: '1h', label: '1h', ms: 60 * 60 * 1000 },
-  { id: '6h', label: '6h', ms: 6 * 60 * 60 * 1000 },
-  { id: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
-];
-
-const USAGE_WINDOW_KEY = 'webui-usage-window';
 const PRICING_CACHE_KEY = 'webui-pricing-cache';
 const PRICING_TTL_MS = 9 * 60 * 60 * 1000;
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
@@ -67,12 +58,12 @@ function usePricing(): PricingMap {
   return pricing;
 }
 
+/** The usage dashboard's data: every recorded LLM round (the server is the only writer —
+ *  the automation executor and the builder assistant record them) plus current pricing. */
 export function useUsage() {
   const pricing = usePricing();
   const [usageLog, setUsageLog] = useState<UsageEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
-  const [window, setWindowState] = useState<UsageWindow>('30m');
 
   useEffect(() => {
     let cancelled = false;
@@ -85,46 +76,10 @@ export function useUsage() {
       .finally(() => {
         if (!cancelled) setLoaded(true);
       });
-    const savedWindow = localStorage.getItem(USAGE_WINDOW_KEY);
-    if (savedWindow && USAGE_WINDOWS.some((w) => w.id === savedWindow)) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setWindowState(savedWindow as UsageWindow);
-    }
     return () => {
       cancelled = true;
     };
   }, []);
 
-  useEffect(() => {
-    if (!loaded) return;
-    localStorage.setItem(USAGE_WINDOW_KEY, window);
-  }, [window, loaded]);
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  const recordUsage = useCallback((entry: Omit<UsageEntry, 'timestamp'>) => {
-    // Persist optimistically in local log; FastAPI already recorded server-side.
-    const ts = Date.now();
-    setUsageLog((prev) => [...prev, { ...entry, timestamp: ts }]);
-  }, []);
-
-  const setWindow = useCallback((w: UsageWindow) => setWindowState(w), []);
-
-  const recentUsage = useMemo(() => {
-    const windowMs = USAGE_WINDOWS.find((w) => w.id === window)?.ms ?? USAGE_WINDOWS[0].ms;
-    const cutoff = now - windowMs;
-    let tokens = 0;
-    let cost = 0;
-    for (const e of usageLog) {
-      if (e.timestamp < cutoff) continue;
-      tokens += e.inputTokens + e.outputTokens;
-      cost += getCost(pricing, e.model, e.inputTokens, e.outputTokens);
-    }
-    return { tokens, cost };
-  }, [usageLog, now, pricing, window]);
-
-  return { recordUsage, recentUsage, window, setWindow, usageLog, pricing, loaded };
+  return { usageLog, pricing, loaded };
 }
