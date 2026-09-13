@@ -86,8 +86,8 @@ export default function UsagePage() {
   return (
     <AppShell
       currentId={null}
-      onSelect={(id) => router.push(`/${id}`)}
-      onNewChat={() => router.push('/')}
+      onSelect={(id) => router.push(`/chat/${id}`)}
+      onNewChat={() => router.push('/chat')}
       onDelete={(id) => deleteConversation(id)}
       leftPanel={false}
     >
@@ -134,7 +134,7 @@ export default function UsagePage() {
               Start a conversation to see your token consumption broken down here.
             </p>
             <Link
-              href="/"
+              href="/chat"
               className="inline-flex items-center gap-2 h-10 px-4 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-medium hover:opacity-90 transition"
             >
               Back to chat

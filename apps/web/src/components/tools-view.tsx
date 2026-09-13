@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Settings } from '@/lib/types';
-import { TOOL_DESCRIPTORS, type ToolDescriptor } from '@/lib/tools/registry-client';
+import { useCatalog } from '@/lib/automations/store';
+import type { CatalogIntegration } from '@/lib/automations/types';
 import { settings as settingsApi } from '@/lib/api';
 
 const { clearToolCredentials, disconnectTool, saveToolCredentials } = settingsApi;
@@ -27,11 +28,19 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-function isToolConnected(tool: ToolDescriptor, settings: Settings): boolean {
+/** Connection state for one integration.
+ *
+ *  The catalog already reports `connected` server-side, but `settings` is what this view
+ *  updates optimistically when you connect/disconnect — so the local signal wins when it
+ *  exists and the catalog is the fallback (fresh page, tool absent from settings). */
+function isToolConnected(tool: CatalogIntegration, settings: Settings): boolean {
   if (tool.connectMode === 'config') {
-    return !!(tool.credentialsNamespace && settings.toolCredentials?.[tool.credentialsNamespace]);
+    const local = tool.credentialsNamespace
+      ? settings.toolCredentials?.[tool.credentialsNamespace]
+      : undefined;
+    return local ?? tool.connected;
   }
-  return !!settings.tools?.[tool.name]?.connected;
+  return settings.tools?.[tool.name]?.connected ?? tool.connected;
 }
 
 export default function ToolsView({
@@ -42,6 +51,7 @@ export default function ToolsView({
   setSettings: (s: Settings) => void;
 }) {
   const params = useSearchParams();
+  const catalog = useCatalog();
   const errorMessage =
     params.get('status') === 'error' ? params.get('message') : null;
 
@@ -66,9 +76,13 @@ export default function ToolsView({
       )}
 
       <div className="space-y-2">
-        {TOOL_DESCRIPTORS.map((t) => (
-          <ToolCard key={t.name} tool={t} settings={settings} setSettings={setSettings} />
-        ))}
+        {catalog === null ? (
+          <p className="text-[12px] text-[color:var(--muted-foreground)]">Loading tools…</p>
+        ) : (
+          catalog.integrations.map((t) => (
+            <ToolCard key={t.name} tool={t} settings={settings} setSettings={setSettings} />
+          ))
+        )}
       </div>
     </div>
   );
@@ -81,7 +95,7 @@ function ToolCard({
   settings,
   setSettings,
 }: {
-  tool: ToolDescriptor;
+  tool: CatalogIntegration;
   settings: Settings;
   setSettings: (s: Settings) => void;
 }) {
@@ -107,8 +121,12 @@ function ToolCard({
         <div className="flex-1 min-w-0">
           <div className="text-[14px] font-medium truncate">{tool.label}</div>
           <div className="text-[12px] text-[color:var(--muted-foreground)] truncate">{tool.description}</div>
-          <div className="text-[11px] text-[color:var(--muted-foreground)] mt-0.5 font-mono">
-            @{tool.name}
+          <div className="text-[11px] text-[color:var(--muted-foreground)] mt-0.5 flex items-center gap-1.5">
+            <span className="font-mono">@{tool.name}</span>
+            <span>·</span>
+            <span>
+              {tool.actions.length} {tool.actions.length === 1 ? 'action' : 'actions'}
+            </span>
           </div>
         </div>
         {connected ? (
@@ -141,7 +159,7 @@ function ToolModal({
   setSettings,
   close,
 }: {
-  tool: ToolDescriptor;
+  tool: CatalogIntegration;
   settings: Settings;
   setSettings: (s: Settings) => void;
   close: () => void;
@@ -268,9 +286,11 @@ function ToolModal({
       </DialogHeader>
 
       <div className="overflow-y-auto max-h-[65vh] space-y-4 pr-1">
-        <p className="text-[13px] text-[color:var(--foreground)] leading-relaxed">
-          {tool.setup.intro}
-        </p>
+        {tool.setup?.intro && (
+          <p className="text-[13px] text-[color:var(--foreground)] leading-relaxed">
+            {tool.setup.intro}
+          </p>
+        )}
 
         {tool.name === 'discord' && credsSaved && (
           <DiscordInviteBlock />
@@ -358,7 +378,7 @@ function ToolModal({
           </summary>
           <div className="px-3 pb-3 pt-1">
             <ol className="space-y-3">
-              {tool.setup.steps.map((step, i) => (
+              {(tool.setup?.steps ?? []).map((step, i) => (
                 <li key={i} className="flex gap-3">
                   <span className="shrink-0 w-5 h-5 rounded-full bg-[color:var(--surface-muted)] text-[color:var(--foreground)] text-[11px] font-semibold inline-flex items-center justify-center mt-0.5">
                     {i + 1}
@@ -390,7 +410,7 @@ function ToolModal({
                 </li>
               ))}
             </ol>
-            {tool.setup.note && (
+            {tool.setup?.note && (
               <p className="mt-3 pt-3 border-t border-[color:var(--border)] text-[11px] text-[color:var(--muted-foreground)] leading-relaxed">
                 {tool.setup.note}
               </p>

@@ -9,6 +9,7 @@ export {
   settings,
   conversations,
   automations,
+  tools,
   usage,
   chat,
   type ChatStreamRequest,

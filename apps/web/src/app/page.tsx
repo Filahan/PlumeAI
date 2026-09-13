@@ -2,13 +2,14 @@
 
 import { useRouter } from 'next/navigation';
 import AppShell from '@/components/app-shell';
-import ToolsView from '@/components/tools-view';
-import { useConversationsStore, useSettingsStore } from '@/lib/store-provider';
+import { AutomationsSidebar } from '@/components/automations/list/automations-sidebar';
+import AutomationsHome from '@/components/automations/home/automations-home';
+import { useConversationsStore } from '@/lib/store-provider';
 
-export default function ToolsPage() {
+/** `/` — automations home. The chat lives at `/chat`. */
+export default function Home() {
   const router = useRouter();
   const { deleteConversation } = useConversationsStore();
-  const { settings, setSettings } = useSettingsStore();
 
   return (
     <AppShell
@@ -16,9 +17,9 @@ export default function ToolsPage() {
       onSelect={(id) => router.push(`/chat/${id}`)}
       onNewChat={() => router.push('/chat')}
       onDelete={(id) => deleteConversation(id)}
-      leftPanel={false}
+      leftPanel={<AutomationsSidebar />}
     >
-      <ToolsView settings={settings} setSettings={setSettings} />
+      <AutomationsHome />
     </AppShell>
   );
 }

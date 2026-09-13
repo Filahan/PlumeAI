@@ -9,21 +9,20 @@
  */
 
 import { api } from './client';
+import type { Conversation, Message, Provider, Settings, UsageEntry } from '@/lib/types';
 import type {
   AutomationDetail,
   AutomationDocument,
   AutomationSummary,
-  Conversation,
+  Catalog,
   DocumentWriteResult,
-  Message,
   Operation,
-  Provider,
   RunDetail,
   RunSummary,
-  RunTrigger,
-  Settings,
-  UsageEntry,
-} from '@/lib/types';
+  ValidateResult,
+  VersionDetail,
+  VersionSummary,
+} from '@/lib/automations/types';
 
 // ─── Settings + tools ───────────────────────────────────────────────────────────────
 
@@ -87,6 +86,14 @@ export const conversations = {
     api.delete(`/conversations/${encodeURIComponent(id)}`),
 };
 
+// ─── Tool catalog ───────────────────────────────────────────────────────────────────
+
+export const tools = {
+  /** Integrations (with live connection status) + builtin actions. Single source of
+   *  truth for the Tools page, the @-mention autocomplete and the step inspector. */
+  catalog: () => api.get<Catalog>('/tools'),
+};
+
 // ─── Automations ────────────────────────────────────────────────────────────────────
 
 export const automations = {
@@ -97,25 +104,48 @@ export const automations = {
 
   get: (id: string) => api.get<AutomationDetail>(`/automations/${encodeURIComponent(id)}`),
 
-  patch: (id: string, patch: { name?: string; enabled?: boolean }) =>
-    api.patch<AutomationDetail>(`/automations/${encodeURIComponent(id)}`, patch),
-
-  remove: (id: string) => api.delete(`/automations/${encodeURIComponent(id)}`),
-
-  /** Whole-document replace — the only write that rejects (422) an invalid document. */
+  /** Whole-document replace — the only write that rejects (422) an invalid document.
+   *  The 422 body carries `extra.issues`; used by the JSON editor's explicit Save. */
   put: (id: string, document: AutomationDocument) =>
     api.put<DocumentWriteResult>(`/automations/${encodeURIComponent(id)}`, { document }),
 
-  operations: (id: string, operations: Operation[]) =>
-    api.post<DocumentWriteResult>(`/automations/${encodeURIComponent(id)}/operations`, { operations }),
+  patch: (id: string, patch: { name?: string; enabled?: boolean }) =>
+    api.patch<AutomationDetail>(`/automations/${encodeURIComponent(id)}`, patch),
 
-  startRun: (id: string, trigger: Extract<RunTrigger, 'manual' | 'test'> = 'manual') =>
+  remove: (id: string): Promise<void> => api.delete(`/automations/${encodeURIComponent(id)}`),
+
+  /** Dry run of the document validator — never writes. */
+  validate: (document: AutomationDocument) =>
+    api.post<ValidateResult>('/automations/validate', { document }),
+
+  /** Incremental edits — one user gesture = one operation = one version. */
+  operations: (id: string, operations: Operation[]) =>
+    api.post<DocumentWriteResult>(`/automations/${encodeURIComponent(id)}/operations`, {
+      operations,
+    }),
+
+  versions: (id: string) =>
+    api.get<VersionSummary[]>(`/automations/${encodeURIComponent(id)}/versions`),
+
+  version: (id: string, number: number) =>
+    api.get<VersionDetail>(`/automations/${encodeURIComponent(id)}/versions/${number}`),
+
+  restore: (id: string, number: number) =>
+    api.post<DocumentWriteResult>(
+      `/automations/${encodeURIComponent(id)}/versions/${number}/restore`
+    ),
+
+  /** 202 + `{runId}`; 409 when a run is already active. */
+  startRun: (id: string, trigger: 'manual' | 'test' = 'manual') =>
     api.post<{ runId: string }>(`/automations/${encodeURIComponent(id)}/runs`, { trigger }),
 
-  listRuns: (id: string, limit?: number) =>
-    api.get<RunSummary[]>(
-      `/automations/${encodeURIComponent(id)}/runs${limit ? `?limit=${limit}` : ''}`
-    ),
+  listRuns: (id: string, opts?: { limit?: number; before?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts?.before !== undefined) qs.set('before', String(opts.before));
+    const suffix = qs.size > 0 ? `?${qs.toString()}` : '';
+    return api.get<RunSummary[]>(`/automations/${encodeURIComponent(id)}/runs${suffix}`);
+  },
 
   getRun: (id: string, runId: string) =>
     api.get<RunDetail>(`/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`),
@@ -125,7 +155,8 @@ export const automations = {
       `/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/cancel`
     ),
 
-  /** Live progress for one run — GET-based SSE, combine with `parseSSE<RunEvent>`. */
+  /** Live progress for one run — GET-based SSE, combine with `parseSSE<RunEvent>`
+   *  (or just use `subscribeRun` from `@/lib/automations/run-stream`). */
   runEvents: (id: string, runId: string, signal?: AbortSignal) =>
     api.sseGet(
       `/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/events`,

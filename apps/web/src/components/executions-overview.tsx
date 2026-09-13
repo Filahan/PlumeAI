@@ -1,6 +1,7 @@
 'use client';
 
-import { RunSummary } from '@/lib/types';
+import type { RunSummary } from '@/lib/automations/types';
+import { formatDuration, relativePast } from '@/lib/automations/format';
 
 const MAX_SQUARES = 20;
 
@@ -10,20 +11,6 @@ function statusClass(status: RunSummary['status']): string {
   if (status === 'running') return 'bg-[#6366f1] animate-pulse';
   if (status === 'queued') return 'bg-[#f59e0b]';
   return 'bg-gray-300'; // cancelled
-}
-
-function relativeTime(ms: number): string {
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return 'just now';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60_000).toFixed(1)}m`;
 }
 
 /** Airflow-style run-history strip for a single automation. */
@@ -56,7 +43,7 @@ export default function ExecutionsOverview({
         {last.status === 'running' || last.status === 'queued'
           ? `${last.status}…`
           : last.endedAt
-            ? relativeTime(last.endedAt)
+            ? relativePast(last.endedAt)
             : '—'}
       </span>
     </div>

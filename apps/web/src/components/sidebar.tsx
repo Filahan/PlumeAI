@@ -9,7 +9,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { Button } from '@/components/ui/button';
 import SettingsContent from '@/components/settings-content';
 import {
-  SquarePen, Activity, Workflow, Plug, Settings as SettingsIcon, Trash2,
+  SquarePen, Activity, Workflow, Plug, MessageSquare, Settings as SettingsIcon, Trash2,
   type LucideIcon,
 } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
@@ -19,7 +19,6 @@ interface NavRailProps {
   setSettings: (s: Settings) => void;
   settingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
-  onNewChat: () => void;
   onToggleSidebar: () => void;
 }
 
@@ -46,7 +45,7 @@ function RailIcon({ icon: Icon, label, onClick, active }: {
   );
 }
 
-export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenChange, onNewChat, onToggleSidebar }: NavRailProps) {
+export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenChange, onToggleSidebar }: NavRailProps) {
   const router = useRouter();
   const pathname = usePathname();
   const handleOpenSettings = useCallback(() => onSettingsOpenChange(true), [onSettingsOpenChange]);
@@ -67,8 +66,18 @@ export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenCha
         <div className="w-8 border-t border-[color:var(--border)] my-2" />
 
         <div className="flex flex-col gap-1">
-          <RailIcon icon={SquarePen} label="New chat" onClick={onNewChat} />
-          <RailIcon icon={Workflow} label="Automations" active={pathname === '/automations'} onClick={() => router.push('/automations')} />
+          <RailIcon
+            icon={Workflow}
+            label="Automations"
+            active={pathname === '/' || pathname.startsWith('/automations')}
+            onClick={() => router.push('/')}
+          />
+          <RailIcon
+            icon={MessageSquare}
+            label="Chat"
+            active={pathname.startsWith('/chat')}
+            onClick={() => router.push('/chat')}
+          />
           <RailIcon icon={Plug} label="Tools" active={pathname === '/tools'} onClick={() => router.push('/tools')} />
           <RailIcon icon={Activity} label="Usage" active={pathname === '/usage'} onClick={() => router.push('/usage')} />
         </div>
@@ -107,12 +116,13 @@ interface ConversationListPanelProps {
   conversations: Conversation[];
   currentId: string | null;
   onSelect: (id: string) => void;
+  onNewChat: () => void;
   onDelete: (id: string) => void;
   ready: boolean;
 }
 
 export function ConversationListPanel({
-  conversations, currentId, onSelect, onDelete, ready,
+  conversations, currentId, onSelect, onNewChat, onDelete, ready,
 }: ConversationListPanelProps) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const resetTimerRef = useRef<number | undefined>(undefined);
@@ -123,8 +133,18 @@ export function ConversationListPanel({
   };
   return (
     <aside className="w-[260px] shrink-0 h-full flex flex-col bg-[color:var(--surface-muted)] border-r border-[color:var(--border)]">
-      <div className="px-4 pt-4 pb-1 text-[11px] font-semibold tracking-[0.08em] uppercase text-[color:var(--muted-foreground)]">
-        Chat
+      <div className="flex items-center justify-between px-4 pt-4 pb-1">
+        <span className="text-[11px] font-semibold tracking-[0.08em] uppercase text-[color:var(--muted-foreground)]">
+          Chat
+        </span>
+        <button
+          type="button"
+          onClick={onNewChat}
+          aria-label="New chat"
+          className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-[11px] font-medium text-[color:var(--muted-foreground)] hover:bg-white hover:text-[color:var(--foreground)] transition"
+        >
+          <SquarePen size={13} strokeWidth={2} /> New
+        </button>
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-3">
         {!ready ? null : conversations.length === 0 ? (

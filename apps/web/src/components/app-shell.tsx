@@ -10,9 +10,10 @@ interface AppShellProps {
   /** The currently-active conversation id, or null when not on a conversation route. */
   currentId: string | null;
   onSelect: (id: string) => void;
+  /** Starts a new chat — rendered as the "+ New" button in the conversation list header. */
   onNewChat: () => void;
   onDelete: (id: string) => void;
-  /** Replaces the conversation list in the left panel (e.g. the task list on /automations). */
+  /** Replaces the conversation list in the left panel (e.g. the automations list on `/`). */
   leftPanel?: ReactNode;
   /** Optional controlled state for the Settings dialog (used by the chat to open it from the composer). */
   settingsOpen?: boolean;
@@ -51,7 +52,6 @@ export default function AppShell({
         setSettings={setSettings}
         settingsOpen={settingsDialogOpen}
         onSettingsOpenChange={setSettingsDialogOpen}
-        onNewChat={onNewChat}
         onToggleSidebar={toggleSidebar}
       />
       {sidebarOpen && (leftPanel ?? (
@@ -59,6 +59,7 @@ export default function AppShell({
           conversations={conversations}
           currentId={currentId}
           onSelect={onSelect}
+          onNewChat={onNewChat}
           onDelete={onDelete}
           ready={ready}
         />

@@ -6,20 +6,26 @@ import { Provider } from '@/lib/types';
 import AppShell from '@/components/app-shell';
 import ChatView from '@/components/chat/view';
 
+const CHAT_PREFIX = '/chat';
+
+/** `/chat` → null, `/chat/{id}` → id. Anything else (we're not on a chat route) → null. */
 function pathnameToId(p: string): string | null {
-  return p === '/' ? null : p.slice(1) || null;
+  if (!p.startsWith(CHAT_PREFIX)) return null;
+  const rest = p.slice(CHAT_PREFIX.length);
+  if (!rest.startsWith('/')) return null;
+  return decodeURIComponent(rest.slice(1)) || null;
 }
 
 export default function ChatLayout() {
   // Active id mirrors the URL but updates via history.pushState so ChatView's
-  // local state survives between `/` and `/{id}`. router.push would remount it.
+  // local state survives between `/chat` and `/chat/{id}`. router.push would remount it.
   const [activeId, setActiveIdRaw] = useState<string | null>(() =>
     typeof window === 'undefined' ? null : pathnameToId(window.location.pathname)
   );
 
   const setActiveId = useCallback((id: string | null) => {
     setActiveIdRaw(id);
-    const url = id ? `/${id}` : '/';
+    const url = id ? `${CHAT_PREFIX}/${id}` : CHAT_PREFIX;
     if (window.location.pathname !== url) {
       window.history.pushState(null, '', url);
     }

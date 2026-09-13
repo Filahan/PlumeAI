@@ -1,9 +1,36 @@
 'use client';
 
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
-import { TOOL_DESCRIPTORS, type ToolDescriptor } from '@/lib/tools/registry-client';
+import { useCatalog } from '@/lib/automations/store';
+import type { Catalog } from '@/lib/automations/types';
 
 const MENTION_RE = /(^|\s)@(\w*)$/;
+
+interface MentionItem {
+  name: string;
+  label: string;
+  description: string;
+  logoUrl?: string;
+}
+
+/** Mentionable names: one per integration (`@gmail`), plus each builtin action
+ *  (`@web_search`) since builtins have no integration of their own. */
+function mentionItems(catalog: Catalog | null): MentionItem[] {
+  if (!catalog) return [];
+  return [
+    ...catalog.integrations.map((i) => ({
+      name: i.name,
+      label: i.label,
+      description: i.description,
+      logoUrl: i.logoUrl || undefined,
+    })),
+    ...catalog.builtinActions.map((a) => ({
+      name: a.name,
+      label: a.label,
+      description: a.description,
+    })),
+  ];
+}
 
 export interface MentionAutocompleteHandle {
   /** Forward a keydown event so the popup can intercept Arrow/Enter/Tab/Escape when open. */
@@ -24,6 +51,8 @@ const MentionAutocomplete = forwardRef<MentionAutocompleteHandle, {
   value: string;
   onChange: (next: string) => void;
 }>(function MentionAutocomplete({ textareaRef, value, onChange }, ref) {
+  const catalog = useCatalog();
+  const items = useMemo(() => mentionItems(catalog), [catalog]);
   const [cursor, setCursor] = useState(0);
   const [activeIdx, setActiveIdx] = useState(0);
   const pollRef = useRef<number | null>(null);
@@ -47,17 +76,17 @@ const MentionAutocomplete = forwardRef<MentionAutocompleteHandle, {
     const m = MENTION_RE.exec(before);
     if (!m) return null;
     const partial = m[2].toLowerCase();
-    const matches = TOOL_DESCRIPTORS.filter((t) => t.name.startsWith(partial));
+    const matches = items.filter((t) => t.name.startsWith(partial));
     if (matches.length === 0) return null;
     return { partial, matches, mentionStart: before.length - m[2].length - 1 };
-  }, [value, cursor]);
+  }, [value, cursor, items]);
 
   useEffect(() => {
     if (trigger) setActiveIdx((i) => Math.min(i, trigger.matches.length - 1));
     else setActiveIdx(0);
   }, [trigger]);
 
-  function insert(tool: ToolDescriptor) {
+  function insert(tool: MentionItem) {
     if (!trigger) return;
     const before = value.slice(0, trigger.mentionStart);
     const after = value.slice(cursor);
