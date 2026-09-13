@@ -1,9 +1,13 @@
-/** A "Next 3 runs" preview for the trigger form.
+/** The client-side schedule evaluator.
  *
- *  Only the shapes the form itself can produce are understood (hourly, daily, weekdays,
- *  weekly, plus plain intervals); anything else is "custom" and the server's
- *  `nextRunAt` — already in the editor header — remains the source of truth. No cron
- *  library: parsing five fields we wrote ourselves does not justify the dependency.
+ *  Two callers, one set of rules: the schedule editor's "That means" preview (the next
+ *  three fire times) and the Schedules tab's 24-hour plan (`lib/activity/plan.ts`), which
+ *  enumerates the same shapes across a window.
+ *
+ *  Only the shapes the editor itself can produce are understood — hourly at a minute,
+ *  daily, weekdays, and any set of weekdays — plus plain intervals; anything else is
+ *  "custom" and the server's `nextRunAt` remains the source of truth. No cron library:
+ *  parsing five fields we wrote ourselves does not justify the dependency.
  *
  *  Pure functions — no React, no store. */
 
@@ -11,7 +15,7 @@ export interface CronShape {
   minute: number;
   /** `null` = every hour. */
   hour: number | null;
-  /** `null` = every day, else the allowed `Date#getDay()` values. */
+  /** `null` = every day, else the allowed `Date#getDay()` values, ascending. */
   dows: number[] | null;
 }
 
@@ -23,7 +27,26 @@ export function browserTimezone(): string {
   }
 }
 
-/** Parse the cron expressions this form writes. `null` for anything else. */
+/** One `1`, `1-5` or `0,3,6` term of the weekday field. Cron allows 7 for Sunday. */
+const DOW_TOKEN = /^([0-7])(?:-([0-7]))?$/;
+
+/** `null` for `*` (every day), a sorted day list for anything we understand, and
+ *  `undefined` for a weekday field this evaluator cannot read. */
+function parseDows(raw: string): number[] | null | undefined {
+  if (raw === '*') return null;
+  const days = new Set<number>();
+  for (const token of raw.split(',')) {
+    const match = DOW_TOKEN.exec(token);
+    if (!match) return undefined;
+    const from = Number(match[1]);
+    const to = match[2] === undefined ? from : Number(match[2]);
+    if (to < from) return undefined;
+    for (let day = from; day <= to; day += 1) days.add(day % 7);
+  }
+  return days.size > 0 ? [...days].sort((a, b) => a - b) : undefined;
+}
+
+/** Parse the cron expressions this editor writes. `null` for anything else. */
 export function parseCronPreset(cron: string): CronShape | null {
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return null;
@@ -40,12 +63,10 @@ export function parseCronPreset(cron: string): CronShape | null {
     if (hour > 23) return null;
   }
 
-  let dows: number[] | null = null;
-  if (rawDow === '1-5') dows = [1, 2, 3, 4, 5];
-  else if (/^\d$/.test(rawDow)) dows = [Number(rawDow) % 7];
-  else if (rawDow !== '*') return null;
+  const dows = parseDows(rawDow);
+  if (dows === undefined) return null;
 
-  // "every hour, but only on Mondays" is expressible in cron but not in this form.
+  // "every hour, but only on Mondays" is expressible in cron but not in this editor.
   if (hour === null && dows !== null) return null;
   return { minute, hour, dows };
 }
@@ -98,33 +119,46 @@ function wallToInstant(wall: WallClock, timezone: string): number {
   return naive - offsetAt(first, timezone);
 }
 
-function wallNow(timezone: string): WallClock {
-  const p = partsIn(Date.now(), timezone);
+/** What the clock on the wall in `timezone` reads at `instant`. */
+function wallAt(instant: number, timezone: string): WallClock {
+  const p = partsIn(instant, timezone);
   return { year: p.year, month: p.month, day: p.day, hour: p.hour, minute: p.minute };
 }
 
-/** The next `count` firing instants of a preset cron shape, in ms since the epoch. */
-export function nextCronRuns(shape: CronShape, timezone: string, count = 3): number[] {
-  const now = wallNow(timezone);
+/** The next `count` firing instants of a preset cron shape, strictly after `from`.
+ *
+ *  `from` is a parameter rather than a read of the clock so the same walk answers both
+ *  "the next three runs" and "every run between now and this time tomorrow". */
+export function nextCronRuns(
+  shape: CronShape,
+  timezone: string,
+  count = 3,
+  from = Date.now()
+): number[] {
+  if (count <= 0) return [];
+  const now = wallAt(from, timezone);
   const out: number[] = [];
+
+  const emit = (cursor: Date, hour: number) =>
+    out.push(
+      wallToInstant(
+        {
+          year: cursor.getUTCFullYear(),
+          month: cursor.getUTCMonth() + 1,
+          day: cursor.getUTCDate(),
+          hour,
+          minute: shape.minute,
+        },
+        timezone
+      )
+    );
 
   if (shape.hour === null) {
     // Hourly at `minute`.
     const cursor = new Date(Date.UTC(now.year, now.month - 1, now.day, now.hour));
     if (now.minute >= shape.minute) cursor.setUTCHours(cursor.getUTCHours() + 1);
     for (let i = 0; i < count; i += 1) {
-      out.push(
-        wallToInstant(
-          {
-            year: cursor.getUTCFullYear(),
-            month: cursor.getUTCMonth() + 1,
-            day: cursor.getUTCDate(),
-            hour: cursor.getUTCHours(),
-            minute: shape.minute,
-          },
-          timezone
-        )
-      );
+      emit(cursor, cursor.getUTCHours());
       cursor.setUTCHours(cursor.getUTCHours() + 1);
     }
     return out;
@@ -137,23 +171,27 @@ export function nextCronRuns(shape: CronShape, timezone: string, count = 3): num
 
   // At most a year of days — a weekly schedule needs 15 hops for three runs.
   for (let guard = 0; guard < 400 && out.length < count; guard += 1) {
-    if (shape.dows === null || shape.dows.includes(cursor.getUTCDay())) {
-      out.push(
-        wallToInstant(
-          {
-            year: cursor.getUTCFullYear(),
-            month: cursor.getUTCMonth() + 1,
-            day: cursor.getUTCDate(),
-            hour,
-            minute: shape.minute,
-          },
-          timezone
-        )
-      );
-    }
+    if (shape.dows === null || shape.dows.includes(cursor.getUTCDay())) emit(cursor, hour);
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
   return out;
+}
+
+/** Every firing instant in `[from, until)` — the Schedules tab's 24-hour plan.
+ *
+ *  The walk is bounded by the shape's own period rather than by `cap` alone: a weekly
+ *  schedule asked for 60 runs would step a year of days for two useful answers. */
+export function cronRunsWithin(
+  shape: CronShape,
+  timezone: string,
+  from: number,
+  until: number,
+  cap = 60
+): number[] {
+  if (until <= from) return [];
+  const period = shape.hour === null ? 3_600_000 : 86_400_000;
+  const count = Math.max(1, Math.min(cap, Math.ceil((until - from) / period) + 1));
+  return nextCronRuns(shape, timezone, count, from).filter((instant) => instant < until);
 }
 
 /** Interval triggers fire relative to the last run, so this is "from now" — close
