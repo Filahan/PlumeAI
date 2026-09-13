@@ -20,7 +20,7 @@ interface NavRailProps {
   settingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
   onToggleSidebar: () => void;
-  /** Whether the left panel is currently showing. Drives the toggle's icon and tint. */
+  /** Whether the left panel is currently showing. Drives the foot toggle's icon and tint. */
   sidebarOpen: boolean;
   /** False on pages that have no left panel — the toggle is hidden there, since there
    *  would be nothing to open. */
@@ -65,22 +65,11 @@ export function NavRail({
           type="button"
           onClick={() => router.push('/')}
           aria-label="PlumeAI — automations"
-          className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[color:var(--surface-muted)] transition-colors"
+          className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[color:var(--surface-muted)] transition-colors mb-2"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="" className="h-6 w-auto" />
         </button>
-
-        {hasLeftPanel && (
-          <div className="mt-1">
-            <RailIcon
-              icon={sidebarOpen ? PanelLeftClose : PanelLeftOpen}
-              label={sidebarOpen ? 'Hide automations list' : 'Show automations list'}
-              active={sidebarOpen}
-              onClick={onToggleSidebar}
-            />
-          </div>
-        )}
 
         <div className="w-8 border-t border-[color:var(--border)] my-2" />
 
@@ -97,7 +86,17 @@ export function NavRail({
 
         <div className="flex-1" />
 
-        <RailIcon icon={SettingsIcon} label="Settings" onClick={handleOpenSettings} />
+        <div className="flex flex-col gap-1">
+          {hasLeftPanel && (
+            <RailIcon
+              icon={sidebarOpen ? PanelLeftClose : PanelLeftOpen}
+              label={sidebarOpen ? 'Hide automations list' : 'Show automations list'}
+              active={sidebarOpen}
+              onClick={onToggleSidebar}
+            />
+          )}
+          <RailIcon icon={SettingsIcon} label="Settings" onClick={handleOpenSettings} />
+        </div>
       </aside>
 
       <Dialog open={settingsOpen} onOpenChange={onSettingsOpenChange}>
