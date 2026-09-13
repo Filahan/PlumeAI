@@ -5,11 +5,22 @@ but versioning, cascades, the 409 on a run already in flight and the JSONB round
 are exactly the things a fake session would get wrong.
 
 Isolation strategy: one throwaway database (`plumeai_test`, derived from `DATABASE_URL`)
-created on demand next to the dev one, schema built once per session with
-`Base.metadata.create_all`, and every table truncated between tests. Truncate rather
-than a per-test transaction rollback because the API commits inside request handlers
-(`POST /runs` does, so a background executor could see the row) — a wrapping transaction
-would be closed out from under the test.
+created on demand next to the dev one, schema rebuilt from the models once per session,
+and every table truncated between tests. Truncate rather than a per-test transaction
+rollback because the API commits inside request handlers (`POST /runs` does, so a
+background executor could see the row) — a wrapping transaction would be closed out from
+under the test.
+
+The schema is dropped and recreated rather than `create_all`-ed onto whatever is there:
+`create_all` skips tables that already exist, so a column added to a model after a
+previous run (`automations.valid`) would never appear and the suite would fail against a
+database it had itself left stale.
+
+Two pieces of the app are deliberately inert here. The executor is replaced by a
+recorder (see `no_background_runs`) so `POST /runs` leaves a `queued` run with `pending`
+steps for the test to assert on instead of racing a real execution; and the scheduler is
+never started, because `ASGITransport` does not run the app's lifespan — its `sync_job`
+sees no active scheduler and no-ops.
 
 Engines are built per test rather than shared: asyncpg connections are bound to the
 event loop that created them, and `asyncio_mode = auto` gives each test its own loop.
@@ -65,9 +76,11 @@ async def _ensure_database() -> None:
 
 
 async def _create_schema() -> None:
+    """Rebuild every table from the models, discarding whatever a previous run left."""
     engine = create_async_engine(_test_database_url(), poolclass=NullPool)
     try:
         async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
     finally:
         await engine.dispose()
@@ -139,6 +152,34 @@ async def client(session_factory) -> AsyncIterator[AsyncClient]:
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture(autouse=True)
+def no_background_runs(monkeypatch) -> list[str]:
+    """Stop `POST /runs` from actually executing the run it just queued.
+
+    Task 4b's executor is real: `start_run_in_background` spawns an asyncio task that
+    drives the run to completion against its own session. That makes every assertion
+    about a freshly created run ("status is queued", "steps are pending") a race, and
+    leaves background tasks holding an engine this fixture's teardown is about to
+    dispose. These tests are about the persistence and API layer, so the hand-off point
+    is stubbed and the recorded ids are returned for tests that want to assert on it.
+    `app.services.executor` itself is covered by `test_executor.py`.
+    """
+    started: list[str] = []
+
+    def record(run_id: str) -> None:
+        started.append(run_id)
+
+    monkeypatch.setattr(
+        "app.services.executor.start_run_in_background", record, raising=True
+    )
+    # The router imported the module, not the name, so patching the module attribute is
+    # enough — but assert that stays true rather than silently stubbing nothing.
+    import app.routers.automations as router_module
+
+    assert router_module.executor.start_run_in_background is record
+    return started
 
 
 # --- document builders ---------------------------------------------------------------------

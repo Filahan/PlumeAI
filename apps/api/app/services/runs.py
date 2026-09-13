@@ -44,15 +44,13 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
-def sa_duration_ms(now: datetime):
-    """SQL expression for `now - started_at` in milliseconds, NULL when never started.
+def _duration_ms_expr(now: datetime) -> sa.ColumnElement[int]:
+    """`now - started_at` in whole milliseconds, as SQL; NULL when never started.
 
-    Used by the bulk UPDATE in `mark_orphaned_runs_failed`, which has no Python-side row
-    to subtract from.
+    Used by the bulk UPDATE in `mark_orphaned_runs_failed`, which is fixing up rows it
+    never loaded and so has no Python-side `started_at` to subtract from.
     """
-    return sa.cast(
-        sa.extract("epoch", now - Run.started_at) * 1000, sa.Integer
-    )
+    return sa.cast(sa.extract("epoch", now - Run.started_at) * 1000, sa.Integer)
 
 
 async def _active_run(session: AsyncSession, automation_id: str) -> Run | None:
@@ -195,7 +193,7 @@ async def mark_orphaned_runs_failed(session: AsyncSession) -> int:
             ended_at=now,
             # Same wall-clock measure `cancel_run` records; a run that never started has
             # no elapsed time to report, so it keeps a NULL duration.
-            duration_ms=sa_duration_ms(now),
+            duration_ms=_duration_ms_expr(now),
         )
     )
     await session.execute(

@@ -460,3 +460,78 @@ async def test_events_stream_sends_a_snapshot_and_ends_for_a_finished_run(
     assert events[0]["run"]["id"] == run_id
     assert events[0]["run"]["status"] == "cancelled"
     assert [s["stepId"] for s in events[0]["run"]["steps"]] == ["step_mmmmm"]
+
+
+# --- row-level validity ----------------------------------------------------------------
+
+
+async def test_row_validity_counts_trigger_issues_not_just_step_flags(
+    session,
+    client,
+    ai_step,
+) -> None:
+    """`automations.valid` is "no error-level issue at all", not "every step is valid".
+
+    A bad cron is a document-level problem: no step carries a flag for it, so a summary
+    built from the step flags alone would call this automation valid. The document is
+    built with `model_construct` because `ScheduleSettings` rejects an invalid cron at
+    parse time — only a draft that reached the row another way can look like this.
+    """
+    from app.schemas.documents import AutomationDocument, ScheduleSettings, ScheduleTrigger
+    from app.services import automations as svc
+
+    automation = await svc.create_automation(session, name="Demo")
+    doc = AutomationDocument.model_validate(
+        {
+            "name": "Broken schedule",
+            "description": "",
+            "model": {"provider": "openai", "model": "gpt-4o-mini"},
+            "trigger": {"type": "manual"},
+            "steps": [ai_step("step_nnnnn")],
+        }
+    )
+    broken = doc.model_copy(
+        update={
+            "trigger": ScheduleTrigger.model_construct(
+                type="schedule",
+                settings=ScheduleSettings.model_construct(
+                    mode="cron", cron="not a cron", every_minutes=None, timezone=None
+                ),
+            )
+        }
+    )
+
+    validated, issues, _ = await svc.save_document(
+        session, automation, broken, created_by="user"
+    )
+    await session.commit()
+
+    assert any(i.path.startswith("trigger") and i.level == "error" for i in issues)
+    assert all(step.valid for step in validated.steps)
+    assert automation.valid is False
+
+    row = (await client.get("/automations")).json()[0]
+    assert row["valid"] is False
+
+
+async def test_row_validity_recovers_when_the_document_is_fixed(client, ai_step) -> None:
+    broken = {
+        "id": "step_ooooo",
+        "name": "Do the thing",
+        "type": "action",
+        "settings": {"integration": "gmail", "action": "no_such_action", "input": {}},
+    }
+    created = await _create(client, name="Demo")
+    aid = created["id"]
+
+    await client.post(
+        f"/automations/{aid}/operations",
+        json={"operations": [{"op": "add_step", "step": broken}]},
+    )
+    assert (await client.get("/automations")).json()[0]["valid"] is False
+
+    await client.post(
+        f"/automations/{aid}/operations",
+        json={"operations": [{"op": "remove_step", "step_id": "step_ooooo"}]},
+    )
+    assert (await client.get("/automations")).json()[0]["valid"] is True

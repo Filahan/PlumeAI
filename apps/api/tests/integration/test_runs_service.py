@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.db.models import Run, RunStep
 from app.errors import Conflict
 from app.services import automations as svc
+from app.services import run_events
 from app.services import runs as runs_svc
 
 
@@ -144,6 +145,44 @@ async def test_mark_orphaned_runs_failed(session, automation_factory, ai_step) -
 
     assert (await runs_svc.get_run(session, finished.id))[0].status == "succeeded"
     assert automation.last_run_status == "failed"
+
+
+async def test_orphan_recovery_records_a_duration_for_a_run_that_had_started(
+    session,
+    automation_factory,
+    ai_step,
+) -> None:
+    """`duration_ms` is measured the same way `cancel_run` measures it: a run that never
+    started has nothing to measure and keeps a NULL duration."""
+    automation = await automation_factory([ai_step("step_aaaaa")])
+    started = await runs_svc.create_run(session, automation, trigger="manual")
+    started.status = "running"
+    started.started_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    await session.flush()
+
+    never_started = await automation_factory([ai_step("step_bbbbb")])
+    queued = await runs_svc.create_run(session, never_started, trigger="manual")
+
+    await runs_svc.mark_orphaned_runs_failed(session)
+
+    assert (await runs_svc.get_run(session, started.id))[0].duration_ms >= 5000
+    assert (await runs_svc.get_run(session, queued.id))[0].duration_ms is None
+
+
+async def test_cancelling_a_queued_run_ends_open_event_streams(
+    session,
+    automation_factory,
+    ai_step,
+) -> None:
+    """Nothing will ever publish to this run again, so an open SSE stream must be told."""
+    automation = await automation_factory([ai_step("step_aaaaa")])
+    run = await runs_svc.create_run(session, automation, trigger="manual")
+    queue = run_events.subscribe(run.id)
+
+    assert await runs_svc.cancel_run(session, run.id) == "cancelled"
+
+    assert await queue.get() is run_events.SENTINEL
+    assert run_events.subscriber_count(run.id) == 0
 
 
 async def test_mark_orphaned_runs_failed_is_a_noop_when_nothing_is_active(
