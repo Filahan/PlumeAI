@@ -1,9 +1,9 @@
 """Chat streaming router — POST /chat/stream streams a single chat-completion as SSE.
 
 Wraps `stream_agent` so tool calls / tool results / final usage / done are emitted as
-events the frontend can replay incrementally. Anthropic flows go through the provider
-directly without tools; OpenAI / OpenRouter go through the full agent loop with all
-configured integrations.
+events the frontend can replay incrementally. Every provider goes through the full agent
+loop with all configured integrations — the provider clients translate the tool schemas to
+their own wire format.
 """
 
 from __future__ import annotations

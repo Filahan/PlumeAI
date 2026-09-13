@@ -160,9 +160,13 @@ def tool_choice_to_anthropic(
 ) -> dict[str, Any] | None:
     """OpenAI `tool_choice` → Anthropic `tool_choice`.
 
-    `{"type": "function", "function": {"name": n}}` forces tool `n`; anything else falls
-    back to `auto` when tools are on the table, and to nothing when they aren't.
+    `{"type": "function", "function": {"name": n}}` forces tool `n`; `None` and any other
+    recognized shape fall back to `auto` when tools are on the table, and to nothing when
+    they aren't. A `tool_choice` that isn't a dict is a caller bug, not a preference, so it
+    raises rather than silently degrading to `auto`.
     """
+    if tool_choice is not None and not isinstance(tool_choice, dict):
+        raise ValueError(f"tool_choice must be a dict or None, got {type(tool_choice).__name__}")
     if not has_tools:
         return None
     if isinstance(tool_choice, dict):
@@ -202,51 +206,57 @@ class AnthropicProvider:
             if choice is not None:
                 params["tool_choice"] = choice
 
-        try:
-            stream_ctx = self.client.messages.stream(**params)
-        except Exception as exc:  # noqa: BLE001
-            raise ProviderError(f"Anthropic request failed: {exc}") from exc
-
         # Anthropic streams tool arguments as `input_json_delta` fragments keyed by the
         # content-block index; accumulate per index and flush on content_block_stop.
         acc: dict[int, dict[str, str]] = {}
 
-        async with stream_ctx as stream:
-            async for event in stream:
-                kind = getattr(event, "type", "")
+        # `messages.stream()` only builds the manager — the HTTP request (and therefore any
+        # 4xx/5xx) happens on `__aenter__`, and transport errors can surface mid-iteration,
+        # so the whole exchange has to sit inside the try.
+        try:
+            async with self.client.messages.stream(**params) as stream:
+                async for event in stream:
+                    kind = getattr(event, "type", "")
 
-                if kind == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block is not None and getattr(block, "type", "") == "tool_use":
-                        acc[event.index] = {
-                            "id": getattr(block, "id", "") or "",
-                            "name": getattr(block, "name", "") or "",
-                            "args": "",
-                        }
+                    # The SDK interleaves synthesized `text` / `input_json` events with the
+                    # raw ones below; we read only the raw events so nothing is counted twice.
+                    if kind == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block is not None and getattr(block, "type", "") == "tool_use":
+                            acc[event.index] = {
+                                "id": getattr(block, "id", "") or "",
+                                "name": getattr(block, "name", "") or "",
+                                "args": "",
+                            }
 
-                elif kind == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    dtype = getattr(delta, "type", "") if delta is not None else ""
-                    if dtype == "text_delta":
-                        text = getattr(delta, "text", "")
-                        if text:
-                            yield {"type": "text", "delta": text}
-                    elif dtype == "input_json_delta":
-                        entry = acc.get(event.index)
-                        if entry is not None:
-                            entry["args"] += getattr(delta, "partial_json", "") or ""
+                    elif kind == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        dtype = getattr(delta, "type", "") if delta is not None else ""
+                        if dtype == "text_delta":
+                            text = getattr(delta, "text", "")
+                            if text:
+                                yield {"type": "text", "delta": text}
+                        elif dtype == "input_json_delta":
+                            entry = acc.get(event.index)
+                            if entry is not None:
+                                entry["args"] += getattr(delta, "partial_json", "") or ""
 
-                elif kind == "content_block_stop":
-                    entry = acc.pop(getattr(event, "index", -1), None)
-                    if entry is not None and entry["name"]:
-                        yield {
-                            "type": "tool_call",
-                            "id": entry["id"],
-                            "tool": entry["name"],
-                            "args": entry["args"] or "{}",
-                        }
+                    elif kind == "content_block_stop":
+                        entry = acc.pop(getattr(event, "index", -1), None)
+                        if entry is not None and entry["name"]:
+                            yield {
+                                "type": "tool_call",
+                                "id": entry["id"],
+                                "tool": entry["name"],
+                                "args": entry["args"] or "{}",
+                            }
 
-            final = await stream.get_final_message()
+                final = await stream.get_final_message()
+        except ProviderError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("anthropic_stream_failed", model=model, error=str(exc))
+            raise ProviderError(f"Anthropic request failed: {exc}") from exc
 
         yield {
             "type": "usage",

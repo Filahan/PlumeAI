@@ -7,6 +7,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import anthropic
+import httpx2
+import pytest
+
+from app.errors import ProviderError
 from app.llm.anthropic_client import (
     MAX_TOKENS,
     AnthropicProvider,
@@ -255,7 +260,10 @@ def test_empty_assistant_turn_is_dropped() -> None:
 # --- streaming event handling -----------------------------------------------------------
 #
 # Exercises `AnthropicProvider.stream_chat` against a fake SDK stream that replays the
-# event shapes the real SDK yields (raw content_block_* events + a final message).
+# event shapes the real SDK yields. `MessageStream.__stream__` fires each raw event AND a
+# synthesized convenience event (`text` after a text_delta, `input_json` after an
+# input_json_delta), so the scripts below interleave both to pin that we read only the raw
+# ones and never double-count a delta.
 
 
 class _FakeStream:
@@ -299,8 +307,21 @@ def _json_delta(index: int, partial: str) -> SimpleNamespace:
     )
 
 
-def _block_stop(index: int) -> SimpleNamespace:
-    return SimpleNamespace(type="content_block_stop", index=index)
+def _synthetic_text(text: str, snapshot: str) -> SimpleNamespace:
+    """The `TextEvent` the SDK fires alongside every text_delta — must be ignored."""
+    return SimpleNamespace(type="text", text=text, snapshot=snapshot)
+
+
+def _synthetic_input_json(partial: str, snapshot: object) -> SimpleNamespace:
+    """The `InputJsonEvent` the SDK fires alongside every input_json_delta — ignored."""
+    return SimpleNamespace(type="input_json", partial_json=partial, snapshot=snapshot)
+
+
+def _block_stop(index: int, **block: object) -> SimpleNamespace:
+    """The SDK's `ParsedContentBlockStopEvent` — index plus the accumulated block."""
+    return SimpleNamespace(
+        type="content_block_stop", index=index, content_block=SimpleNamespace(**block)
+    )
 
 
 async def _run_stream(events: list[SimpleNamespace], **kwargs: object) -> list[dict]:
@@ -320,14 +341,20 @@ async def _run_stream(events: list[SimpleNamespace], **kwargs: object) -> list[d
 
 async def test_stream_emits_text_tool_call_and_usage() -> None:
     events = [
+        SimpleNamespace(type="message_start"),
         _block_start(0, type="text", text=""),
         _text_delta(0, "Looking"),
+        _synthetic_text("Looking", "Looking"),
         _text_delta(0, " it up"),
-        _block_stop(0),
+        _synthetic_text(" it up", "Looking it up"),
+        _block_stop(0, type="text", text="Looking it up"),
         _block_start(1, type="tool_use", id="toolu_1", name="web_search"),
         _json_delta(1, '{"query":'),
+        _synthetic_input_json('{"query":', {}),
         _json_delta(1, ' "cats"}'),
-        _block_stop(1),
+        _synthetic_input_json(' "cats"}', {"query": "cats"}),
+        _block_stop(1, type="tool_use", id="toolu_1", name="web_search"),
+        SimpleNamespace(type="message_delta"),
         SimpleNamespace(type="message_stop"),
     ]
     out = await _run_stream(
@@ -357,7 +384,7 @@ async def test_stream_emits_text_tool_call_and_usage() -> None:
 async def test_stream_empty_tool_input_becomes_empty_object() -> None:
     events = [
         _block_start(0, type="tool_use", id="toolu_x", name="now"),
-        _block_stop(0),
+        _block_stop(0, type="tool_use", id="toolu_x", name="now"),
     ]
     out = await _run_stream(
         events,
@@ -373,7 +400,12 @@ async def test_stream_empty_tool_input_becomes_empty_object() -> None:
 
 async def test_stream_without_tools_sends_no_tool_params() -> None:
     out = await _run_stream(
-        [_block_start(0, type="text", text=""), _text_delta(0, "hi"), _block_stop(0)],
+        [
+            _block_start(0, type="text", text=""),
+            _text_delta(0, "hi"),
+            _synthetic_text("hi", "hi"),
+            _block_stop(0, type="text", text="hi"),
+        ],
         model="m",
         messages=[
             ChatMessage(role="system", content="be terse"),
@@ -389,3 +421,82 @@ async def test_stream_without_tools_sends_no_tool_params() -> None:
     assert "tool_choice" not in params
     assert params["system"] == "be terse"
     assert params["messages"] == [{"role": "user", "content": "hi"}]
+
+
+# --- upstream error surfacing -----------------------------------------------------------
+
+
+class _FailingStreamManager:
+    """Fake manager whose `__aenter__` raises — the real SDK issues the HTTP request there."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def __aenter__(self) -> object:
+        raise self._exc
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _MidStreamFailure(_FakeStream):
+    """Yields a couple of events, then blows up mid-iteration (transport drop)."""
+
+    async def __aiter__(self):  # type: ignore[no-untyped-def]
+        for ev in self._events:
+            yield ev
+        raise RuntimeError("connection reset")
+
+
+async def _drain_with_manager(manager: object) -> list[dict]:
+    provider = AnthropicProvider(api_key="test")
+    provider.client.messages.stream = lambda **params: manager  # type: ignore[assignment]
+    return [ev async for ev in provider.stream_chat(model="m", messages=[])]
+
+
+async def test_api_status_error_on_enter_becomes_provider_error() -> None:
+    response = httpx2.Response(
+        401, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+    err = anthropic.APIStatusError("invalid x-api-key", response=response, body=None)
+
+    with pytest.raises(ProviderError) as exc:
+        await _drain_with_manager(_FailingStreamManager(err))
+
+    assert "Anthropic request failed" in exc.value.detail
+    assert "invalid x-api-key" in exc.value.detail
+
+
+async def test_generic_error_on_enter_becomes_provider_error() -> None:
+    with pytest.raises(ProviderError):
+        await _drain_with_manager(_FailingStreamManager(RuntimeError("boom")))
+
+
+async def test_error_mid_stream_becomes_provider_error() -> None:
+    final = SimpleNamespace(usage=SimpleNamespace(input_tokens=0, output_tokens=0))
+    manager = _MidStreamFailure(
+        [_block_start(0, type="text", text=""), _text_delta(0, "partial")], final
+    )
+    with pytest.raises(ProviderError) as exc:
+        await _drain_with_manager(manager)
+    assert "connection reset" in exc.value.detail
+
+
+async def test_provider_error_is_not_double_wrapped() -> None:
+    original = ProviderError("already normalized")
+    with pytest.raises(ProviderError) as exc:
+        await _drain_with_manager(_FailingStreamManager(original))
+    assert exc.value is original
+
+
+# --- tool_choice input validation -------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["auto", ["emit"], 7])
+def test_tool_choice_rejects_non_dict(bad: object) -> None:
+    with pytest.raises(ValueError, match="must be a dict or None"):
+        tool_choice_to_anthropic(bad, has_tools=True)  # type: ignore[arg-type]
+
+
+def test_tool_choice_none_is_still_accepted() -> None:
+    assert tool_choice_to_anthropic(None, has_tools=True) == {"type": "auto"}
