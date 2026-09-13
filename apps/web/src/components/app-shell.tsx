@@ -47,6 +47,8 @@ export default function AppShell({
         settingsOpen={settingsDialogOpen}
         onSettingsOpenChange={setSettingsDialogOpen}
         onToggleSidebar={toggleSidebar}
+        sidebarOpen={sidebarOpen}
+        hasLeftPanel={leftPanel !== undefined}
       />
       {sidebarOpen && leftPanel}
       <main className="relative flex-1 flex flex-col min-w-0 overflow-hidden">

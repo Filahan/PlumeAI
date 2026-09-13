@@ -8,7 +8,10 @@ import {
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import SettingsContent from '@/components/settings-content';
-import { Activity, Workflow, Plug, Settings as SettingsIcon, type LucideIcon } from 'lucide-react';
+import {
+  Activity, Workflow, Plug, PanelLeftClose, PanelLeftOpen,
+  Settings as SettingsIcon, type LucideIcon,
+} from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 
 interface NavRailProps {
@@ -17,6 +20,11 @@ interface NavRailProps {
   settingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
   onToggleSidebar: () => void;
+  /** Whether the left panel is currently showing. Drives the toggle's icon and tint. */
+  sidebarOpen: boolean;
+  /** False on pages that have no left panel — the toggle is hidden there, since there
+   *  would be nothing to open. */
+  hasLeftPanel: boolean;
 }
 
 function RailIcon({ icon: Icon, label, onClick, active }: {
@@ -42,7 +50,10 @@ function RailIcon({ icon: Icon, label, onClick, active }: {
   );
 }
 
-export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenChange, onToggleSidebar }: NavRailProps) {
+export function NavRail({
+  settings, setSettings, settingsOpen, onSettingsOpenChange,
+  onToggleSidebar, sidebarOpen, hasLeftPanel,
+}: NavRailProps) {
   const router = useRouter();
   const pathname = usePathname();
   const handleOpenSettings = useCallback(() => onSettingsOpenChange(true), [onSettingsOpenChange]);
@@ -52,13 +63,24 @@ export function NavRail({ settings, setSettings, settingsOpen, onSettingsOpenCha
       <aside className="w-[72px] shrink-0 h-full flex flex-col items-center bg-white border-r border-[color:var(--border)] py-3">
         <button
           type="button"
-          onClick={onToggleSidebar}
-          aria-label="Toggle sidebar"
-          className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[color:var(--surface-muted)] transition-colors mb-2"
+          onClick={() => router.push('/')}
+          aria-label="PlumeAI — automations"
+          className="w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[color:var(--surface-muted)] transition-colors"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="" className="h-6 w-auto" />
         </button>
+
+        {hasLeftPanel && (
+          <div className="mt-1">
+            <RailIcon
+              icon={sidebarOpen ? PanelLeftClose : PanelLeftOpen}
+              label={sidebarOpen ? 'Hide automations list' : 'Show automations list'}
+              active={sidebarOpen}
+              onClick={onToggleSidebar}
+            />
+          </div>
+        )}
 
         <div className="w-8 border-t border-[color:var(--border)] my-2" />
 
