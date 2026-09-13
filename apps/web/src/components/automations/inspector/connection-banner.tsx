@@ -25,8 +25,10 @@ export default function ConnectionBanner({ integration }: { integration: Catalog
       <div className="flex items-start gap-2">
         <Plug size={13} strokeWidth={2} className="mt-0.5 shrink-0 text-[#b45309]" />
         <div className="min-w-0 flex-1">
+          {/* One string, not `{label}` next to JSX text: the compiler drops the space
+              between them and it renders as "Discordisn't connected". */}
           <p className="text-[12px] font-medium text-[#b45309]">
-            {integration.label} isn&apos;t connected
+            {`${integration.label} isn’t connected`}
           </p>
           <p className="text-[11px] text-[#b45309]/80">
             Connect the account so this step can run.
