@@ -253,6 +253,11 @@ async def run_scheduled(automation_id: str) -> None:
     `max_instances=1` that is what stops a slow automation on a one-minute schedule from
     stacking up runs on top of itself.
     """
+    # APScheduler's timer callbacks inherit the context of whatever added the job — often
+    # the HTTP request that saved the schedule — so a scheduled run would otherwise log a
+    # stale `request_id`/`path` for the lifetime of the process.
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(automation_id=automation_id, trigger="schedule")
     async with session_scope() as session:
         automation = await session.get(Automation, automation_id)
         if automation is None:

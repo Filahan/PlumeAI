@@ -109,6 +109,9 @@ class StepContext:
     usage: Usage
     # Appended to in place; the executor persists it onto the `run_steps` row.
     trace: list[dict[str, Any]] = field(default_factory=list)
+    # Set once by `prepare_step` and reused by every attempt — see its docstring.
+    resolved: dict[str, Any] | None = None
+    prepared: bool = False
 
     @property
     def model(self) -> str:
@@ -387,21 +390,26 @@ async def run_filter_step(sctx: StepContext) -> StepResult:
 
 
 async def prepare_step(sctx: StepContext) -> dict[str, Any] | None:
-    """Work done once per step, *before* the retry loop: resolving an action's inputs.
+    """Resolve an action step's inputs onto `sctx`, once, and return them.
 
-    Deliberately outside the retries — resolving twice would call `ai_fill` again and could
-    hand the action different arguments on the second attempt, which is the last thing a
-    half-succeeded side effect needs.
+    Memoized on the context (`prepared`) so a retry re-runs the *action*, not the
+    resolution: calling `ai_fill` again could hand the action different arguments the
+    second time round, which is the last thing a half-succeeded side effect needs. A
+    resolution that *failed* is not memoized, so an upstream blip while filling fields
+    still gets the step's retries.
     """
+    if sctx.prepared:
+        return sctx.resolved
     if isinstance(sctx.step, ActionStep):
-        return await resolve_action_input(sctx)
-    return None
+        sctx.resolved = await resolve_action_input(sctx)
+    sctx.prepared = True
+    return sctx.resolved
 
 
-async def run_step(sctx: StepContext, resolved: dict[str, Any] | None) -> StepResult:
-    """Execute one attempt of `sctx.step`."""
+async def run_step(sctx: StepContext) -> StepResult:
+    """Execute one attempt of `sctx.step`, using the inputs `prepare_step` resolved."""
     if isinstance(sctx.step, ActionStep):
-        return await run_action_step(sctx, resolved or {})
+        return await run_action_step(sctx, sctx.resolved or {})
     if isinstance(sctx.step, AiStep):
         return await run_ai_step(sctx)
     if isinstance(sctx.step, FilterStep):

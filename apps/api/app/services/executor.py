@@ -392,7 +392,6 @@ class _Execution:
 
         retry = step.retry or DEFAULT_RETRY[step.type]
         timeout = step.timeout_seconds or DEFAULT_TIMEOUT_SECONDS[step.type]
-        resolved: dict[str, Any] | None = None
 
         row.status = "running"
         row.started_at = _now()
@@ -404,8 +403,8 @@ class _Execution:
             await self.session.commit()
             sctx.publish("step_started", attempt=attempt)
             try:
-                result, resolved = await asyncio.wait_for(
-                    self._attempt(sctx, row, resolved), timeout=timeout
+                result = await asyncio.wait_for(
+                    self._attempt(sctx, row), timeout=timeout
                 )
             except Exception as exc:  # noqa: BLE001 — classified below
                 message = _describe(exc)
@@ -442,20 +441,18 @@ class _Execution:
 
         raise _RunFailed("Step exhausted its attempts.")  # pragma: no cover — loop returns
 
-    async def _attempt(
-        self, sctx: StepContext, row: RunStep, resolved: dict[str, Any] | None
-    ) -> tuple[step_runner.StepResult, dict[str, Any] | None]:
-        """One attempt: resolve the inputs if they aren't resolved yet, then execute.
+    async def _attempt(self, sctx: StepContext, row: RunStep) -> step_runner.StepResult:
+        """One attempt: resolve the step's inputs if that hasn't happened yet, then run it.
 
-        Resolution is memoized across attempts — re-running `ai_fill` would hand the action
-        different arguments the second time round, so a retry repeats the *same* call.
+        `prepare_step` memoizes itself on the context, so a retry repeats the action with
+        the arguments the first attempt used rather than resolving them again.
         """
-        if resolved is None:
-            resolved = await step_runner.prepare_step(sctx)
-            if resolved is not None:
-                row.resolved_input = step_runner.redact(resolved)
-                await self.session.commit()
-        return await step_runner.run_step(sctx, resolved), resolved
+        already_prepared = sctx.prepared
+        resolved = await step_runner.prepare_step(sctx)
+        if resolved is not None and not already_prepared:
+            row.resolved_input = step_runner.redact(resolved)
+            await self.session.commit()
+        return await step_runner.run_step(sctx)
 
     async def _succeed_step(
         self,

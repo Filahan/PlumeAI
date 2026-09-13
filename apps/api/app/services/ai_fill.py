@@ -113,7 +113,13 @@ def render_prior_outputs(
             break
         width = _width(entry)
         room = total_cap - (total - width)
-        keep = max(MIN_STEP_OUTPUT_CHARS, min(len(entry[1]), room))
+        # A clipped entry is re-rendered as a JSON *string*, whose quotes and escapes also
+        # count against the budget. Charging the un-clipped text's overhead against `room`
+        # is an over-estimate (a shorter prefix can only need fewer escapes), which is the
+        # safe direction: the clipped entry always lands inside its share.
+        text: str = entry[1]
+        overhead = len(_compact(text)) - len(text)
+        keep = max(MIN_STEP_OUTPUT_CHARS, min(len(text), room - overhead))
         entry[1] = _clip(entry[1], keep)
         entry[2] = True
         total += _width(entry) - width
