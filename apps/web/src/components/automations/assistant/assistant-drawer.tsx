@@ -3,22 +3,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Loader2, Sparkles, Trash2, X } from 'lucide-react';
 import { useAutomationsStore } from '@/lib/automations/store';
-import AssistantComposer from '@/components/automations/assistant/assistant-composer';
+import { DIRTY_REFUSAL } from '@/lib/automations/assistant-slice';
+import AssistantComposer, {
+  type AssistantComposerHandle,
+} from '@/components/automations/assistant/assistant-composer';
 import AssistantMessageRow from '@/components/automations/assistant/assistant-message';
 
 /** Same confirm-in-place window the inspector and the sidebar use. */
 const CONFIRM_MS = 2000;
 
-const EXAMPLES = [
-  'Every weekday at 8:00, summarise unread emails from my boss and post it to Discord',
-  'Search the web for news about <topic> every morning and email me a digest',
-  'Why did the last run fail?',
+/** Openers for an empty conversation. The middle one has a blank to fill in, so it goes
+ *  into the composer instead of being sent as it stands. */
+const EXAMPLES: { text: string; fill?: boolean }[] = [
+  { text: 'Every weekday at 8:00, summarise unread emails from my boss and post it to Discord' },
+  { text: 'Search the web for news about <topic> every morning and email me a digest', fill: true },
+  { text: 'Why did the last run fail?' },
 ];
 
-/** A request-level error mentioning a key is the one the user can actually fix, and the
- *  fix lives in Settings. Everything else (a provider outage, say) is just a sentence. */
-function isMissingKey(error: string | null): boolean {
-  return error !== null && /api key/i.test(error);
+/** A 404 whose message is about a key is the one failure the user can fix, and the fix
+ *  lives in Settings. A provider outage (502) reads similarly and must not point there. */
+function isMissingKey(error: string | null, status: number | null): boolean {
+  return error !== null && status === 404 && /api key/i.test(error);
 }
 
 /** The editor's right rail while the assistant is open: describe a change in plain
@@ -30,7 +35,10 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
   const messages = useAutomationsStore((s) => s.assistant.messages);
   const sending = useAutomationsStore((s) => s.assistant.sending);
   const error = useAutomationsStore((s) => s.assistant.error);
-  const canUndo = useAutomationsStore((s) => s.assistant.lastVersionBefore !== null);
+  const errorStatus = useAutomationsStore((s) => s.assistant.errorStatus);
+  const undoVersion = useAutomationsStore((s) => s.assistant.lastVersionBefore);
+  /** An unsaved JSON draft would be destroyed by a turn, so the store refuses one. */
+  const dirty = useAutomationsStore((s) => s.current?.dirty ?? false);
 
   const sendAssistantMessage = useAutomationsStore((s) => s.sendAssistantMessage);
   const undoAssistant = useAutomationsStore((s) => s.undoAssistant);
@@ -39,13 +47,11 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
   const setRunPanelOpen = useAutomationsStore((s) => s.setRunPanelOpen);
   const selectRun = useAutomationsStore((s) => s.selectRun);
 
-  /** Which turn's Undo has been used — it stays on screen, greyed out, so the button
-   *  does not simply vanish under the cursor. */
-  const [undoneIndex, setUndoneIndex] = useState<number | null>(null);
   /** Clear arms first — one click shows "Clear?", a second within two seconds does it. */
   const [armed, setArmed] = useState(false);
   const timerRef = useRef<number | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<AssistantComposerHandle>(null);
 
   useEffect(() => () => window.clearTimeout(timerRef.current), []);
 
@@ -64,7 +70,6 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
     }
     window.clearTimeout(timerRef.current);
     setArmed(false);
-    setUndoneIndex(null);
     void clearAssistant();
   };
 
@@ -73,14 +78,26 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
     void selectRun(runId);
   };
 
-  /** Undo belongs to the newest turn that actually applied something. */
-  const lastAppliedIndex = messages.reduce(
-    (found, m, i) => (m.role === 'assistant' && (m.summary?.length ?? 0) > 0 ? i : found),
-    -1
-  );
+  /** The store guards this too; answering here is what lets the composer keep the text
+   *  the user typed when the turn is refused. */
+  const onSend = (text: string): boolean => {
+    void sendAssistantMessage(text);
+    return !dirty && !sending;
+  };
+
+  /** Undo belongs to the newest turn that actually applied something. It stays on that
+   *  turn once it is no longer usable — undone, or overtaken by a later edit — rather
+   *  than disappearing from under the cursor. */
+  const lastAppliedIndex = messages.reduce((found, m, i) => {
+    const applied = m.role === 'assistant' && Array.isArray(m.summary) && m.summary.length > 0;
+    return applied ? i : found;
+  }, -1);
 
   return (
-    <aside className="w-[380px] shrink-0 h-full border-l border-[color:var(--border)] bg-white flex flex-col">
+    <aside
+      aria-label="Assistant"
+      className="w-[380px] shrink-0 h-full border-l border-[color:var(--border)] bg-white flex flex-col"
+    >
       <div className="shrink-0 flex items-center gap-2 px-3 h-11 border-b border-[color:var(--border)]">
         <Sparkles size={13} strokeWidth={1.75} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium">Assistant</span>
@@ -88,9 +105,10 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
           <button
             type="button"
             onClick={onClearClick}
+            disabled={sending}
             aria-label={armed ? 'Confirm clearing the conversation' : 'Clear the conversation'}
-            title="Clear the conversation"
-            className={`shrink-0 inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] font-medium transition ${
+            title={sending ? 'Wait for the current turn to finish' : 'Clear the conversation'}
+            className={`shrink-0 inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] font-medium disabled:opacity-40 transition ${
               armed
                 ? 'bg-[#D4183D] text-white'
                 : 'text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)]'
@@ -110,7 +128,12 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
         </button>
       </div>
 
-      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+      <div
+        ref={listRef}
+        role="log"
+        aria-live="polite"
+        className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3"
+      >
         {messages.length === 0 ? (
           <div className="space-y-2.5">
             <p className="text-[12px] text-[color:var(--muted-foreground)]">
@@ -119,13 +142,18 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
             </p>
             {EXAMPLES.map((example) => (
               <button
-                key={example}
+                key={example.text}
                 type="button"
-                onClick={() => void sendAssistantMessage(example)}
+                onClick={() =>
+                  example.fill
+                    ? composerRef.current?.setText(example.text)
+                    : void sendAssistantMessage(example.text)
+                }
                 disabled={sending}
+                title={example.fill ? 'Fill in the blank, then send' : undefined}
                 className="block w-full text-left rounded-xl border border-[color:var(--border)] px-2.5 py-2 text-[12px] leading-snug hover:bg-[color:var(--surface-muted)]/60 disabled:opacity-40 transition"
               >
-                {example}
+                {example.text}
               </button>
             ))}
           </div>
@@ -134,12 +162,10 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
             <AssistantMessageRow
               key={`${message.ts}-${i}`}
               message={message}
-              showUndo={i === lastAppliedIndex && (canUndo || undoneIndex === i)}
-              undoDisabled={!canUndo || sending}
-              onUndo={() => {
-                setUndoneIndex(lastAppliedIndex);
-                void undoAssistant();
-              }}
+              showUndo={i === lastAppliedIndex}
+              undoVersion={undoVersion}
+              undoDisabled={undoVersion === null || sending}
+              onUndo={() => void undoAssistant()}
               onViewRun={onViewRun}
             />
           ))
@@ -152,14 +178,15 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
         )}
       </div>
 
-      {error && (
+      {/* The refusal to overwrite a JSON draft is the composer's hint, not a banner. */}
+      {error && error !== DIRTY_REFUSAL && (
         <div
-          role="status"
-          className="shrink-0 mx-2.5 mb-0 mt-2.5 flex items-start gap-2 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-2.5 py-2 text-[12px] text-[#92400E]"
+          role="alert"
+          className="shrink-0 mx-2.5 mt-2.5 flex items-start gap-2 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-2.5 py-2 text-[12px] text-[#92400E]"
         >
           <AlertCircle size={13} strokeWidth={2} className="mt-[2px] shrink-0" />
           <span className="min-w-0 flex-1 break-words">{error}</span>
-          {isMissingKey(error) && onOpenSettings && (
+          {isMissingKey(error, errorStatus) && onOpenSettings && (
             <button
               type="button"
               onClick={onOpenSettings}
@@ -171,7 +198,12 @@ export default function AssistantDrawer({ onOpenSettings }: { onOpenSettings?: (
         </div>
       )}
 
-      <AssistantComposer sending={sending} onSend={(text) => void sendAssistantMessage(text)} />
+      <AssistantComposer
+        ref={composerRef}
+        sending={sending}
+        hint={dirty ? DIRTY_REFUSAL : null}
+        onSend={onSend}
+      />
     </aside>
   );
 }

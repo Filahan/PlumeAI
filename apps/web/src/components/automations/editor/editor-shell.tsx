@@ -62,9 +62,9 @@ export default function EditorShell({
   // clears it, so this fires exactly once.
   useEffect(() => {
     if (!ready) return;
-    const first = consumeAssistantFirstMessage();
+    const first = consumeAssistantFirstMessage(id);
     if (first) void sendAssistantMessage(first);
-  }, [ready, consumeAssistantFirstMessage, sendAssistantMessage]);
+  }, [id, ready, consumeAssistantFirstMessage, sendAssistantMessage]);
 
   if (error) {
     return (

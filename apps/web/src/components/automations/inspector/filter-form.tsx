@@ -41,14 +41,16 @@ export default function FilterForm({ step }: { step: FilterStep }) {
     latest.current = rules;
   }, [rules]);
 
-  // Row identity. Keying on the array index made React reuse a removed row's DOM for
-  // whatever slid up into its place; these ids give every row a key of its own instead.
+  // Row identity. Keying on the array index made React reuse a removed row's DOM — and
+  // with it the local draft inside its inputs — for whatever slid up into its place.
+  // The ids move with the rows instead: add and remove edit this list at the same
+  // position they edit the conditions, so the row the user deleted is the row that
+  // unmounts, one round trip before the document says so.
   //
-  // The document's condition count is the single source of truth for how many rows
-  // exist, so the ids are reconciled against it in one place — adjusting state during
-  // render is React's own answer to "derived state that has to persist" — and the
-  // render uses the reconciled list rather than state that is one render behind, which
-  // would key a row by `undefined`.
+  // The reconciliation below is the safety net for the document changing underneath us
+  // (a JSON save, another operation's echo, a rejected write). It renders from the
+  // fitted list rather than from state that is one render behind, which would key a row
+  // by `undefined`.
   const [rowIds, setRowIds] = useState<string[]>(() => rules.conditions.map(() => nextRowId()));
   const conditionCount = rules.conditions.length;
   let ids = rowIds;
@@ -133,6 +135,7 @@ export default function FilterForm({ step }: { step: FilterStep }) {
               onDraft={(next, key) => replaceCondition(index, next, key)}
               onFlush={(key) => flushStep(step.id, key)}
               onRemove={() => {
+                setRowIds((current) => current.filter((_, i) => i !== index));
                 setRules({
                   ...latest.current,
                   conditions: latest.current.conditions.filter((_, i) => i !== index),
@@ -144,6 +147,7 @@ export default function FilterForm({ step }: { step: FilterStep }) {
           <button
             type="button"
             onClick={() => {
+              setRowIds((current) => [...current, nextRowId()]);
               setRules({
                 ...latest.current,
                 conditions: [...latest.current.conditions, NEW_CONDITION],

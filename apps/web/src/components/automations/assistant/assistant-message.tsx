@@ -13,6 +13,7 @@ import type { AssistantMessage } from '@/lib/automations/types';
 export default function AssistantMessageRow({
   message,
   showUndo,
+  undoVersion,
   undoDisabled,
   onUndo,
   onViewRun,
@@ -20,7 +21,10 @@ export default function AssistantMessageRow({
   message: AssistantMessage;
   /** Only the newest turn that applied something offers Undo at all. */
   showUndo: boolean;
-  /** Already used (or a write is in flight) — the button stays, greyed out. */
+  /** The version Undo would restore, when there still is one. */
+  undoVersion: number | null;
+  /** Already used, overtaken by a later edit, or a write is in flight — the button
+   *  stays where it was, greyed out. */
   undoDisabled: boolean;
   onUndo: () => void;
   onViewRun: (runId: string) => void;
@@ -35,7 +39,7 @@ export default function AssistantMessageRow({
     );
   }
 
-  const summary = message.summary ?? [];
+  const summary = Array.isArray(message.summary) ? message.summary : [];
   const runId = typeof message.runId === 'string' ? message.runId : null;
 
   return (
@@ -64,10 +68,15 @@ export default function AssistantMessageRow({
               type="button"
               onClick={onUndo}
               disabled={undoDisabled}
-              className="mt-1.5 inline-flex items-center gap-1 h-6 px-1.5 -ml-1.5 rounded-md text-[11px] font-medium text-[color:var(--muted-foreground)] hover:bg-white hover:text-[color:var(--foreground)] disabled:opacity-40 transition"
+              title={
+                undoDisabled
+                  ? 'No longer undoable — the document has changed since'
+                  : `Restore the document as it was before this turn (version ${undoVersion})`
+              }
+              className="mt-1.5 inline-flex items-center gap-1 h-6 px-1.5 -ml-1.5 rounded-md text-[11px] font-medium text-[color:var(--muted-foreground)] hover:bg-white hover:text-[color:var(--foreground)] disabled:opacity-40 disabled:pointer-events-none transition"
             >
               <Undo2 size={12} strokeWidth={2} />
-              Undo
+              {undoVersion === null ? 'Undo' : `Undo · back to version ${undoVersion}`}
             </button>
           )}
         </div>

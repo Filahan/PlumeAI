@@ -39,7 +39,8 @@ export default function AutomationsHome() {
     setCreating(true);
     try {
       const id = await create();
-      if (first) setAssistantFirstMessage(first);
+      // Addressed to this automation: the editor only sends it after opening that id.
+      if (first) setAssistantFirstMessage(id, first);
       router.push(`/automations/${id}`);
     } catch {
       // surfaced by listError
