@@ -23,9 +23,9 @@ from app.integrations.slack import client as slack_client
 from app.integrations.slack import slack_integration
 from app.integrations.slack import tools as slack_tools
 from app.main import app
-from app.services import mcp_servers as mcp_service
 
 FAKE_TOKEN = "xoxb-test"  # pragma: allowlist secret
+CHANNEL_ID = "C0123456789"  # shaped like a real Slack id, so it needs no name lookup
 
 
 @pytest.fixture(autouse=True)
@@ -178,15 +178,52 @@ async def test_send_message_accepts_raw_channel_id_without_a_lookup(
         method = _method(request)
         assert method != "conversations.list"  # an id needs no resolution
         if method == "chat.postMessage":
-            return _ok({"channel": "C9", "ts": "1.2"})
+            return _ok({"channel": CHANNEL_ID, "ts": "1.2"})
         return _err("not_allowed")  # permalink lookup is best-effort
 
     _install(monkeypatch, handler)
     result = await slack_integration.execute(
-        "slack_send_message", {"channel": "C9", "text": "hi"}, None
+        "slack_send_message", {"channel": CHANNEL_ID, "text": "hi"}, None
     )
     assert result.ok is True
-    assert result.data == {"channel": "C9", "ts": "1.2"}  # no permalink, no failure
+    assert result.data == {"channel": CHANNEL_ID, "ts": "1.2"}  # no permalink, no failure
+
+
+async def test_send_message_resolves_a_bare_channel_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name without the leading hash is still a name — only an id-shaped value skips
+    the lookup."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if _method(request) == "conversations.list":
+            return _ok({"channels": [_channel("C0999999999", "general")]})
+        assert _body(request)["channel"] == "C0999999999"
+        return _ok({"channel": "C0999999999", "ts": "1.2"})
+
+    _install(monkeypatch, handler)
+    result = await slack_integration.execute(
+        "slack_send_message", {"channel": "general", "text": "hi"}, None
+    )
+    assert result.ok is True
+    assert "Sent to #general" in result.content
+
+
+async def test_one_channel_lookup_serves_the_whole_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-action context caches the name→id map, so a second resolution is free."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if _method(request) == "conversations.list":
+            return _ok({"channels": [_channel("C0111111111", "general")]})
+        return _ok({"channel": "C0111111111", "ts": "1.2"})
+
+    seen = _install(monkeypatch, handler)
+    await slack_integration.execute(
+        "slack_send_message", {"channel": "#general", "text": "hi"}, None
+    )
+    assert sum(1 for r in seen if _method(r) == "conversations.list") == 1
 
 
 async def test_send_message_not_in_channel_tells_the_user_to_invite_the_bot(
@@ -221,7 +258,9 @@ async def test_send_message_unknown_channel_name_is_a_permanent_error(
 
 
 async def test_send_message_requires_text() -> None:
-    result = await slack_integration.execute("slack_send_message", {"channel": "C1"}, None)
+    result = await slack_integration.execute(
+        "slack_send_message", {"channel": CHANNEL_ID}, None
+    )
     assert result.ok is False
     assert result.retryable is False
 
@@ -255,13 +294,14 @@ async def test_read_messages_resolves_user_names_and_orders_oldest_first(
     seen = _install(monkeypatch, handler)
     result = await slack_integration.execute(
         "slack_read_messages",
-        {"channel": "C1", "limit": 5, "oldest": "2024-04-05T00:00:00Z"},
+        {"channel": CHANNEL_ID, "limit": 5, "oldest": "2024-04-05T00:00:00Z"},
         None,
     )
 
-    assert history_params["channel"] == "C1"
+    assert history_params["channel"] == CHANNEL_ID
     assert history_params["limit"] == "5"
     assert history_params["oldest"] == "1712275200.000000"  # ISO → Slack ts
+    assert history_params["inclusive"] == "true"  # "at or after", as the schema promises
     assert result.data == {
         "count": 2,
         "messages": [
@@ -290,7 +330,9 @@ async def test_read_messages_survives_a_missing_users_read_scope(
         return _err("missing_scope", needed="users:read")
 
     _install(monkeypatch, handler)
-    result = await slack_integration.execute("slack_read_messages", {"channel": "C1"}, None)
+    result = await slack_integration.execute(
+        "slack_read_messages", {"channel": CHANNEL_ID}, None
+    )
 
     assert result.ok is True
     assert result.data["messages"] == [{"ts": "100.0", "user": "U1", "text": "hi"}]
@@ -303,7 +345,7 @@ async def test_read_messages_rejects_an_unparseable_oldest(
     _install(monkeypatch, lambda _r: _ok({"messages": []}))
     with pytest.raises(ToolError) as exc:
         await slack_integration.execute(
-            "slack_read_messages", {"channel": "C1", "oldest": "last tuesday"}, None
+            "slack_read_messages", {"channel": CHANNEL_ID, "oldest": "last tuesday"}, None
         )
     assert exc.value.extra == {"retryable": False}
 
@@ -354,6 +396,67 @@ async def test_ratelimited_ok_false_is_retryable(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(ToolError) as exc:
         await slack_integration.execute("slack_list_channels", {}, None)
     assert exc.value.extra.get("retryable", True) is True
+
+
+async def test_non_429_http_4xx_is_permanent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slack refusing the request itself (404 on the method, a bad payload) will refuse
+    the identical retry too."""
+    _install(monkeypatch, lambda _r: httpx.Response(404, text="not found"))
+    with pytest.raises(ToolError) as exc:
+        await slack_integration.execute("slack_list_channels", {}, None)
+    assert exc.value.extra == {"retryable": False}
+
+
+async def test_429_carries_retry_after_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(
+        monkeypatch,
+        lambda _r: httpx.Response(429, headers={"retry-after": "12"}, json={"ok": False}),
+    )
+    with pytest.raises(ToolError) as exc:
+        await slack_integration.execute("slack_list_channels", {}, None)
+    assert exc.value.extra["retry_after"] == 12
+    assert exc.value.extra.get("retryable", True) is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2024-04-05T00:00:00Z", "1712275200.000000"),
+        ("2024-04-05", "1712275200.000000"),  # ISO date, not a number of seconds
+        ("1712345678.000100", "1712345678.000100"),
+    ],
+)
+def test_to_slack_ts_reads_iso_first(value: str, expected: str) -> None:
+    assert slack_client.to_slack_ts(value) == expected
+
+
+@pytest.mark.parametrize("value", ["yesterday", "3", "1712345678"])
+def test_to_slack_ts_rejects_anything_ambiguous(value: str) -> None:
+    """A bare integer has no dot, so it is not a Slack ts — better an error than 1970."""
+    with pytest.raises(ToolError):
+        slack_client.to_slack_ts(value)
+
+
+async def test_the_bot_token_is_read_once_per_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads = 0
+
+    async def _counting_credentials(_session: Any, _namespace: str) -> dict[str, str]:
+        nonlocal reads
+        reads += 1
+        return {"bot_token": FAKE_TOKEN}
+
+    monkeypatch.setattr(slack_client, "get_credentials", _counting_credentials)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if _method(request) == "conversations.history":
+            return _ok({"messages": [{"ts": "1.0", "user": "U1", "text": "a"}]})
+        return _ok({"user": {"profile": {"display_name": "dana"}}})
+
+    _install(monkeypatch, handler)
+    await slack_integration.execute("slack_read_messages", {"channel": CHANNEL_ID}, None)
+    assert reads == 1  # not once per HTTP call
 
 
 async def test_missing_bot_token_raises_tool_not_configured(
@@ -422,12 +525,6 @@ async def test_get_tools_lists_slack_as_a_config_integration(
 
     for integ in INTEGRATIONS:
         monkeypatch.setattr(integ, "is_configured", _not_connected)
-
-    # The catalog also lists MCP servers from the DB; this file stays DB-free.
-    async def _no_mcp_servers(_session: Any) -> list[Any]:
-        return []
-
-    monkeypatch.setattr(mcp_service, "list_servers", _no_mcp_servers)
 
     app.dependency_overrides[get_session] = _dummy_session
     try:

@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.integrations.notion.client import rich_text_to_plain
+
 # Notion rejects any rich-text item longer than 2000 characters, so long paragraphs are
 # split into several blocks rather than truncated.
 MAX_TEXT_CHARS = 2000
@@ -69,13 +71,31 @@ def _blocks_of(kind: str, text: str, extra: dict[str, Any] | None = None) -> lis
     return out
 
 
+def _code_chunks(code: str) -> list[str]:
+    """Split code into ≤ MAX_TEXT_CHARS pieces, preferring a newline boundary — breaking
+    a code block mid-line reads far worse than breaking it between lines."""
+    if len(code) <= MAX_TEXT_CHARS:
+        return [code]
+    out: list[str] = []
+    rest = code
+    while len(rest) > MAX_TEXT_CHARS:
+        window = rest[:MAX_TEXT_CHARS]
+        cut = window.rfind("\n") + 1  # keep the newline with the chunk it ends
+        if cut <= 0:
+            cut = MAX_TEXT_CHARS
+        out.append(rest[:cut])
+        rest = rest[cut:]
+    if rest:
+        out.append(rest)
+    return out
+
+
 def _code_block(code: str, language: str) -> dict[str, Any]:
+    """One code block whose rich_text is split across ≤2000-char items, so a long fence
+    survives intact rather than being truncated."""
     lang = _LANGUAGE_ALIASES.get(language.lower(), language.lower() or "plain text")
-    return {
-        "object": "block",
-        "type": "code",
-        "code": {"rich_text": _text(code[: MAX_TEXT_CHARS * 10]), "language": lang},
-    }
+    rich = [{"type": "text", "text": {"content": chunk}} for chunk in _code_chunks(code)]
+    return {"object": "block", "type": "code", "code": {"rich_text": rich, "language": lang}}
 
 
 def markdown_to_blocks(content: str) -> list[dict[str, Any]]:
@@ -170,8 +190,6 @@ _PREFIXES = {
 
 def blocks_to_text(blocks: list[dict[str, Any]]) -> str:
     """Render Notion blocks back to markdown-ish text for the LLM to read."""
-    from app.integrations.notion.client import rich_text_to_plain
-
     lines: list[str] = []
     for block in blocks:
         if not isinstance(block, dict):
@@ -199,5 +217,8 @@ def blocks_to_text(blocks: list[dict[str, Any]]) -> str:
         text = rich_text_to_plain((payload or {}).get("rich_text"))
         if not text:
             continue
-        lines.append(f"{_PREFIXES.get(btype, '')}{text}")
+        # Nested children are a separate API call; say so rather than silently dropping
+        # everything under a toggle or an indented list.
+        nested = " (has nested content)" if block.get("has_children") else ""
+        lines.append(f"{_PREFIXES.get(btype, '')}{text}{nested}")
     return "\n".join(lines).strip()

@@ -23,7 +23,6 @@ from app.schemas.documents import (
     ManualTrigger,
     ModelRef,
 )
-from app.services import mcp_servers as mcp_service
 from app.services.catalog import Catalog, CatalogIntegration
 from app.services.documents import validate_document
 from app.tools.base import BUILTIN_INTEGRATION, ActionDisplayMeta, describe_action
@@ -78,6 +77,48 @@ def test_describe_builtin_actions() -> None:
         assert action.integration == BUILTIN_INTEGRATION
         assert action.label
         assert isinstance(action.input_schema, dict)
+
+
+# ─── structured outputs ────────────────────────────────────────────────────────────────
+
+# Every action whose implementation sets `ToolResult.data` must publish an
+# `output_schema`, since that schema is what the builder UI offers as `{{step.output.…}}`
+# refs. Adding `data` to an action without its schema is the easy mistake; this catches it.
+ACTIONS_WITH_STRUCTURED_OUTPUT = {
+    "gmail_search",
+    "gmail_get",
+    "drive_search",
+    "calendar_list_events",
+    "slack_list_channels",
+    "slack_send_message",
+    "slack_read_messages",
+    "notion_search",
+    "notion_get_page",
+    "notion_create_page",
+    "notion_append_blocks",
+    "notion_query_database",
+    "web_fetch",
+    "http",
+}
+
+
+def test_every_structured_action_publishes_an_output_schema() -> None:
+    actions = {
+        a.name: a
+        for a in [
+            *(a for integ in INTEGRATIONS for a in integ.describe_actions()),
+            *describe_builtin_actions(),
+        ]
+    }
+    missing = sorted(ACTIONS_WITH_STRUCTURED_OUTPUT - set(actions))
+    assert not missing, f"actions disappeared from the catalog: {missing}"
+
+    for name in sorted(ACTIONS_WITH_STRUCTURED_OUTPUT):
+        action = actions[name]
+        assert action.output_schema is not None, f"{name} sets data but has no output_schema"
+        assert action.output_schema["type"] == "object"
+        assert action.output_schema["properties"], f"{name} has an empty output_schema"
+        assert action.output_description, f"{name} has no output_description"
 
 
 # ─── _humanize fallback ─────────────────────────────────────────────────────────────────
@@ -223,12 +264,6 @@ async def test_get_tools_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             integ, "is_configured", _connected if integ.name == "gmail" else _not_connected
         )
-
-    # The catalog also lists MCP servers from the DB; no test in this file touches it.
-    async def _no_mcp_servers(_session: Any) -> list[Any]:
-        return []
-
-    monkeypatch.setattr(mcp_service, "list_servers", _no_mcp_servers)
 
     app.dependency_overrides[get_session] = _dummy_session
     try:

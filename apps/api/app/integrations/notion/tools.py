@@ -13,7 +13,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.errors import ToolError
+from app.errors import AppError, ToolError
 from app.integrations.base import CredentialField, Integration
 from app.integrations.notion.blocks import (
     MAX_BLOCKS_PER_REQUEST,
@@ -47,13 +47,29 @@ def _clamp(raw: Any, default: int, high: int) -> int:
 
 
 def _clean_id(raw: Any, field: str) -> str:
-    """Accept a dashed id, a plain 32-char id, or a pasted Notion URL."""
+    """Accept a dashed id, a plain 32-char id, or a pasted Notion URL → the bare id.
+
+    Anything else is rejected here rather than interpolated into the request path: a
+    value like `"../../v1/users"` must never become part of the URL we call.
+    """
     text = str(raw or "").strip()
     if not text:
         raise ToolError(f'Missing "{field}".', extra=dict(_PERMANENT))
-    tail = text.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+    if "/" in text:
+        # A pasted URL: keep the last path segment, minus Notion's own ?pvs=… suffix.
+        tail = text.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+    else:
+        # A bare value has no business carrying a query string or a fragment.
+        tail = text
     match = _ID_RE.search(tail.replace("-", ""))
-    return match.group(1) if match else text
+    if not match:
+        raise ToolError(
+            f'"{text}" is not a Notion {field}. Expected a 32-character id '
+            "(dashed or not), or the page URL it appears at the end of — "
+            "notion_search returns ids in this form.",
+            extra=dict(_PERMANENT),
+        )
+    return match.group(1)
 
 
 # ─── search ──────────────────────────────────────────────────────────────────────────
@@ -84,7 +100,11 @@ async def _notion_search(args: dict[str, Any], session: AsyncSession) -> ToolRes
             }
         )
 
-    data = {"results": results, "count": len(results)}
+    data = {
+        "results": results,
+        "count": len(results),
+        "has_more": bool(payload.get("has_more")),
+    }
     if not results:
         return ToolResult(
             ok=True,
@@ -99,16 +119,24 @@ async def _notion_search(args: dict[str, Any], session: AsyncSession) -> ToolRes
         f"   edited {r['last_edited_time']}"
         for i, r in enumerate(results, 1)
     ]
-    return ToolResult(ok=True, content=cap("\n\n".join(lines)), data=data)
+    more = "\n\n(more matches exist — raise limit or narrow the query)" if data["has_more"] else ""
+    return ToolResult(ok=True, content=cap("\n\n".join(lines) + more), data=data)
 
 
 # ─── get_page ────────────────────────────────────────────────────────────────────────
 
 
-async def _fetch_children(session: AsyncSession, block_id: str) -> list[dict[str, Any]]:
-    """`/v1/blocks/{id}/children`, following `next_cursor` up to MAX_READ_BLOCKS blocks."""
+async def _fetch_children(
+    session: AsyncSession, block_id: str
+) -> tuple[list[dict[str, Any]], bool]:
+    """`/v1/blocks/{id}/children` up to MAX_READ_BLOCKS blocks.
+
+    Returns `(blocks, truncated)` — `truncated` is True when the page has more blocks
+    than we read, so the caller can say so instead of quietly returning a partial page.
+    """
     out: list[dict[str, Any]] = []
     cursor: str | None = None
+    truncated = False
     while len(out) < MAX_READ_BLOCKS:
         params: dict[str, Any] = {"page_size": min(100, MAX_READ_BLOCKS - len(out))}
         if cursor:
@@ -117,10 +145,14 @@ async def _fetch_children(session: AsyncSession, block_id: str) -> list[dict[str
             session, "GET", f"/v1/blocks/{block_id}/children", params=params
         )
         out.extend(b for b in (payload.get("results") or []) if isinstance(b, dict))
-        cursor = payload.get("next_cursor") if payload.get("has_more") else None
+        if not payload.get("has_more"):
+            break
+        cursor = payload.get("next_cursor")
         if not cursor:
             break
-    return out
+        if len(out) >= MAX_READ_BLOCKS:
+            truncated = True
+    return out, truncated
 
 
 async def _notion_get_page(args: dict[str, Any], session: AsyncSession) -> ToolResult:
@@ -128,14 +160,20 @@ async def _notion_get_page(args: dict[str, Any], session: AsyncSession) -> ToolR
     page = await notion_call(session, "GET", f"/v1/pages/{page_id}")
     title = extract_title(page)
     properties = flatten_properties(page.get("properties"))
-    content = blocks_to_text(await _fetch_children(session, page_id))
+    blocks, truncated = await _fetch_children(session, page_id)
+    content = blocks_to_text(blocks)
+    if truncated:
+        content += f"\n…[truncated at {MAX_READ_BLOCKS} blocks]"
 
     data = {
         "id": str(page.get("id") or page_id),
         "title": title,
         "url": str(page.get("url") or ""),
         "properties": properties,
-        "content": content,
+        # Capped like `content` is: a long page must not blow up the run record a later
+        # step reads through `{{step.output.content}}`.
+        "content": cap(content),
+        "truncated": truncated,
     }
     # The title already heads the text; skip the property that just repeats it.
     prop_lines = "\n".join(f"{k}: {v}" for k, v in properties.items() if v != title)
@@ -162,18 +200,38 @@ def _title_property(title: str) -> dict[str, Any]:
 
 
 async def _append_children(
-    session: AsyncSession, block_id: str, children: list[dict[str, Any]]
+    session: AsyncSession,
+    block_id: str,
+    children: list[dict[str, Any]],
+    *,
+    context: str = "",
 ) -> int:
-    """PATCH children in ≤100-block batches (Notion's per-request cap). Returns the count."""
+    """PATCH children in ≤100-block batches (Notion's per-request cap). Returns the count.
+
+    A failure partway through has already written the earlier batches, and Notion has no
+    transaction to roll them back — so the error is raised as permanently non-retryable
+    and says how much landed. Retrying the whole action would duplicate that content.
+    """
     appended = 0
     for start in range(0, len(children), MAX_BLOCKS_PER_REQUEST):
         batch = children[start : start + MAX_BLOCKS_PER_REQUEST]
-        await notion_call(
-            session,
-            "PATCH",
-            f"/v1/blocks/{block_id}/children",
-            json_body={"children": batch},
-        )
+        try:
+            await notion_call(
+                session,
+                "PATCH",
+                f"/v1/blocks/{block_id}/children",
+                json_body={"children": batch},
+            )
+        except AppError as exc:
+            if appended == 0 and not context:
+                raise  # nothing was written; the original error stands
+            raise ToolError(
+                f"Partial write: {appended} of {len(children)} block(s) were added"
+                f"{context} before Notion failed with: {exc.detail} "
+                "Do not retry this step as-is — it would duplicate the blocks that "
+                "already landed; append only what is missing.",
+                extra=dict(_PERMANENT),
+            ) from exc
         appended += len(batch)
     return appended
 
@@ -193,12 +251,15 @@ async def _notion_create_page(args: dict[str, Any], session: AsyncSession) -> To
         parent = {"page_id": parent_id}
         title_key = "title"
 
-    properties: dict[str, Any] = {title_key: _title_property(title.strip())}
+    properties: dict[str, Any] = {}
     extra = args.get("properties")
     if isinstance(extra, dict):
         for key, value in extra.items():
             if isinstance(value, dict):
                 properties[str(key)] = value
+    # Written last: `title` is the argument of record, so a caller that also passes the
+    # title column inside `properties` cannot end up with a differently-named page.
+    properties[title_key] = _title_property(title.strip())
 
     children = markdown_to_blocks(args.get("content") or "")
     body: dict[str, Any] = {"parent": parent, "properties": properties}
@@ -209,7 +270,14 @@ async def _notion_create_page(args: dict[str, Any], session: AsyncSession) -> To
     page_id = str(page.get("id") or "")
     overflow = children[MAX_BLOCKS_PER_REQUEST:]
     if overflow and page_id:
-        await _append_children(session, page_id, overflow)
+        # The page already exists at this point, so a failure here is reported against it
+        # by id/url rather than as "the step failed" — retrying would create a second page.
+        await _append_children(
+            session,
+            page_id,
+            overflow,
+            context=f' to the created page {page_id} ({page.get("url") or "no url"})',
+        )
 
     data = {"id": page_id, "url": str(page.get("url") or ""), "title": title.strip()}
     summary = f'Created "{title.strip()}" ({len(children)} blocks). id={page_id}'

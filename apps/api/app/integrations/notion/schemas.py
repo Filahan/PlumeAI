@@ -50,12 +50,14 @@ NOTION_ACTION_META: dict[str, ActionDisplayMeta] = {
     "notion_search": ActionDisplayMeta(
         label="Search pages",
         output_description=(
-            "Matching pages and databases with id, title, url, and last edited time."
+            "Matching pages and databases with id, title, url, and last edited time, "
+            "plus whether more matches exist."
         ),
         output_schema={
             "type": "object",
             "properties": {
                 "count": {"type": "number"},
+                "has_more": {"type": "boolean"},
                 "results": {
                     "type": "array",
                     "items": {
@@ -74,7 +76,10 @@ NOTION_ACTION_META: dict[str, ActionDisplayMeta] = {
     ),
     "notion_get_page": ActionDisplayMeta(
         label="Read a page",
-        output_description="The page title, url, flattened properties, and its text content.",
+        output_description=(
+            "The page title, url, flattened properties, its text content, and whether "
+            "the page had more blocks than were read."
+        ),
         output_schema={
             "type": "object",
             "properties": {
@@ -83,6 +88,7 @@ NOTION_ACTION_META: dict[str, ActionDisplayMeta] = {
                 "url": {"type": "string"},
                 "properties": {"type": "object"},
                 "content": {"type": "string"},
+                "truncated": {"type": "boolean"},
             },
         },
     ),
@@ -181,7 +187,10 @@ NOTION_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Create a Notion page under a parent page or as a row in a database. "
                 "`content` is markdown: # / ## / ### headings, - bullets, 1. numbered items, "
-                "> quotes, ``` code fences, blank-line separated paragraphs. When "
+                "> quotes, ``` code fences, blank-line separated paragraphs. Inline "
+                "formatting (**bold**, *italic*, [links](url)) is NOT converted — it is "
+                "written to the page literally, so leave it out unless you want the "
+                "characters themselves. When "
                 "parent_type is 'database', pass database column values in `properties` "
                 "using Notion's property value shape."
             ),

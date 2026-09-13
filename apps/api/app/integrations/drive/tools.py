@@ -25,7 +25,27 @@ UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
 DRIVE_ACTION_META: dict[str, ActionDisplayMeta] = {
     "drive_search": ActionDisplayMeta(
         label="Search files",
-        output_description="Matching files with id, name, mimeType, and modified time.",
+        output_description=(
+            "`count` plus `files`: id, name, mime_type, and modified_time for each match."
+        ),
+        output_schema={
+            "type": "object",
+            "properties": {
+                "count": {"type": "number"},
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "mime_type": {"type": "string"},
+                            "modified_time": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
     ),
     "drive_get": ActionDisplayMeta(
         label="Get a file",

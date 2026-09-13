@@ -29,7 +29,8 @@ _PERMANENT = {"retryable": False}
 _NOT_SHARED = (
     "Notion could not find that page or database (404). Either the id is wrong, or the "
     'page is not shared with the integration — open it in Notion, click "…" → '
-    "Connections → your integration."
+    "Connections → your integration. If this id is a database, read it with "
+    "notion_query_database (notion_get_page only reads pages)."
 )
 
 
@@ -98,7 +99,10 @@ async def notion_call(
         raise ToolError(_NOT_SHARED, extra=dict(_PERMANENT))
     if r.status_code == 429:
         retry_after = r.headers.get("retry-after", "30")
-        raise ToolError(f"Notion rate-limited the request. Retry after {retry_after}s.")
+        raise ToolError(
+            f"Notion rate-limited the request. Retry after {retry_after}s.",
+            extra={"retry_after": _int_or_none(retry_after)},
+        )
     if r.status_code == 403:
         raise ToolError(
             f"Notion refused the request (403). Check the integration's capabilities "
@@ -109,6 +113,13 @@ async def notion_call(
         raise ToolError(f"Notion rejected the request: {message}", extra=dict(_PERMANENT))
     log.info("notion_api_error", status=r.status_code, path=path)
     raise ToolError(f"Notion request failed: HTTP {r.status_code} {message}")
+
+
+def _int_or_none(value: str) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _notion_message(r: httpx.Response) -> str:

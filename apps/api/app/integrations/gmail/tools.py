@@ -345,7 +345,8 @@ async def _gmail_get(
             "to": _header(headers, "To"),
             "subject": _header(headers, "Subject"),
             "date": _header(headers, "Date"),
-            "body": body,
+            # Capped like `content`: a huge body must not blow up the stored step output.
+            "body": cap(body),
         },
     )
 

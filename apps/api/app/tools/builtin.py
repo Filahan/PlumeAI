@@ -6,6 +6,7 @@ connected — they handle the "search the web / fetch a URL / call an arbitrary 
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from urllib.parse import quote
@@ -16,6 +17,7 @@ import structlog
 from app.errors import ToolError
 from app.tools.base import (
     BUILTIN_INTEGRATION,
+    MAX_RESULT_CHARS,
     TIMEOUT_SECONDS,
     USER_AGENT,
     ActionDisplayMeta,
@@ -199,13 +201,20 @@ def _header_subset(headers: Any) -> dict[str, str]:
 
 
 def _parsed_body(response: httpx.Response) -> Any:
-    """Parsed JSON when the response says it is JSON, else the (capped) raw text."""
+    """Parsed JSON when the response says it is JSON, else the (capped) raw text.
+
+    Parsed JSON is kept only while it stays within the same size budget `content` obeys —
+    an enormous payload becomes capped text instead, so one step's output cannot balloon
+    the run record it is stored in.
+    """
     ctype = response.headers.get("content-type", "")
     if "json" in ctype:
         try:
-            return response.json()
+            parsed = response.json()
         except ValueError:
             return cap(response.text)
+        if len(json.dumps(parsed, separators=(",", ":"), default=str)) <= MAX_RESULT_CHARS:
+            return parsed
     return cap(response.text)
 
 

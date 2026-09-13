@@ -1,5 +1,5 @@
 """Thin Slack Web API client: bot-token auth, one `slack_call` entry point, and the
-id-resolution caches the tool functions share within a single call.
+per-action context that carries the resolved token and the id caches.
 
 Kept separate from `tools.py` so the HTTP/error-mapping layer can be tested on its own
 and the tool module stays about schemas and formatting.
@@ -7,6 +7,10 @@ and the tool module stays about schemas and formatting.
 
 from __future__ import annotations
 
+import asyncio
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -78,6 +82,24 @@ async def bot_token(session: AsyncSession) -> str:
     return str(token)
 
 
+@dataclass
+class SlackContext:
+    """State shared by every HTTP call one tool action makes.
+
+    The bot token is read (and decrypted) once per action rather than once per request,
+    and the two caches mean a channel name or a user id is resolved at most once even
+    when an action mentions it repeatedly.
+    """
+
+    token: str
+    channels: dict[str, str] = field(default_factory=dict)
+    users: dict[str, str] = field(default_factory=dict)
+
+
+async def slack_context(session: AsyncSession) -> SlackContext:
+    return SlackContext(token=await bot_token(session))
+
+
 def _missing_scope_message(payload: dict[str, Any]) -> str:
     needed = payload.get("needed") or "the required scope"
     return (
@@ -87,7 +109,7 @@ def _missing_scope_message(payload: dict[str, Any]) -> str:
 
 
 async def slack_call(
-    session: AsyncSession,
+    ctx: SlackContext,
     method: str,
     *,
     params: dict[str, Any] | None = None,
@@ -102,8 +124,7 @@ async def slack_call(
     actually do better. `error_hints` lets a caller override the message for a code it has
     extra context for (e.g. which channel the bot must be invited to).
     """
-    token = await bot_token(session)
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {ctx.token}"}
     if json_body is not None:
         headers["Content-Type"] = "application/json; charset=utf-8"
 
@@ -121,6 +142,14 @@ async def slack_call(
         retry_after = r.headers.get("retry-after", "30")
         raise ToolError(
             f"Slack rate-limited {method}. Retry after {retry_after}s.",
+            extra={"retry_after": _int_or_none(retry_after)},
+        )
+    if 400 <= r.status_code < 500:
+        # Any other 4xx is Slack refusing this exact request (bad method, bad payload);
+        # replaying it unchanged would fail the same way.
+        raise ToolError(
+            f"Slack {method} failed: HTTP {r.status_code} {r.text[:300]}",
+            extra=dict(_PERMANENT),
         )
     if not r.is_success:
         raise ToolError(f"Slack {method} failed: HTTP {r.status_code} {r.text[:300]}")
@@ -147,6 +176,13 @@ async def slack_call(
     raise ToolError(message, extra=None if retryable else dict(_PERMANENT))
 
 
+def _int_or_none(value: str) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _form(params: dict[str, Any] | None) -> dict[str, str] | None:
     """Slack's form-encoded endpoints want strings; booleans must be "true"/"false"."""
     if not params:
@@ -159,7 +195,7 @@ def _form(params: dict[str, Any] | None) -> dict[str, str] | None:
     return out
 
 
-# ─── id resolution (per-call caches, passed in by the tool functions) ────────────────
+# ─── id resolution (cached on the per-action context) ────────────────────────────────
 
 CHANNEL_TYPES = {
     "public": "public_channel",
@@ -167,16 +203,20 @@ CHANNEL_TYPES = {
     "all": "public_channel,private_channel",
 }
 
+# Slack ids: channels start with C, DMs with D, group DMs with G, then 8+ upper-case
+# alphanumerics. Anything else the user typed is treated as a channel *name*.
+_CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9]{8,}$")
+
 
 async def list_conversations(
-    session: AsyncSession, *, types: str, limit: int
+    ctx: SlackContext, *, types: str, limit: int
 ) -> list[dict[str, Any]]:
     """`conversations.list`, following `next_cursor` until `limit` channels are collected."""
     out: list[dict[str, Any]] = []
     cursor: str | None = None
     for _ in range(10):  # hard page cap: 10 × 200 channels is plenty
         payload = await slack_call(
-            session,
+            ctx,
             "conversations.list",
             params={
                 "types": types,
@@ -192,77 +232,90 @@ async def list_conversations(
     return out[:limit]
 
 
-async def resolve_channel(
-    session: AsyncSession, channel: str, cache: dict[str, str]
-) -> tuple[str, str]:
-    """Turn a user-supplied channel (`"#general"` or an id) into `(id, display_name)`.
+async def resolve_channel(ctx: SlackContext, channel: str) -> tuple[str, str]:
+    """Turn a user-supplied channel into `(id, display_name)`.
 
-    `cache` is a per-call dict so one tool call resolving several names hits
-    `conversations.list` once.
+    An id (`C0123456789`) passes straight through. Anything else — `"#general"` or a bare
+    `"general"` — is looked up by name through `conversations.list`, whose result is cached
+    on the context so an action that mentions the same channel twice looks it up once.
     """
     raw = channel.strip()
-    if not raw.startswith("#"):
+    if _CHANNEL_ID_RE.match(raw):
         return raw, raw
-    name = raw.lstrip("#").lower()
-    if name in cache:
-        return cache[name], raw
-    for c in await list_conversations(
-        session, types=CHANNEL_TYPES["all"], limit=1000
-    ):
-        cname = str(c.get("name") or "").lower()
-        if cname:
-            cache[cname] = str(c.get("id") or "")
-    if name not in cache:
+    name = raw.lstrip("#").strip()
+    display = f"#{name}"
+    if not name:
+        raise ToolError("No channel was given.", extra=dict(_PERMANENT))
+
+    key = name.lower()
+    if key not in ctx.channels:
+        for c in await list_conversations(ctx, types=CHANNEL_TYPES["all"], limit=1000):
+            cname = str(c.get("name") or "").lower()
+            if cname:
+                ctx.channels[cname] = str(c.get("id") or "")
+    if key not in ctx.channels:
         raise ToolError(
-            f"No channel named {raw} is visible to the bot. Check the spelling, and for a "
-            f"private channel invite the bot with /invite @YourBot in {raw}.",
+            f"No channel named {display} is visible to the bot. Check the spelling, and "
+            f"for a private channel invite the bot with /invite @YourBot in {display}.",
             extra=dict(_PERMANENT),
         )
-    return cache[name], raw
+    return ctx.channels[key], display
 
 
-async def user_display_name(
-    session: AsyncSession, user_id: str, cache: dict[str, str]
-) -> str | None:
-    """Best-effort `users.info` lookup — a missing `users:read` scope must not fail a read."""
-    if not user_id:
-        return None
-    if user_id in cache:
-        return cache[user_id] or None
+async def resolve_user_names(ctx: SlackContext, user_ids: Iterable[str]) -> dict[str, str]:
+    """Best-effort `users.info` for every id not already cached, all in flight at once.
+
+    Display names are a nicety: a workspace that never granted `users:read` still gets its
+    messages, just keyed by raw user id.
+    """
+    todo = [uid for uid in dict.fromkeys(user_ids) if uid and uid not in ctx.users]
+    if todo:
+        names = await asyncio.gather(*(_fetch_user_name(ctx, uid) for uid in todo))
+        ctx.users.update(dict(zip(todo, names, strict=True)))
+    return {uid: name for uid, name in ctx.users.items() if name}
+
+
+async def _fetch_user_name(ctx: SlackContext, user_id: str) -> str:
     try:
-        payload = await slack_call(session, "users.info", params={"user": user_id})
-    except Exception:  # noqa: BLE001 — names are a nicety, never a hard failure
-        cache[user_id] = ""
-        return None
+        payload = await slack_call(ctx, "users.info", params={"user": user_id})
+    except Exception:  # noqa: BLE001 — names must never fail a read
+        return ""
     user = payload.get("user") or {}
     profile = user.get("profile") or {}
     name = profile.get("display_name") or profile.get("real_name") or user.get("name") or ""
-    cache[user_id] = str(name)
-    return str(name) or None
+    return str(name)
 
 
 def to_slack_ts(value: Any) -> str | None:
-    """Accept a Slack ts (`"1712345678.000100"`) or an ISO timestamp and return a Slack ts."""
+    """Accept an ISO timestamp or a Slack ts (`"1712345678.000100"`) → a Slack ts.
+
+    ISO is tried first: `"20260604"` is a date in basic ISO form, not a number of seconds.
+    The ts branch then requires the dot Slack always includes, so a typo like `"yesterday"`
+    (or a bare `"3"`) is reported instead of silently becoming 1970.
+    """
     if value is None:
         return None
     text = str(value).strip()
     if not text:
         return None
     try:
-        return str(float(text))  # already a ts / epoch seconds
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         pass
-    try:
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ToolError(
-            f'Could not read "{text}" as a time. Use an ISO timestamp '
-            "(2026-06-04T14:00:00Z) or a Slack ts.",
-            extra=dict(_PERMANENT),
-        ) from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return f"{dt.timestamp():.6f}"
+    else:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return f"{dt.timestamp():.6f}"
+    if "." in text:
+        try:
+            return f"{float(text):.6f}"
+        except ValueError:
+            pass
+    raise ToolError(
+        f'Could not read "{text}" as a time. Use an ISO timestamp '
+        "(2026-06-04T14:00:00Z) or a Slack ts (1712345678.000100).",
+        extra=dict(_PERMANENT),
+    )
 
 
 def format_ts(ts: str) -> str:

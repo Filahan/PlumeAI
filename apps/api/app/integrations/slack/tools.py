@@ -15,12 +15,14 @@ from app.integrations.base import CredentialField, Integration
 from app.integrations.slack.client import (
     CHANNEL_TYPES,
     CREDENTIALS_NAMESPACE,
+    SlackContext,
     format_ts,
     list_conversations,
     resolve_channel,
+    resolve_user_names,
     slack_call,
+    slack_context,
     to_slack_ts,
-    user_display_name,
 )
 from app.integrations.slack.schemas import SLACK_ACTION_META, SLACK_SCHEMAS, SLACK_SETUP
 from app.services.tool_credentials import get_credentials
@@ -35,10 +37,10 @@ def _clamp(raw: Any, default: int, high: int) -> int:
 # ─── tool implementations ────────────────────────────────────────────────────────────
 
 
-async def _slack_list_channels(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _slack_list_channels(args: dict[str, Any], ctx: SlackContext) -> ToolResult:
     kind = args.get("types") if args.get("types") in CHANNEL_TYPES else "all"
     limit = _clamp(args.get("limit"), 100, 200)
-    raw = await list_conversations(session, types=CHANNEL_TYPES[str(kind)], limit=limit)
+    raw = await list_conversations(ctx, types=CHANNEL_TYPES[str(kind)], limit=limit)
 
     channels: list[dict[str, Any]] = []
     for c in raw:
@@ -71,7 +73,7 @@ async def _slack_list_channels(args: dict[str, Any], session: AsyncSession) -> T
     return ToolResult(ok=True, content=cap("\n".join(lines)), data=data)
 
 
-async def _slack_send_message(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _slack_send_message(args: dict[str, Any], ctx: SlackContext) -> ToolResult:
     channel = args.get("channel")
     text = args.get("text")
     if not isinstance(channel, str) or not channel.strip():
@@ -83,14 +85,14 @@ async def _slack_send_message(args: dict[str, Any], session: AsyncSession) -> To
             ok=False, content='slack_send_message requires non-empty "text".', retryable=False
         )
 
-    channel_id, display = await resolve_channel(session, channel, {})
+    channel_id, display = await resolve_channel(ctx, channel)
     body: dict[str, Any] = {"channel": channel_id, "text": text}
     thread_ts = args.get("thread_ts")
     if isinstance(thread_ts, str) and thread_ts.strip():
         body["thread_ts"] = thread_ts.strip()
 
     payload = await slack_call(
-        session,
+        ctx,
         "chat.postMessage",
         json_body=body,
         error_hints={
@@ -106,19 +108,19 @@ async def _slack_send_message(args: dict[str, Any], session: AsyncSession) -> To
     )
     ts = str(payload.get("ts") or "")
     data: dict[str, Any] = {"channel": str(payload.get("channel") or channel_id), "ts": ts}
-    permalink = await _permalink(session, data["channel"], ts)
+    permalink = await _permalink(ctx, data["channel"], ts)
     if permalink:
         data["permalink"] = permalink
     return ToolResult(ok=True, content=f"Sent to {display}. ts={ts}", data=data)
 
 
-async def _permalink(session: AsyncSession, channel_id: str, ts: str) -> str | None:
+async def _permalink(ctx: SlackContext, channel_id: str, ts: str) -> str | None:
     """Best-effort `chat.getPermalink` — a nice-to-have that must never fail the send."""
     if not (channel_id and ts):
         return None
     try:
         payload = await slack_call(
-            session, "chat.getPermalink", params={"channel": channel_id, "message_ts": ts}
+            ctx, "chat.getPermalink", params={"channel": channel_id, "message_ts": ts}
         )
     except Exception:  # noqa: BLE001
         return None
@@ -126,22 +128,24 @@ async def _permalink(session: AsyncSession, channel_id: str, ts: str) -> str | N
     return str(link) if link else None
 
 
-async def _slack_read_messages(args: dict[str, Any], session: AsyncSession) -> ToolResult:
+async def _slack_read_messages(args: dict[str, Any], ctx: SlackContext) -> ToolResult:
     channel = args.get("channel")
     if not isinstance(channel, str) or not channel.strip():
         return ToolResult(
             ok=False, content='slack_read_messages requires "channel".', retryable=False
         )
     limit = _clamp(args.get("limit"), 20, 100)
-    channel_id, display = await resolve_channel(session, channel, {})
+    channel_id, display = await resolve_channel(ctx, channel)
 
     params: dict[str, Any] = {"channel": channel_id, "limit": limit}
     oldest = to_slack_ts(args.get("oldest"))
     if oldest:
+        # `inclusive` makes the bound mean "at or after", which is what the schema promises.
         params["oldest"] = oldest
+        params["inclusive"] = True
 
     payload = await slack_call(
-        session,
+        ctx,
         "conversations.history",
         params=params,
         error_hints={
@@ -156,7 +160,9 @@ async def _slack_read_messages(args: dict[str, Any], session: AsyncSession) -> T
     raw = [m for m in (payload.get("messages") or []) if isinstance(m, dict)]
     raw.reverse()
 
-    name_cache: dict[str, str] = {}
+    # One users.info round per distinct author, all in flight together.
+    names = await resolve_user_names(ctx, (str(m.get("user") or "") for m in raw))
+
     messages: list[dict[str, Any]] = []
     for m in raw:
         user = str(m.get("user") or m.get("bot_id") or "")
@@ -165,7 +171,7 @@ async def _slack_read_messages(args: dict[str, Any], session: AsyncSession) -> T
             "user": user,
             "text": m.get("text") or "",
         }
-        name = await user_display_name(session, str(m.get("user") or ""), name_cache)
+        name = names.get(str(m.get("user") or ""))
         if name:
             entry["user_name"] = name
         if m.get("thread_ts"):
@@ -230,7 +236,7 @@ class SlackIntegration(Integration):
         # `AppError`s (ToolError / ToolNotConfigured) deliberately propagate: `app.tools.
         # registry.execute_tool` maps them to a failed ToolResult *with* the right
         # `retryable` flag, which a blanket except here would throw away.
-        return await fn(args, session)
+        return await fn(args, await slack_context(session))
 
 
 slack_integration = SlackIntegration()
