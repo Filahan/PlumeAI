@@ -32,6 +32,7 @@ services:
     volumes:
       - ./apps/api/app:/app/app
       - ./apps/api/alembic:/app/alembic
+      - ./apps/api/tests:/app/tests
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://plumeai:${DB_PASSWORD:-plumeai}@db:5432/plumeai
