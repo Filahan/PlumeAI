@@ -50,19 +50,29 @@ def _as_number(value: Any) -> float:
     raise ValueError(f"cannot compare non-numeric value {value!r}")
 
 
+def _contains(left: Any, right: Any) -> bool:
+    if isinstance(left, str):
+        return str(right).lower() in left.lower()
+    if isinstance(left, (list, tuple, set)):
+        items = list(left)
+        if isinstance(right, str) and all(isinstance(item, str) for item in items):
+            return right.lower() in [item.lower() for item in items]
+        return right in items
+    if isinstance(left, dict):
+        return right in left
+    # Not a string/list/dict: no meaningful "contains" — treat as false, not a crash.
+    return False
+
+
 def _apply_op(op: str, left: Any, right: Any) -> bool:
     if op == "eq":
         return left == right
     if op == "neq":
         return left != right
     if op == "contains":
-        if isinstance(left, str):
-            return str(right).lower() in left.lower()
-        if isinstance(left, (list, tuple, set)):
-            return right in left
-        return right in left  # dict membership on keys, or raise TypeError naturally
+        return _contains(left, right)
     if op == "not_contains":
-        return not _apply_op("contains", left, right)
+        return not _contains(left, right)
     if op == "gt":
         return _as_number(left) > _as_number(right)
     if op == "gte":

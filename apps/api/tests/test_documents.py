@@ -5,8 +5,10 @@ Pure functions and models only — no network, no DB.
 
 from __future__ import annotations
 
+import json
+
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.schemas.documents import (
     ActionSettings,
@@ -23,7 +25,9 @@ from app.schemas.documents import (
     ManualTrigger,
     ModelRef,
     MoveStep,
+    Operation,
     RemoveStep,
+    RetryPolicy,
     Rules,
     ScheduleSettings,
     ScheduleTrigger,
@@ -36,6 +40,7 @@ from app.services.documents import (
     apply_operations,
     diff_summary,
     describe_trigger,
+    dump_document,
     new_step_id,
     validate_document,
 )
@@ -49,6 +54,23 @@ def test_example_document_round_trips_unchanged(example_document_json: dict) -> 
     doc = AutomationDocument.model_validate(example_document_json)
     dumped = doc.model_dump(by_alias=True, exclude_none=True)
     assert dumped == example_document_json
+    assert dumped == dump_document(doc)
+
+
+def test_example_document_round_trips_exact_json_text(example_document_json: dict) -> None:
+    """Dict equality alone can hide type drift (e.g. `10.0 == 10` in Python). Compare the
+    *serialized JSON text* instead, so an int-vs-float (or str-vs-int, etc.) regression on
+    any field is caught even when the values look "equal" in Python.
+    """
+    doc = AutomationDocument.model_validate(example_document_json)
+    actual_text = doc.model_dump_json(by_alias=True, exclude_none=True)
+    actual_sorted = json.dumps(json.loads(actual_text), sort_keys=True)
+    expected_sorted = json.dumps(example_document_json, sort_keys=True)
+    assert actual_sorted == expected_sorted
+
+    # In particular: retry.backoff_seconds must serialize as an integer, not 10.0.
+    assert '"backoff_seconds":10' in actual_text.replace(" ", "")
+    assert '"backoff_seconds":10.0' not in actual_text.replace(" ", "")
 
 
 def test_example_document_parses_into_expected_types(example_document_json: dict) -> None:
@@ -133,6 +155,37 @@ def test_schedule_settings_rejects_unknown_timezone() -> None:
     ScheduleSettings(mode="cron", cron="0 8 * * *", timezone="Europe/Paris")
     with pytest.raises(ValidationError):
         ScheduleSettings(mode="cron", cron="0 8 * * *", timezone="Not/AZone")
+
+
+def test_schedule_settings_every_minutes_bounds() -> None:
+    ScheduleSettings(mode="interval", every_minutes=1)  # lower bound ok
+    ScheduleSettings(mode="interval", every_minutes=10080)  # upper bound ok
+    with pytest.raises(ValidationError):
+        ScheduleSettings(mode="interval", every_minutes=0)
+    with pytest.raises(ValidationError):
+        ScheduleSettings(mode="interval", every_minutes=10081)
+
+
+def test_retry_policy_bounds() -> None:
+    RetryPolicy(max_attempts=1, backoff_seconds=0)  # lower bounds ok
+    RetryPolicy(max_attempts=10, backoff_seconds=300)  # upper bounds ok
+    with pytest.raises(ValidationError):
+        RetryPolicy(max_attempts=0)
+    with pytest.raises(ValidationError):
+        RetryPolicy(max_attempts=11)
+    with pytest.raises(ValidationError):
+        RetryPolicy(backoff_seconds=-1)
+    with pytest.raises(ValidationError):
+        RetryPolicy(backoff_seconds=301)
+
+
+def test_retry_policy_backoff_seconds_serializes_as_int() -> None:
+    policy = RetryPolicy(max_attempts=3, backoff_seconds=10)
+    assert isinstance(policy.backoff_seconds, int)
+    dumped = policy.model_dump(by_alias=True)
+    assert dumped["backoff_seconds"] == 10
+    assert isinstance(dumped["backoff_seconds"], int)
+    assert '"backoff_seconds":10' in policy.model_dump_json(by_alias=True).replace(" ", "")
 
 
 def test_filter_settings_requires_matching_field_for_mode() -> None:
@@ -268,6 +321,23 @@ def test_update_step_unknown_id_raises() -> None:
         apply_operations(doc, [UpdateStep(step_id="step_zzzzz", patch={"name": "x"})])
 
 
+def test_update_step_patch_making_step_invalid_raises() -> None:
+    doc = _basic_doc()
+    # "id" no longer matches the step id pattern -> the patched step fails Step validation.
+    with pytest.raises(ValidationError):
+        apply_operations(doc, [UpdateStep(step_id="step_aaaaa", patch={"id": "not-a-valid-id"})])
+
+
+def test_update_step_patch_with_missing_required_settings_field_raises() -> None:
+    doc = _basic_doc()
+    # Replacing settings wholesale but dropping the required "action" key.
+    with pytest.raises(ValidationError):
+        apply_operations(
+            doc,
+            [UpdateStep(step_id="step_aaaaa", patch={"settings": {"integration": "gmail"}})],
+        )
+
+
 def test_remove_step() -> None:
     doc = _basic_doc()
     new_doc = apply_operations(doc, [RemoveStep(step_id="step_aaaaa")])
@@ -325,6 +395,43 @@ def test_apply_operations_applies_in_order() -> None:
         ],
     )
     assert [s.id for s in new_doc.steps] == ["step_ccccc", "step_aaaaa"]
+
+
+# --- Operation discriminator ----------------------------------------------------------------
+
+_OPERATION_ADAPTER: TypeAdapter[Operation] = TypeAdapter(Operation)
+
+_SAMPLE_STEP_DICT = {
+    "id": "step_aaaaa",
+    "name": "Search",
+    "type": "action",
+    "settings": {"integration": "gmail", "action": "gmail_search", "input": {}},
+    "valid": True,
+}
+
+_SAMPLE_TRIGGER_DICT = {"type": "manual"}
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_type"),
+    [
+        ({"op": "add_step", "step": _SAMPLE_STEP_DICT, "index": None}, AddStep),
+        ({"op": "update_step", "step_id": "step_aaaaa", "patch": {"name": "x"}}, UpdateStep),
+        ({"op": "remove_step", "step_id": "step_aaaaa"}, RemoveStep),
+        ({"op": "move_step", "step_id": "step_aaaaa", "index": 0}, MoveStep),
+        ({"op": "set_trigger", "trigger": _SAMPLE_TRIGGER_DICT}, SetTrigger),
+        ({"op": "set_meta", "name": "New name"}, SetMeta),
+    ],
+)
+def test_operation_discriminator_resolves_correct_type(payload: dict, expected_type: type) -> None:
+    op = _OPERATION_ADAPTER.validate_python(payload)
+    assert isinstance(op, expected_type)
+    assert op.op == payload["op"]
+
+
+def test_operation_discriminator_rejects_unknown_op() -> None:
+    with pytest.raises(ValidationError):
+        _OPERATION_ADAPTER.validate_python({"op": "not_a_real_op"})
 
 
 # --- validate_document -----------------------------------------------------------------------
@@ -575,6 +682,150 @@ def test_validate_document_filter_ref_to_later_step_is_error() -> None:
     _, issues = validate_document(doc, StubCatalog())
     errors = [i for i in issues if i.level == "error"]
     assert any("has not run yet" in e.message for e in errors)
+
+
+def test_validate_document_ref_inside_literal_string_is_checked() -> None:
+    """A `kind: literal` string can still embed a `{{...}}` template; those refs must be
+    checked the same way as an explicit `kind: ref` field."""
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_aaaaa",
+                name="Search",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="gmail_search",
+                    input={
+                        "query": FieldValue(
+                            kind="literal", value="Find mail like {{step_ghost.output}}"
+                        )
+                    },
+                ),
+            )
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert any("unknown step" in e.message for e in errors)
+
+
+def test_validate_document_ref_inside_ai_field_value_is_checked() -> None:
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_aaaaa",
+                name="Search",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="gmail_search",
+                    input={
+                        "query": FieldValue(
+                            kind="ai", value="Use {{step_bbbbb.output}} to find the sender"
+                        )
+                    },
+                ),
+            ),
+            ActionStep(
+                id="step_bbbbb",
+                name="Second",
+                settings=ActionSettings(integration="slack", action="slack_send_message"),
+            ),
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert any("has not run yet" in e.message for e in errors)
+
+
+def test_validate_document_filter_ai_instruction_ref_is_checked() -> None:
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            FilterStep(
+                id="step_aaaaa",
+                name="Only if",
+                settings=FilterSettings(
+                    mode="ai", instruction="Only continue if {{step_ghost.output}} is urgent"
+                ),
+            )
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert any("unknown step" in e.message for e in errors)
+
+
+def test_validate_document_filter_condition_literal_ref_is_checked() -> None:
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            FilterStep(
+                id="step_aaaaa",
+                name="Only if",
+                settings=FilterSettings(
+                    mode="rules",
+                    rules=Rules(
+                        conditions=[
+                            Condition(
+                                left=FieldValue(
+                                    kind="literal", value="{{step_ghost.output}} text"
+                                ),
+                                op="is_not_empty",
+                            )
+                        ]
+                    ),
+                ),
+            )
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert any("unknown step" in e.message for e in errors)
+
+
+def test_validate_document_schema_error_reported_as_issue_not_raised() -> None:
+    bad_meta = ActionMeta(
+        name="broken_action",
+        integration="gmail",
+        label="Broken",
+        description="Has an invalid JSON schema.",
+        input_schema={
+            "type": "object",
+            "properties": {"count": {"type": "not-a-real-json-schema-type"}},
+            "required": [],
+        },
+    )
+    catalog = StubCatalog(actions={"broken_action": bad_meta})
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_aaaaa",
+                name="Broken",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="broken_action",
+                    input={"count": FieldValue(kind="literal", value=1)},
+                ),
+            )
+        ],
+    )
+    new_doc, issues = validate_document(doc, catalog)  # must not raise
+    errors = [i for i in issues if i.level == "error"]
+    assert any("invalid input schema" in e.message for e in errors)
+    assert new_doc.steps[0].valid is False
 
 
 def test_validate_document_invalid_cron_surfaces_as_error() -> None:

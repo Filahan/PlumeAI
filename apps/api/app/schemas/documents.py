@@ -10,6 +10,14 @@ stored/interchange format instead — it is read and written verbatim (DB column
 input, operation payloads) — so it keeps one casing everywhere. Models here still inherit
 `APISchema` for `populate_by_name` / `from_attributes`, but override the alias generator
 so `model_dump(by_alias=True)` and `model_validate` round-trip the document unchanged.
+
+Canonical serialization: always dump a document with
+`doc.model_dump(by_alias=True, exclude_none=True)` (or, for JSON text,
+`doc.model_dump_json(by_alias=True, exclude_none=True)`) — `exclude_none` drops unset
+optional fields (e.g. `retry`, `timeout_seconds`, `every_minutes`) instead of writing
+them as explicit `null`s, which is what keeps the round trip byte-for-byte identical to
+the document as authored. `app.services.documents.dump_document` wraps this exact call
+so every caller uses the same one.
 """
 
 from __future__ import annotations
@@ -55,7 +63,7 @@ class FieldValue(DocSchema):
 
 class RetryPolicy(DocSchema):
     max_attempts: int = Field(default=3, ge=1, le=10)
-    backoff_seconds: float = Field(default=10, ge=0, le=300)
+    backoff_seconds: int = Field(default=10, ge=0, le=300)
 
 
 # --- action steps ------------------------------------------------------------------------

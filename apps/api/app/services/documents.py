@@ -43,6 +43,15 @@ def new_step_id() -> str:
     return f"step_{suffix}"
 
 
+def dump_document(doc: AutomationDocument) -> dict:
+    """The one canonical way to serialize a document to a plain dict.
+
+    Always `model_dump(by_alias=True, exclude_none=True)` — see the module docstring of
+    `app.schemas.documents` for why `exclude_none` matters for a faithful round trip.
+    """
+    return doc.model_dump(by_alias=True, exclude_none=True)
+
+
 # --- applying operations -----------------------------------------------------------------
 
 
@@ -249,6 +258,18 @@ def validate_document(
                     if fv.kind == "literal":
                         try:
                             jsonschema.validate(fv.value, properties[field_name])
+                        except jsonschema.SchemaError as exc:
+                            issues.append(
+                                ValidationIssue(
+                                    path=field_path,
+                                    message=(
+                                        f"invalid input schema for field {field_name!r}: "
+                                        f"{exc.message}"
+                                    ),
+                                    level="error",
+                                )
+                            )
+                            step_error_flags[step.id] = True
                         except jsonschema.ValidationError as exc:
                             issues.append(
                                 ValidationIssue(
@@ -258,7 +279,17 @@ def validate_document(
                                 )
                             )
                             step_error_flags[step.id] = True
-                    elif fv.kind == "ref":
+                        if isinstance(fv.value, str):
+                            _validate_refs_in_text(
+                                fv.value,
+                                current_idx=idx,
+                                current_step_id=step.id,
+                                issue_path=field_path,
+                                step_index=step_index,
+                                issues=issues,
+                                step_error_flags=step_error_flags,
+                            )
+                    elif fv.kind in ("ref", "ai"):
                         _validate_refs_in_text(
                             fv.value,
                             current_idx=idx,
@@ -301,9 +332,15 @@ def validate_document(
             if settings.mode == "rules" and settings.rules is not None:
                 for cidx, cond in enumerate(settings.rules.conditions):
                     for side_name, side in (("left", cond.left), ("right", cond.right)):
-                        if side is not None and side.kind == "ref":
+                        if side is None:
+                            continue
+                        text = side.value
+                        should_check = (side.kind == "literal" and isinstance(text, str)) or (
+                            side.kind in ("ref", "ai")
+                        )
+                        if should_check:
                             _validate_refs_in_text(
-                                side.value,
+                                text,
                                 current_idx=idx,
                                 current_step_id=step.id,
                                 issue_path=(
@@ -313,6 +350,16 @@ def validate_document(
                                 issues=issues,
                                 step_error_flags=step_error_flags,
                             )
+            elif settings.mode == "ai" and settings.instruction:
+                _validate_refs_in_text(
+                    settings.instruction,
+                    current_idx=idx,
+                    current_step_id=step.id,
+                    issue_path=f"{base_path}.settings.instruction",
+                    step_index=step_index,
+                    issues=issues,
+                    step_error_flags=step_error_flags,
+                )
 
     new_steps = [
         step.model_copy(update={"valid": not step_error_flags[step.id]}) for step in doc.steps

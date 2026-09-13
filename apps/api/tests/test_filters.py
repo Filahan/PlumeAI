@@ -72,6 +72,34 @@ def test_contains_on_list_membership() -> None:
     assert result is True
 
 
+def test_contains_on_list_of_strings_is_case_insensitive() -> None:
+    result, _ = evaluate_rules(
+        _rules(Condition(left=_ref("step_a.output.tags"), op="contains", right=_lit("URGENT"))),
+        OUTPUTS,
+        CTX,
+    )
+    assert result is True
+
+    result, _ = evaluate_rules(
+        _rules(
+            Condition(left=_ref("step_a.output.tags"), op="not_contains", right=_lit("Billing"))
+        ),
+        OUTPUTS,
+        CTX,
+    )
+    assert result is False  # "Billing" (case-insensitively) IS in the list
+
+
+def test_contains_on_non_string_non_collection_left_returns_false_not_raise() -> None:
+    result, reason = evaluate_rules(
+        _rules(Condition(left=_ref("step_a.output.count"), op="contains", right=_lit("3"))),
+        OUTPUTS,
+        CTX,
+    )
+    assert result is False
+    assert reason  # a reason string is still produced, no exception escaped
+
+
 def test_not_contains() -> None:
     result, _ = evaluate_rules(
         _rules(
