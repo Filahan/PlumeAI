@@ -28,6 +28,8 @@ from app.db.base import get_session
 from app.db.models import Automation, AutomationVersion, Run, RunStep
 from app.errors import NotFound
 from app.schemas.automations import (
+    AssistantRequest,
+    AssistantResponse,
     AutomationDetail,
     AutomationSummary,
     CancelRunResponse,
@@ -48,6 +50,7 @@ from app.schemas.automations import (
     VersionSummary,
 )
 from app.schemas.documents import AutomationDocument
+from app.services import assistant as assistant_svc
 from app.services import automations as svc
 from app.services import executor, run_events, scheduler
 from app.services import runs as runs_svc
@@ -351,6 +354,51 @@ async def apply_operations_route(
         version_number=number,
         summary=summary,
     )
+
+
+# ─── assistant ───────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/{automation_id}/assistant",
+    response_model=AssistantResponse,
+    response_model_by_alias=True,
+)
+async def assistant_route(
+    automation_id: str, body: AssistantRequest, user: CurrentUser, session: DBSession
+) -> AssistantResponse:
+    """One turn of the builder assistant: it may edit the document and start a test run.
+
+    Operations the assistant got wrong are *not* an error response: the service retries
+    once and, if that fails too, returns `error` with the document untouched so the
+    drawer can show what happened and the user can rephrase. Only the provider itself
+    failing (no API key → 404, upstream error or unusable output → 502) becomes an error.
+    """
+    automation = await svc.get_automation(session, automation_id)
+    result = await assistant_svc.chat(session, automation, body.message)
+    return AssistantResponse(
+        message=result.message,
+        summary=result.applied_summary,
+        operations_applied=result.operations_applied,
+        run_id=result.run_id,
+        document=result.document,
+        issues=result.issues,
+        version_number=result.version_number,
+        assistant_messages=list(automation.assistant_messages or []),
+        error=result.error,
+    )
+
+
+@router.delete(
+    "/{automation_id}/assistant", status_code=status.HTTP_204_NO_CONTENT
+)
+async def clear_assistant_route(
+    automation_id: str, user: CurrentUser, session: DBSession
+) -> Response:
+    """Forget the conversation so the user can start over; the document is untouched."""
+    automation = await svc.get_automation(session, automation_id)
+    await assistant_svc.clear_history(session, automation)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ─── versions ────────────────────────────────────────────────────────────────────────

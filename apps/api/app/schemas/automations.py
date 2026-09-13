@@ -110,6 +110,35 @@ class ValidateResponse(APISchema):
     issues: list[ValidationIssue] = Field(default_factory=list)
 
 
+# --- assistant ---------------------------------------------------------------------------
+
+
+class AssistantRequest(APISchema):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class AssistantResponse(APISchema):
+    """One assistant turn.
+
+    Carries the same `document`/`issues`/`versionNumber` triple as `OperationsResponse`
+    (the turn may have edited the document, and the client re-renders from it either
+    way), plus what is specific to a conversation: what to say, what was applied, the
+    test run it started, the whole transcript, and `error` — set when the assistant's
+    operations were rejected and *nothing* was applied, which is a message to show, not
+    a failed request.
+    """
+
+    message: str
+    summary: list[str] = Field(default_factory=list)
+    operations_applied: int = 0
+    run_id: str | None = None
+    document: dict[str, Any]
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    version_number: int
+    assistant_messages: list[dict[str, Any]] = Field(default_factory=list)
+    error: str | None = None
+
+
 # --- versions ----------------------------------------------------------------------------
 
 
