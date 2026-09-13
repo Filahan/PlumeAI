@@ -34,6 +34,7 @@ __all__ = [
     "interpolate",
     "parse_refs",
     "ref_step_id",
+    "ref_tokens",
     "resolve_field",
     "resolve_path",
     "resolve_ref",
@@ -56,9 +57,17 @@ def _tokenize(path: str) -> list[str]:
     return tokens
 
 
+def ref_tokens(path: str) -> list[str]:
+    """Split a reference path into its segments, e.g. 'step_x.output.items[0].id' →
+    `['step_x', 'output', 'items', '[0]', 'id']`. Index segments keep their brackets so
+    a caller can tell `items[0]` from a key literally named `0`. Raises `RefError` when
+    the path has no parseable segment at all."""
+    return _tokenize(path)
+
+
 def ref_step_id(path: str) -> str:
     """Return the first (root) segment of a reference path, e.g. 'step_x' from 'step_x.output'."""
-    return _tokenize(path)[0]
+    return ref_tokens(path)[0]
 
 
 def _walk(root: Any, tokens: list[str], path: str) -> Any:

@@ -760,6 +760,15 @@ def test_validate_document_never_raises_on_hostile_input() -> None:
                     description="",
                     input_schema="not even a dict",  # type: ignore[arg-type]
                 )
+            if name == "stringy":
+                return ActionMeta(
+                    name="stringy",
+                    integration="gmail",
+                    label="Stringy",
+                    description="",
+                    input_schema={"type": "object", "properties": {"text": {"type": "string"}}},
+                    output_schema="not even a dict",  # type: ignore[arg-type]
+                )
             return None
 
         def is_connected(self, integration: str) -> bool:
@@ -808,6 +817,80 @@ def test_validate_document_never_raises_on_hostile_input() -> None:
                         input={"x": FieldValue(kind="literal", value=1)},
                     ),
                 )
+            ],
+        ),
+        # A ref whose source step's action makes the catalog throw: the shape check has
+        # to treat "the catalog exploded" as "unknown shape", not as an exception.
+        AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                ActionStep(
+                    id="step_aaaaa",
+                    name="Boom",
+                    settings=ActionSettings(integration="gmail", action="boom"),
+                ),
+                ActionStep(
+                    id="step_bbbbb",
+                    name="Stringy",
+                    settings=ActionSettings(
+                        integration="gmail",
+                        action="stringy",
+                        input={"text": FieldValue(kind="ref", value="{{step_aaaaa.output}}")},
+                    ),
+                ),
+            ],
+        ),
+        # An AI step whose declared json output schema is structurally nonsense, fed
+        # whole into a declared string field.
+        AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                AiStep(
+                    id="step_aaaaa",
+                    name="Shape",
+                    settings=AiStepSettings(
+                        instructions="Go.",
+                        output=AiOutput.model_validate(
+                            {
+                                "mode": "json",
+                                "schema": {"type": "object", "properties": "nonsense"},
+                            }
+                        ),
+                    ),
+                ),
+                ActionStep(
+                    id="step_bbbbb",
+                    name="Stringy",
+                    settings=ActionSettings(
+                        integration="gmail",
+                        action="stringy",
+                        input={
+                            "text": FieldValue(kind="ref", value="{{step_aaaaa.output.x[9].y}}")
+                        },
+                    ),
+                ),
+            ],
+        ),
+        # A root-only reference (`{{step_aaaaa}}`, no `.output`) into a string field.
+        AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                AiStep(id="step_aaaaa", name="Sum", settings=AiStepSettings(instructions="Go.")),
+                ActionStep(
+                    id="step_bbbbb",
+                    name="Stringy",
+                    settings=ActionSettings(
+                        integration="gmail",
+                        action="stringy",
+                        input={"text": FieldValue(kind="ref", value="{{step_aaaaa}}")},
+                    ),
+                ),
             ],
         ),
     ]
@@ -1159,6 +1242,534 @@ def test_validate_document_invalid_cron_surfaces_as_error() -> None:
     )
     _, issues = validate_document(doc, StubCatalog())
     assert any(i.path == "trigger.settings.cron" for i in issues)
+
+
+# --- validate_document: ref shape checks ------------------------------------------------
+
+# The bug these cover, seen in production: an AI step with `output.mode: "text"` produces
+# `{"text": "..."}` at run time, and wiring its *whole* output into a string field sent a
+# dict to the action, which rejected it once per retry. The document validated clean.
+
+_DISCORD_SEND = ActionMeta(
+    name="discord_send_message",
+    integration="discord",
+    label="Send Discord message",
+    description="Post a plain-text message in a Discord channel.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "channel_id": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "required": ["channel_id", "content"],
+    },
+)
+
+_DISCORD_CATALOG = StubCatalog(
+    actions={"discord_send_message": _DISCORD_SEND}, connected={"discord"}
+)
+
+
+def _json_output(schema: dict) -> AiOutput:
+    """`AiOutput.schema_` is spelled `schema` in the document JSON, so build it the way a
+    document does rather than by keyword."""
+    return AiOutput.model_validate({"mode": "json", "schema": schema})
+
+
+def _ai_then_discord(
+    content_ref: str,
+    *,
+    output: AiOutput | None = None,
+    ai_name: str = "Summarize the emails",
+) -> AutomationDocument:
+    """An AI step feeding a Discord `content` field (a declared `string`)."""
+    settings = AiStepSettings(instructions="Summarize.")
+    if output is not None:
+        settings = AiStepSettings(instructions="Summarize.", output=output)
+    return AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            AiStep(id="step_x1a2b", name=ai_name, settings=settings),
+            ActionStep(
+                id="step_z9y8w",
+                name="Post it",
+                settings=ActionSettings(
+                    integration="discord",
+                    action="discord_send_message",
+                    input={
+                        "channel_id": FieldValue(kind="literal", value="123"),
+                        "content": FieldValue(kind="ref", value=content_ref),
+                    },
+                ),
+            ),
+        ],
+    )
+
+
+def test_validate_document_whole_ai_text_output_into_string_field_is_error() -> None:
+    """The exact production failure: `{{step_x1a2b.output}}` on an AI *text* step is the
+    object `{"text": ...}`, and Discord's `content` is a string."""
+    doc = _ai_then_discord("{{step_x1a2b.output}}")
+    new_doc, issues = validate_document(doc, _DISCORD_CATALOG)
+
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert errors[0].path == "steps[1].settings.input.content"
+    assert errors[0].message == (
+        "references the whole result of 'Summarize the emails', which is an object; "
+        "this field needs text — use {{step_x1a2b.output.text}}"
+    )
+    assert new_doc.steps[0].valid is True
+    assert new_doc.steps[1].valid is False
+
+
+def test_validate_document_ai_text_output_dot_text_into_string_field_is_clean() -> None:
+    """The fix the message suggests must itself validate clean."""
+    doc = _ai_then_discord("{{step_x1a2b.output.text}}")
+    new_doc, issues = validate_document(doc, _DISCORD_CATALOG)
+
+    assert [i for i in issues if i.level == "error"] == []
+    assert all(step.valid for step in new_doc.steps)
+
+
+def test_validate_document_ai_json_declared_property_into_string_field_is_clean() -> None:
+    doc = _ai_then_discord(
+        "{{step_x1a2b.output.summary}}",
+        output=_json_output(
+            {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+            }
+        ),
+    )
+    _, issues = validate_document(doc, _DISCORD_CATALOG)
+    assert [i for i in issues if i.level == "error"] == []
+
+
+def test_validate_document_whole_ai_json_output_into_string_field_is_error() -> None:
+    """A declared json output is an object too — but with two properties there is no one
+    obvious scalar to suggest, so the message offers none."""
+    doc = _ai_then_discord(
+        "{{step_x1a2b.output}}",
+        output=_json_output(
+            {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+            }
+        ),
+    )
+    _, issues = validate_document(doc, _DISCORD_CATALOG)
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert "which is an object; this field needs text" in errors[0].message
+    assert "use {{" not in errors[0].message
+
+
+def test_validate_document_ai_json_nested_object_property_into_string_field_is_error() -> None:
+    """Walking into `properties` works at depth, and a one-string-property object does
+    produce a suggestion."""
+    doc = _ai_then_discord(
+        "{{step_x1a2b.output.digest}}",
+        output=_json_output(
+            {
+                "type": "object",
+                "properties": {
+                    "digest": {
+                        "type": "object",
+                        "properties": {"body": {"type": "string"}},
+                    }
+                },
+            }
+        ),
+    )
+    _, issues = validate_document(doc, _DISCORD_CATALOG)
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert errors[0].message == (
+        "references '{{step_x1a2b.output.digest}}', which is an object; "
+        "this field needs text — use {{step_x1a2b.output.digest.body}}"
+    )
+
+
+def test_validate_document_action_step_without_output_schema_is_silent() -> None:
+    """`gmail_search` in the stub catalog publishes no `output_schema`, so what
+    `{{step_aaaaa.output}}` yields is genuinely unknown — and unknown must never guess."""
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_aaaaa",
+                name="Search",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="gmail_search",
+                    input={"query": FieldValue(kind="literal", value="dana")},
+                ),
+            ),
+            ActionStep(
+                id="step_bbbbb",
+                name="Send",
+                settings=ActionSettings(
+                    integration="slack",
+                    action="slack_send_message",
+                    input={
+                        "channel": FieldValue(kind="literal", value="#me"),
+                        "text": FieldValue(kind="ref", value="{{step_aaaaa.output}}"),
+                    },
+                ),
+            ),
+        ],
+    )
+    new_doc, issues = validate_document(doc, StubCatalog())
+    assert [i for i in issues if i.level == "error"] == []
+    assert all(step.valid for step in new_doc.steps)
+
+
+def test_validate_document_action_step_with_output_schema_is_checked() -> None:
+    """Give the same action an `output_schema` and the whole-output ref is now knowable."""
+    search_with_schema = ActionMeta(
+        name="gmail_search",
+        integration="gmail",
+        label="Search Gmail",
+        description="Search for emails matching a query.",
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "messages": {"type": "array", "items": {"type": "object"}},
+            },
+        },
+    )
+    catalog = StubCatalog(
+        actions={
+            "gmail_search": search_with_schema,
+            "slack_send_message": ActionMeta(
+                name="slack_send_message",
+                integration="slack",
+                label="Send Slack message",
+                description="Post a message to a channel.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"channel": {"type": "string"}, "text": {"type": "string"}},
+                    "required": ["channel", "text"],
+                },
+            ),
+        }
+    )
+
+    def _doc(ref: str) -> AutomationDocument:
+        return AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                ActionStep(
+                    id="step_aaaaa",
+                    name="Search",
+                    settings=ActionSettings(
+                        integration="gmail",
+                        action="gmail_search",
+                        input={"query": FieldValue(kind="literal", value="dana")},
+                    ),
+                ),
+                ActionStep(
+                    id="step_bbbbb",
+                    name="Send",
+                    settings=ActionSettings(
+                        integration="slack",
+                        action="slack_send_message",
+                        input={
+                            "channel": FieldValue(kind="literal", value="#me"),
+                            "text": FieldValue(kind="ref", value=ref),
+                        },
+                    ),
+                ),
+            ],
+        )
+
+    # The `messages` array into a string field: a list, certainly wrong.
+    _, issues = validate_document(_doc("{{step_aaaaa.output.messages}}"), catalog)
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert "which is a list; this field needs text" in errors[0].message
+
+    # ...and an element of it, whose shape the schema doesn't describe, stays silent.
+    _, issues = validate_document(_doc("{{step_aaaaa.output.messages[0].subject}}"), catalog)
+    assert [i for i in issues if i.level == "error"] == []
+
+
+def test_validate_document_filter_reason_into_string_field_is_clean() -> None:
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            FilterStep(
+                id="step_fffff",
+                name="Only if urgent",
+                settings=FilterSettings(mode="ai", instruction="Is it urgent?"),
+            ),
+            ActionStep(
+                id="step_bbbbb",
+                name="Send",
+                settings=ActionSettings(
+                    integration="slack",
+                    action="slack_send_message",
+                    input={
+                        "channel": FieldValue(kind="literal", value="#me"),
+                        "text": FieldValue(kind="ref", value="{{step_fffff.output.reason}}"),
+                    },
+                ),
+            ),
+        ],
+    )
+    new_doc, issues = validate_document(doc, StubCatalog())
+    assert [i for i in issues if i.level == "error"] == []
+    assert all(step.valid for step in new_doc.steps)
+
+
+def test_validate_document_whole_filter_output_into_string_field_is_error() -> None:
+    """`{"continue": ..., "reason": ...}` has two properties, so no path is suggested."""
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            FilterStep(
+                id="step_fffff",
+                name="Only if urgent",
+                settings=FilterSettings(mode="ai", instruction="Is it urgent?"),
+            ),
+            ActionStep(
+                id="step_bbbbb",
+                name="Send",
+                settings=ActionSettings(
+                    integration="slack",
+                    action="slack_send_message",
+                    input={
+                        "channel": FieldValue(kind="literal", value="#me"),
+                        "text": FieldValue(kind="ref", value="{{step_fffff.output}}"),
+                    },
+                ),
+            ),
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert errors[0].message == (
+        "references the whole result of 'Only if urgent', which is an object; "
+        "this field needs text"
+    )
+
+
+def test_validate_document_whole_trigger_ref_into_string_field_is_error() -> None:
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_bbbbb",
+                name="Send",
+                settings=ActionSettings(
+                    integration="slack",
+                    action="slack_send_message",
+                    input={
+                        "channel": FieldValue(kind="literal", value="#me"),
+                        "text": FieldValue(kind="ref", value="{{trigger}}"),
+                    },
+                ),
+            )
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert errors[0].message == (
+        "references the whole trigger context, which is an object; this field needs text"
+    )
+
+
+def test_validate_document_trigger_scalar_ref_into_string_field_is_clean() -> None:
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_bbbbb",
+                name="Send",
+                settings=ActionSettings(
+                    integration="slack",
+                    action="slack_send_message",
+                    input={
+                        "channel": FieldValue(kind="literal", value="#me"),
+                        "text": FieldValue(kind="ref", value="{{trigger.date}}"),
+                    },
+                ),
+            )
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    assert [i for i in issues if i.level == "error"] == []
+
+
+def test_validate_document_forward_ref_shape_does_not_double_report() -> None:
+    """A forward reference already has a better error; the shape check stays quiet so the
+    author sees one problem, not two."""
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_bbbbb",
+                name="Send",
+                settings=ActionSettings(
+                    integration="slack",
+                    action="slack_send_message",
+                    input={
+                        "channel": FieldValue(kind="literal", value="#me"),
+                        "text": FieldValue(kind="ref", value="{{step_x1a2b.output}}"),
+                    },
+                ),
+            ),
+            AiStep(
+                id="step_x1a2b",
+                name="Summarize",
+                settings=AiStepSettings(instructions="Summarize."),
+            ),
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert "has not run yet" in errors[0].message
+
+
+def test_validate_document_container_ref_in_numeric_condition_is_error() -> None:
+    """`gt` coerces both sides with `float()`, which an object can never survive. Every
+    other op has defined behaviour for a container, so only these four are checked."""
+    def _doc(op: str) -> AutomationDocument:
+        return AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                AiStep(
+                    id="step_x1a2b",
+                    name="Count them",
+                    settings=AiStepSettings(instructions="Count."),
+                ),
+                FilterStep(
+                    id="step_fffff",
+                    name="Enough?",
+                    settings=FilterSettings(
+                        mode="rules",
+                        rules=Rules(
+                            conditions=[
+                                Condition(
+                                    left=FieldValue(kind="ref", value="{{step_x1a2b.output}}"),
+                                    op=op,
+                                    right=FieldValue(kind="literal", value=3),
+                                )
+                            ]
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+    _, issues = validate_document(_doc("gt"), StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert errors[0].path == "steps[1].settings.rules.conditions[0].left"
+    assert errors[0].message == (
+        "references the whole result of 'Count them', which is an object; "
+        "this field needs a number — use {{step_x1a2b.output.text}}"
+    )
+
+    # `contains` works on dicts (key membership), so the same reference is not a mistake.
+    _, issues = validate_document(_doc("contains"), StubCatalog())
+    assert [i for i in issues if i.level == "error"] == []
+
+
+def test_validate_document_ref_into_unknown_or_untyped_field_is_silent() -> None:
+    """No declared type on the target field means nothing to compare against."""
+    untyped = ActionMeta(
+        name="untyped_action",
+        integration="gmail",
+        label="Untyped",
+        description="",
+        input_schema={"type": "object", "properties": {"blob": {}}},
+    )
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            AiStep(
+                id="step_x1a2b", name="Sum", settings=AiStepSettings(instructions="Go.")
+            ),
+            ActionStep(
+                id="step_bbbbb",
+                name="Untyped",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="untyped_action",
+                    input={"blob": FieldValue(kind="ref", value="{{step_x1a2b.output}}")},
+                ),
+            ),
+        ],
+    )
+    catalog = StubCatalog(actions={"untyped_action": untyped})
+    _, issues = validate_document(doc, catalog)
+    assert [i for i in issues if i.level == "error"] == []
+
+
+def test_validate_document_ref_into_union_typed_field_is_silent() -> None:
+    """`["string", "object"]` might accept the object; a union is not certainty."""
+    union = ActionMeta(
+        name="union_action",
+        integration="gmail",
+        label="Union",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {"body": {"type": ["string", "object"]}},
+        },
+    )
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            AiStep(
+                id="step_x1a2b", name="Sum", settings=AiStepSettings(instructions="Go.")
+            ),
+            ActionStep(
+                id="step_bbbbb",
+                name="Union",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="union_action",
+                    input={"body": FieldValue(kind="ref", value="{{step_x1a2b.output}}")},
+                ),
+            ),
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog(actions={"union_action": union}))
+    assert [i for i in issues if i.level == "error"] == []
 
 
 # --- diff_summary ------------------------------------------------------------------------

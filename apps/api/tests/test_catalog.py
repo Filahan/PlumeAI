@@ -13,13 +13,17 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.db.base import get_session
+from app.integrations.discord import discord_integration
 from app.integrations.gmail import gmail_integration
 from app.integrations.registry import INTEGRATIONS
 from app.main import app
 from app.schemas.documents import (
     ActionSettings,
     ActionStep,
+    AiStep,
+    AiStepSettings,
     AutomationDocument,
+    FieldValue,
     ManualTrigger,
     ModelRef,
 )
@@ -242,6 +246,75 @@ def test_catalog_drives_document_validation() -> None:
 
     assert new_doc.steps[0].valid is False
     assert new_doc.steps[1].valid is False
+
+
+def _discord_catalog() -> Catalog:
+    discord = CatalogIntegration(
+        name="discord",
+        label="Discord",
+        description="Post and read Discord messages.",
+        logo_url="",
+        connect_mode="config",
+        setup_url="",
+        credentials_namespace="discord",
+        credentials_fields=[],
+        setup={},
+        connected=True,
+        actions=discord_integration.describe_actions(),
+    )
+    return Catalog(integrations=[discord], builtin_actions=[])
+
+
+def _ai_into_discord_content(ref: str) -> AutomationDocument:
+    return AutomationDocument(
+        name="test doc",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            AiStep(
+                id="step_x1a2b",
+                name="Summarize the emails",
+                settings=AiStepSettings(instructions="Summarize the inbox."),
+            ),
+            ActionStep(
+                id="step_z9y8w",
+                name="Post to Discord",
+                settings=ActionSettings(
+                    integration="discord",
+                    action="discord_send_message",
+                    input={
+                        "channel_id": FieldValue(kind="literal", value="123"),
+                        "content": FieldValue(kind="ref", value=ref),
+                    },
+                ),
+            ),
+        ],
+    )
+
+
+def test_catalog_catches_whole_ai_output_wired_into_a_string_field() -> None:
+    """The production failure, against Discord's *real* hand-written schema: an AI text
+    step produces `{"text": ...}` and `discord_send_message.content` is a string."""
+    new_doc, issues = validate_document(
+        _ai_into_discord_content("{{step_x1a2b.output}}"), _discord_catalog()
+    )
+
+    errors = [i for i in issues if i.level == "error"]
+    assert len(errors) == 1
+    assert errors[0].path == "steps[1].settings.input.content"
+    assert errors[0].message == (
+        "references the whole result of 'Summarize the emails', which is an object; "
+        "this field needs text — use {{step_x1a2b.output.text}}"
+    )
+    assert new_doc.steps[1].valid is False
+
+
+def test_catalog_accepts_the_suggested_scalar_path() -> None:
+    new_doc, issues = validate_document(
+        _ai_into_discord_content("{{step_x1a2b.output.text}}"), _discord_catalog()
+    )
+    assert [i for i in issues if i.level == "error"] == []
+    assert all(step.valid for step in new_doc.steps)
 
 
 # ─── GET /tools ─────────────────────────────────────────────────────────────────────────
