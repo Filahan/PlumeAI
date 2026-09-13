@@ -174,7 +174,7 @@ async def run_route(
     conversation_id = task.id
 
     provider = await get_provider_for(session, provider_name)
-    tools = None if provider_name == "anthropic" else await list_available_tool_schemas(session)
+    tools = await list_available_tool_schemas(session)
 
     # Mark running.
     task.status = "running"

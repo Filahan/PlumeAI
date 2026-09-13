@@ -18,6 +18,7 @@ dependencies = [
   "cryptography>=43",
   "openai>=1.55",
   "anthropic>=0.40",
+  "jsonschema>=4.20",
 ]
 
 [tool.uv]

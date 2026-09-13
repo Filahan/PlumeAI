@@ -41,10 +41,16 @@ class LLMProvider(Protocol):
         model: str,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        tool_choice: dict[str, Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream events for one round of chat completion.
 
         `tools` is the OpenAI function-calling schema list. Providers that natively support
         tools forward them; Anthropic translates internally.
+
+        `tool_choice` is expressed in the OpenAI shape — `{"type": "function", "function":
+        {"name": "<tool>"}}` forces that single tool, `None` lets the model decide.
+        Providers translate it to their own wire format.
         """
         ...  # pragma: no cover

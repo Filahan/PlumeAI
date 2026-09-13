@@ -97,10 +97,9 @@ async def chat_stream(
         *[ChatMessage(role=t.role, content=_content(t.content)) for t in body.history],
         ChatMessage(role="user", content=_content(body.new_message)),
     ]
-    # Anthropic doesn't support our tool-call format yet, so route it through the provider
-    # directly without tools. OpenAI + OpenRouter go through the agent runner with all
-    # configured tools (built-ins + every connected integration).
-    tools = None if provider_name == "anthropic" else await list_available_tool_schemas(session)
+    # Every provider goes through the agent runner with all configured tools (built-ins +
+    # every connected integration); the provider clients translate the schemas natively.
+    tools = await list_available_tool_schemas(session)
 
     # When `history` is empty this is the very first chat round — kick the LLM auto-titler
     # after the stream completes so the sidebar gets a meaningful title instead of the

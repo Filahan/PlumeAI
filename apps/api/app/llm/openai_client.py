@@ -48,6 +48,8 @@ class OpenAICompatProvider:
         model: str,
         messages: list[ChatMessage],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        tool_choice: dict[str, Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         params: dict[str, Any] = {
             "model": model,
@@ -57,6 +59,10 @@ class OpenAICompatProvider:
         }
         if tools:
             params["tools"] = tools
+        # `tool_choice` is already in the OpenAI shape — forward verbatim, but only when
+        # set (sending `None` explicitly is not the same as omitting it).
+        if tool_choice is not None:
+            params["tool_choice"] = tool_choice
 
         # Accumulators for tool_calls — OpenAI streams the function name and arguments in
         # multiple chunks; we re-emit a single ToolCallEvent per complete call.
