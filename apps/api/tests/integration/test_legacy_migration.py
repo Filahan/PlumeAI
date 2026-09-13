@@ -14,11 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.models import Automation, AutomationVersion, Run
-from app.services.legacy_migration import (
-    DEFAULT_NAME,
-    LEGACY_STEP_NAME,
-    convert_legacy_tasks,
-)
+from app.services.legacy_migration import LEGACY_STEP_NAME, convert_legacy_tasks
 
 _legacy_metadata = sa.MetaData()
 
@@ -206,15 +202,17 @@ async def test_schedule_mapping(engine, session, legacy_table) -> None:
         assert not ("cron" in settings and "every_minutes" in settings)
 
 
-async def test_name_falls_back_to_the_prompt_then_to_a_placeholder(
-    engine, session, legacy_table
+async def test_name_comes_from_the_title_then_from_the_prompt_head(
+    engine,
+    session,
+    legacy_table,
 ) -> None:
-    long_prompt = "x" * 200
     await _insert(
         engine,
         [
-            _task(id="t-prompt", prompt=long_prompt),
-            _task(id="t-blank", prompt="   .   "),
+            _task(id="t-titled", title="  Weekly report  ", prompt="anything"),
+            _task(id="t-untitled", prompt="x" * 200),
+            _task(id="t-short", prompt="  Ship it.  "),
         ],
     )
     await _convert(engine)
@@ -222,8 +220,9 @@ async def test_name_falls_back_to_the_prompt_then_to_a_placeholder(
     names = {
         a.id: a.name for a in (await session.execute(select(Automation))).scalars().all()
     }
-    assert names["t-prompt"] == "x" * 60
-    assert names["t-blank"] == "."
+    assert names["t-titled"] == "Weekly report"
+    assert names["t-untitled"] == "x" * 60
+    assert names["t-short"] == "Ship it."
 
 
 async def test_unrepresentable_tasks_are_skipped(engine, session, legacy_table) -> None:
@@ -238,15 +237,6 @@ async def test_unrepresentable_tasks_are_skipped(engine, session, legacy_table) 
     assert await _convert(engine) == 1
     ids = [a.id for a in (await session.execute(select(Automation))).scalars().all()]
     assert ids == ["t-ok"]
-
-
-async def test_placeholder_name_constant_is_used_when_nothing_is_available(
-    engine, session, legacy_table
-) -> None:
-    await _insert(engine, [_task(id="t-1", prompt=" ", title=None)])
-    await _convert(engine)
-    rows = (await session.execute(select(Automation))).scalars().all()
-    assert rows == [] or rows[0].name == DEFAULT_NAME
 
 
 async def test_no_legacy_table_is_a_noop(engine) -> None:

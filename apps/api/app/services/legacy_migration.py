@@ -35,7 +35,6 @@ from app.services.documents import dump_document, new_step_id
 
 log = structlog.get_logger("app.legacy_migration")
 
-DEFAULT_NAME = "Untitled automation"
 NAME_FROM_PROMPT_CHARS = 60
 LEGACY_STEP_NAME = "Run the automation"
 
@@ -111,10 +110,15 @@ _RUN_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
 
 def _name_for(title: str | None, prompt: str) -> str:
+    """The task's title, or the head of its prompt.
+
+    There is no third fallback: `_build_document` has already skipped any task whose
+    prompt is blank, so `prompt` here is guaranteed non-empty after stripping and the
+    slice always yields at least one character.
+    """
     if title and title.strip():
         return title.strip()
-    head = (prompt or "").strip()[:NAME_FROM_PROMPT_CHARS].strip()
-    return head or DEFAULT_NAME
+    return prompt.strip()[:NAME_FROM_PROMPT_CHARS].strip()
 
 
 def _provider_for(provider: str | None, model: str | None) -> dict[str, str] | None:

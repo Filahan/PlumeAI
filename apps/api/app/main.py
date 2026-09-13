@@ -21,6 +21,7 @@ from app.routers import conversations as conversations_router
 from app.routers import settings as settings_router
 from app.routers import tools as tools_router
 from app.routers import usage as usage_router
+from app.services import executor, scheduler
 from app.services.legacy_migration import convert_legacy_tasks
 from app.services.runs import mark_orphaned_runs_failed
 
@@ -60,6 +61,12 @@ async def _apply_runtime_migrations() -> None:
                 "timezone TEXT NOT NULL DEFAULT 'UTC'"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE automations ADD COLUMN IF NOT EXISTS "
+                "valid BOOLEAN NOT NULL DEFAULT true"
+            )
+        )
 
         # Legacy tasks → automations, once. `tasks_legacy` existing is the marker that
         # the conversion already happened (by this path or by `alembic upgrade`).
@@ -96,12 +103,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         await _ensure_schema()
         await _apply_runtime_migrations()
-        await _recover_interrupted_runs()
     except Exception:  # noqa: BLE001
         log.warning("runtime_migrations_failed", exc_info=True)
     try:
+        await _recover_interrupted_runs()
+    except Exception:  # noqa: BLE001
+        log.warning("run_recovery_failed", exc_info=True)
+    # Schedules are a feature, not a prerequisite: an API that boots without a scheduler
+    # still serves the builder, manual runs and run history, so a failure here is logged
+    # and stepped over rather than allowed to abort startup.
+    try:
+        await scheduler.start()
+    except Exception:  # noqa: BLE001
+        log.warning("scheduler_start_failed", exc_info=True)
+    try:
         yield
     finally:
+        try:
+            await scheduler.shutdown()
+        except Exception:  # noqa: BLE001
+            log.warning("scheduler_shutdown_failed", exc_info=True)
+        # Runs live in this process; nothing will finish them once it exits, and the next
+        # startup fails whatever is left `running` (`_recover_interrupted_runs`).
+        try:
+            await executor.cancel_all()
+        except Exception:  # noqa: BLE001
+            log.warning("run_cancellation_failed", exc_info=True)
         log.info("shutdown")
 
 

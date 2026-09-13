@@ -10,13 +10,18 @@
 
 import { api } from './client';
 import type {
+  AutomationDetail,
+  AutomationDocument,
+  AutomationSummary,
   Conversation,
+  DocumentWriteResult,
   Message,
+  Operation,
   Provider,
+  RunDetail,
+  RunSummary,
+  RunTrigger,
   Settings,
-  Task,
-  TaskSchedule,
-  TaskStatus,
   UsageEntry,
 } from '@/lib/types';
 
@@ -84,44 +89,48 @@ export const conversations = {
 
 // ─── Automations ────────────────────────────────────────────────────────────────────
 
-interface UpdateTaskPatch {
-  title?: string;
-  prompt?: string;
-  schedule?: TaskSchedule;
-  status?: TaskStatus;
-  output?: string;
-  error?: string | null;
-  provider?: Provider;
-  model?: string;
-}
-
 export const automations = {
-  list: () => api.get<Task[]>('/automations'),
+  list: () => api.get<AutomationSummary[]>('/automations'),
 
-  create: (
-    id: string,
-    prompt: string,
-    schedule: TaskSchedule,
-    provider: Provider,
-    model: string
-  ) => api.post('/automations', { id, prompt, schedule, provider, model }),
+  create: (body?: { name?: string; document?: AutomationDocument }) =>
+    api.post<AutomationDetail>('/automations', body ?? {}),
 
-  update: (id: string, patch: UpdateTaskPatch) =>
-    api.patch(`/automations/${encodeURIComponent(id)}`, patch),
+  get: (id: string) => api.get<AutomationDetail>(`/automations/${encodeURIComponent(id)}`),
 
-  delete: (id: string) => api.delete(`/automations/${encodeURIComponent(id)}`),
+  patch: (id: string, patch: { name?: string; enabled?: boolean }) =>
+    api.patch<AutomationDetail>(`/automations/${encodeURIComponent(id)}`, patch),
 
-  chat: (taskId: string, message: string) =>
-    api.post<{
-      question?: string;
-      options?: string[];
-      finalized?: boolean;
-      skill?: string;
-      title?: string;
-    }>('/automations/chat', { taskId, message }),
+  remove: (id: string) => api.delete(`/automations/${encodeURIComponent(id)}`),
 
-  runStream: (taskId: string, signal?: AbortSignal) =>
-    api.sse('/automations/run', { taskId }, signal),
+  /** Whole-document replace — the only write that rejects (422) an invalid document. */
+  put: (id: string, document: AutomationDocument) =>
+    api.put<DocumentWriteResult>(`/automations/${encodeURIComponent(id)}`, { document }),
+
+  operations: (id: string, operations: Operation[]) =>
+    api.post<DocumentWriteResult>(`/automations/${encodeURIComponent(id)}/operations`, { operations }),
+
+  startRun: (id: string, trigger: Extract<RunTrigger, 'manual' | 'test'> = 'manual') =>
+    api.post<{ runId: string }>(`/automations/${encodeURIComponent(id)}/runs`, { trigger }),
+
+  listRuns: (id: string, limit?: number) =>
+    api.get<RunSummary[]>(
+      `/automations/${encodeURIComponent(id)}/runs${limit ? `?limit=${limit}` : ''}`
+    ),
+
+  getRun: (id: string, runId: string) =>
+    api.get<RunDetail>(`/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`),
+
+  cancelRun: (id: string, runId: string) =>
+    api.post<{ status: string }>(
+      `/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/cancel`
+    ),
+
+  /** Live progress for one run — GET-based SSE, combine with `parseSSE<RunEvent>`. */
+  runEvents: (id: string, runId: string, signal?: AbortSignal) =>
+    api.sseGet(
+      `/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/events`,
+      signal
+    ),
 };
 
 // ─── Usage ──────────────────────────────────────────────────────────────────────────

@@ -15,13 +15,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import sqlalchemy as sa
 import structlog
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Automation, AutomationVersion, Run, RunStep
 from app.errors import Conflict, NotFound
-from app.services import executor
+from app.services import executor, run_events
 
 log = structlog.get_logger("app.runs")
 
@@ -41,6 +42,17 @@ def _now() -> datetime:
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def sa_duration_ms(now: datetime):
+    """SQL expression for `now - started_at` in milliseconds, NULL when never started.
+
+    Used by the bulk UPDATE in `mark_orphaned_runs_failed`, which has no Python-side row
+    to subtract from.
+    """
+    return sa.cast(
+        sa.extract("epoch", now - Run.started_at) * 1000, sa.Integer
+    )
 
 
 async def _active_run(session: AsyncSession, automation_id: str) -> Run | None:
@@ -177,7 +189,14 @@ async def mark_orphaned_runs_failed(session: AsyncSession) -> int:
     await session.execute(
         update(Run)
         .where(Run.id.in_(orphan_ids))
-        .values(status="failed", error=RESTART_ERROR, ended_at=now)
+        .values(
+            status="failed",
+            error=RESTART_ERROR,
+            ended_at=now,
+            # Same wall-clock measure `cancel_run` records; a run that never started has
+            # no elapsed time to report, so it keeps a NULL duration.
+            duration_ms=sa_duration_ms(now),
+        )
     )
     await session.execute(
         update(Automation)
@@ -244,6 +263,9 @@ async def cancel_run(session: AsyncSession, run_id: str) -> str:
             .values(last_run_status="cancelled")
         )
         await session.flush()
+        # Anyone watching this run over SSE is waiting on a queue that will never receive
+        # another event — end their stream instead of leaving it open until they give up.
+        run_events.close(run.id)
         log.info("run_cancelled", run_id=run.id)
         return run.status
 

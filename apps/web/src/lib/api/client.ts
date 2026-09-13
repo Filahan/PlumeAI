@@ -95,4 +95,18 @@ export const api = {
     }
     return res;
   },
+  /** GET-based SSE helper (e.g. run event streams) — same contract as `sse`. */
+  async sseGet(path: string, signal?: AbortSignal): Promise<Response> {
+    const res = await fetch(`${BASE}${path}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { accept: 'text/event-stream' },
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      const problem = await res.json().catch(() => ({}));
+      throw new ApiError(res.status, problem);
+    }
+    return res;
+  },
 };

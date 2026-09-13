@@ -70,65 +70,146 @@ export interface UsageEntry {
   outputTokens: number;
 }
 
-export type TaskStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+// ─── Automations (new /api/automations backend) ────────────────────────────────────
 
-export type TaskSchedule = 'manual' | 'hourly' | 'daily' | 'weekly';
+export type ValidationLevel = 'error' | 'warning';
 
-export const TASK_SCHEDULE_LABELS: Record<TaskSchedule, string> = {
-  manual: 'Manual',
-  hourly: 'Every hour',
-  daily: 'Every day',
-  weekly: 'Every week',
-};
-
-export interface AssistantStep {
-  kind: 'assistant';
-  text: string;
-}
-export interface ToolStep {
-  kind: 'tool';
-  tool: string;   // e.g. 'web_fetch'
-  args: string;   // JSON string of arguments, secrets redacted
-  result: string; // truncated tool result text
-  ok: boolean;
-}
-export type TranscriptStep = AssistantStep | ToolStep;
-
-export interface InterviewMessage {
-  role: 'user' | 'assistant';
-  content: string;       // displayed text (question or user reply)
-  options?: string[];    // present when the assistant proposes choices
+export interface ValidationIssue {
+  path: string;
+  message: string;
+  level: ValidationLevel;
 }
 
-/** One completed execution of a task. Appended to `Task.runs` (capped at 30) at the end of
- *  each Run, providing the Airflow-style strip in `ExecutionsOverview`. */
-export interface TaskRun {
-  status: 'succeeded' | 'failed' | 'cancelled';
-  startedAt: number;       // unix ms
-  endedAt: number;         // unix ms
-  durationMs: number;
-  error?: string;
+export interface LastRunPayload {
+  status: string;
+  endedAt: number | null;
 }
 
-export interface Task {
+export interface AutomationSummary {
   id: string;
-  /** LLM-generated 3-5 word title from the first interview exchange. Falls back to a slice of
-   *  the prompt when missing. Mirrors how chat conversations get auto-titled. */
-  title?: string;
-  prompt: string;        // the compiled "skill" — empty while the interview is in progress
-  messages: InterviewMessage[];
-  schedule: TaskSchedule;
-  status: TaskStatus;
-  output?: string;
-  transcript: TranscriptStep[];
-  /** History of past executions (most recent last, capped at 30). */
-  runs: TaskRun[];
-  provider: Provider;
-  model: string;
-  error?: string;
+  name: string;
+  enabled: boolean;
+  triggerSummary: string;
+  nextRunAt: number | null;
+  lastRun: LastRunPayload | null;
+  valid: boolean;
+  updatedAt: number;
+}
+
+/** Loosely typed — the document language is owned by the backend (`app.schemas.documents`).
+ *  Steps and settings are kept as `Record<string, unknown>` since this throwaway UI only
+ *  needs to read/round-trip JSON, not model every step shape. */
+export interface AutomationStep {
+  id: string;
+  name: string;
+  type: 'action' | 'ai' | 'filter';
+  settings: Record<string, unknown>;
+  valid: boolean;
+  retry?: { max_attempts: number; backoff_seconds: number } | null;
+  timeout_seconds?: number | null;
+  [key: string]: unknown;
+}
+
+export interface AutomationDocument {
+  name: string;
+  description?: string;
+  model: { provider: Provider; model: string };
+  trigger:
+    | { type: 'manual' }
+    | {
+        type: 'schedule';
+        settings:
+          | { mode: 'cron'; cron: string; timezone?: string | null }
+          | { mode: 'interval'; every_minutes: number; timezone?: string | null };
+      };
+  steps: AutomationStep[];
+}
+
+export interface AutomationDetail {
+  id: string;
+  name: string;
+  enabled: boolean;
+  document: AutomationDocument;
+  versionNumber: number;
+  issues: ValidationIssue[];
+  nextRunAt: number | null;
+  assistantMessages: Record<string, unknown>[];
+  lastRun: LastRunPayload | null;
   createdAt: number;
   updatedAt: number;
 }
+
+/** Response shape shared by every document-writing endpoint (PUT, /operations, restore). */
+export interface DocumentWriteResult {
+  document: AutomationDocument;
+  issues: ValidationIssue[];
+  versionNumber: number;
+  summary: string[];
+}
+
+/** Mutation ops accepted by `POST /automations/{id}/operations` — snake_case, matching
+ *  the document language itself (see `app.schemas.documents.Operation`). */
+export type Operation =
+  | { op: 'add_step'; step: AutomationStep; index?: number }
+  | { op: 'update_step'; step_id: string; patch: Record<string, unknown> }
+  | { op: 'remove_step'; step_id: string }
+  | { op: 'move_step'; step_id: string; index: number }
+  | { op: 'set_trigger'; trigger: AutomationDocument['trigger'] }
+  | { op: 'set_meta'; name?: string; description?: string; model?: { provider: Provider; model: string } };
+
+export type RunTrigger = 'manual' | 'schedule' | 'test';
+export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type RunStepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled';
+
+export interface RunSummary {
+  id: string;
+  automationId: string;
+  versionNumber: number | null;
+  trigger: RunTrigger;
+  status: RunStatus;
+  stoppedByStepId: string | null;
+  error: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  durationMs: number | null;
+  createdAt: number;
+}
+
+export interface RunStep {
+  id: string;
+  stepId: string;
+  index: number;
+  name: string;
+  type: string;
+  status: RunStepStatus;
+  attempt: number;
+  resolvedInput: Record<string, unknown> | null;
+  output: unknown;
+  error: string | null;
+  trace: Record<string, unknown>[];
+  startedAt: number | null;
+  endedAt: number | null;
+  durationMs: number | null;
+}
+
+export interface RunDetail extends RunSummary {
+  steps: RunStep[];
+}
+
+/** SSE events from `GET /automations/{id}/runs/{runId}/events`, discriminated on `type`.
+ *  Kept loose (extra fields as `unknown`) — this UI only reads a handful of them. */
+export type RunEvent =
+  | { type: 'snapshot'; run: RunDetail }
+  | { type: 'run_started'; [key: string]: unknown }
+  | { type: 'step_started'; stepId: string; index: number; attempt: number }
+  | { type: 'step_retry'; [key: string]: unknown }
+  | { type: 'step_text'; stepId: string; delta: string }
+  | { type: 'step_tool_call'; [key: string]: unknown }
+  | { type: 'step_tool_result'; [key: string]: unknown }
+  | { type: 'step_finished'; stepId: string; status: RunStepStatus; output?: unknown }
+  | { type: 'run_finished'; status: RunStatus; error?: string | null };
 
 export const PROVIDER_MODELS: Record<Provider, string[]> = {
   openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini'],

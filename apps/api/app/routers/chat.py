@@ -27,7 +27,7 @@ from app.errors import AppError
 from app.llm.base import ChatMessage
 from app.llm.factory import get_provider_for
 from app.schemas.chat import ChatStreamRequest
-from app.services.interview import generate_chat_title
+from app.services.titles import generate_chat_title
 from app.services.usage import record_usage
 from app.tools.registry import list_available_tool_schemas
 

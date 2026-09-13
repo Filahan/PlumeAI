@@ -63,7 +63,12 @@ class AutomationDetail(APISchema):
 
 class CreateAutomationRequest(APISchema):
     """Both fields optional: an empty body creates a blank draft named "Untitled
-    automation" with the workspace's default model, a manual trigger and no steps."""
+    automation" with the workspace's default model, a manual trigger and no steps.
+
+    When both are given, `document.name` wins — the document is the source of truth for
+    an automation's name everywhere else, so `name` only seeds a draft that doesn't
+    carry one of its own.
+    """
 
     name: str | None = None
     document: dict[str, Any] | None = None

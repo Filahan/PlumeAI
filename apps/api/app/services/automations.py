@@ -255,6 +255,10 @@ async def save_document(
     automation.document = payload
     automation.name = validated.name
     automation.description = validated.description
+    # Document-level problems (a bad cron, an unparseable trigger) produce issues that no
+    # step carries a `valid` flag for, so row validity is "no error-level issue at all",
+    # not "every step is valid".
+    automation.valid = not any(issue.level == "error" for issue in issues)
     automation.updated_at = _now()
     await session.flush()
 
@@ -282,6 +286,7 @@ async def create_automation(
         name=name or DEFAULT_NAME,
         description="",
         enabled=True,
+        valid=True,
         document={},
         current_version_id=None,
         assistant_messages=[],

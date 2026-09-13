@@ -1,12 +1,20 @@
 """automation builder v2 — automations, versions, runs, run_steps.
 
-Creates the four builder tables, adds `settings.timezone`, converts every legacy `tasks`
-row into an automation (see `app.services.legacy_migration`) and finally renames `tasks`
-to `tasks_legacy` so the old data stays readable but nothing writes to it any more.
+Creates the four builder tables, adds `settings.timezone` and `automations.valid`,
+converts every legacy `tasks` row into an automation (see
+`app.services.legacy_migration`) and finally renames `tasks` to `tasks_legacy` so the old
+data stays readable but nothing writes to it any more.
 
-Mirrors `app/main.py:_apply_runtime_migrations`, which performs the same timezone ALTER
-and the same convert+rename for self-hosted users who never run Alembic by hand. Both
-paths are guarded the same way, so whichever runs first wins and the other is a no-op.
+Mirrors `app/main.py:_apply_runtime_migrations`, which performs the same ALTERs and the
+same convert+rename for self-hosted users who never run Alembic by hand. Both paths are
+guarded the same way, so whichever runs first wins and the other is a no-op.
+
+Every statement in `upgrade()` is guarded, because on this project Alembic is *not* the
+only thing that creates tables: `app.main._ensure_schema` runs `Base.metadata.create_all`
+on every startup, so by the time anyone runs `alembic upgrade head` the four tables
+usually already exist. An unguarded `create_table` would fail there with
+`DuplicateTableError`. `upgrade()` is therefore safe to run on a fresh database, on one
+the app has already bootstrapped, and twice in a row.
 
 Revision ID: 0003_automations_v2
 Revises: 0002_tool_credentials
@@ -48,14 +56,33 @@ BEGIN
 END $$;
 """
 
+# Columns added to tables that may predate them — `create_all` on an older build of the
+# app produced `automations` without `valid`, and `settings` without `timezone`.
+ADD_COLUMNS = (
+    "ALTER TABLE settings ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC'",
+    "ALTER TABLE automations ADD COLUMN IF NOT EXISTS valid BOOLEAN NOT NULL DEFAULT true",
+)
 
-def upgrade() -> None:
+INDEXES = (
+    "CREATE INDEX IF NOT EXISTS automations_updated_idx ON automations (updated_at)",
+    "CREATE INDEX IF NOT EXISTS automation_versions_automation_idx "
+    "ON automation_versions (automation_id)",
+    "CREATE INDEX IF NOT EXISTS runs_automation_created_idx "
+    "ON runs (automation_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS run_steps_run_idx ON run_steps (run_id, index)",
+)
+
+
+def _create_automations(conn: sa.Connection) -> None:
+    if sa.inspect(conn).has_table("automations"):
+        return
     op.create_table(
         "automations",
         sa.Column("id", sa.Text(), nullable=False),
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column("description", sa.Text(), nullable=False, server_default=""),
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default="true"),
+        sa.Column("valid", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("document", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("current_version_id", sa.Text(), nullable=True),
         sa.Column(
@@ -80,8 +107,11 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("automations_updated_idx", "automations", ["updated_at"])
 
+
+def _create_automation_versions(conn: sa.Connection) -> None:
+    if sa.inspect(conn).has_table("automation_versions"):
+        return
     op.create_table(
         "automation_versions",
         sa.Column("id", sa.Text(), nullable=False),
@@ -99,10 +129,11 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("automation_id", "number", name="automation_versions_number_uq"),
     )
-    op.create_index(
-        "automation_versions_automation_idx", "automation_versions", ["automation_id"]
-    )
 
+
+def _create_runs(conn: sa.Connection) -> None:
+    if sa.inspect(conn).has_table("runs"):
+        return
     op.create_table(
         "runs",
         sa.Column("id", sa.Text(), nullable=False),
@@ -129,11 +160,11 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.execute(
-        "CREATE INDEX runs_automation_created_idx "
-        "ON runs (automation_id, created_at DESC)"
-    )
 
+
+def _create_run_steps(conn: sa.Connection) -> None:
+    if sa.inspect(conn).has_table("run_steps"):
+        return
     op.create_table(
         "run_steps",
         sa.Column("id", sa.Text(), nullable=False),
@@ -159,21 +190,36 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["run_id"], ["runs.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("run_steps_run_idx", "run_steps", ["run_id", "index"])
 
-    op.execute(
-        "ALTER TABLE settings ADD COLUMN IF NOT EXISTS "
-        "timezone TEXT NOT NULL DEFAULT 'UTC'"
-    )
 
-    convert_legacy_tasks(op.get_bind())
+def create_schema(conn: sa.Connection) -> None:
+    """Bring the builder schema up to date, creating only what is missing.
+
+    Extracted from `upgrade()` so the idempotency this revision depends on is directly
+    testable (see `tests/integration/test_schema_migration.py`) instead of only being
+    observable by running Alembic twice.
+    """
+    _create_automations(conn)
+    _create_automation_versions(conn)
+    _create_runs(conn)
+    _create_run_steps(conn)
+    for statement in ADD_COLUMNS:
+        op.execute(statement)
+    for statement in INDEXES:
+        op.execute(statement)
+
+
+def upgrade() -> None:
+    conn = op.get_bind()
+    create_schema(conn)
+    convert_legacy_tasks(conn)
     op.execute(RENAME_TASKS)
 
 
 def downgrade() -> None:
     op.execute(RENAME_TASKS_BACK)
     op.execute("ALTER TABLE settings DROP COLUMN IF EXISTS timezone")
-    op.drop_table("run_steps")
-    op.drop_table("runs")
-    op.drop_table("automation_versions")
-    op.drop_table("automations")
+    op.execute("DROP TABLE IF EXISTS run_steps")
+    op.execute("DROP TABLE IF EXISTS runs")
+    op.execute("DROP TABLE IF EXISTS automation_versions")
+    op.execute("DROP TABLE IF EXISTS automations")

@@ -116,6 +116,10 @@ class Automation(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    # Whether the draft has zero error-level validation issues, recomputed on every save.
+    # Denormalized so the list view can report validity without rebuilding the action
+    # catalog once per row; `GET /automations/{id}` re-validates for fresh detail.
+    valid: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     current_version_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Transcript of the builder assistant conversation ({role, content, ...} dicts).

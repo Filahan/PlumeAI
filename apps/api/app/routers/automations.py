@@ -75,9 +75,9 @@ async def _last_runs(
 ) -> dict[str, LastRunPayload]:
     """`automation.id` → its last run, resolved in one query for the whole page.
 
-    `last_run_status` is denormalized onto the automation so the list view needs no join
-    at all, but `endedAt` isn't — one extra `IN` query keeps the row payload complete
-    without making it O(rows) round trips.
+    `last_run_status` is denormalized onto the automation, but `endedAt` isn't — so this
+    adds a single `IN` lookup for the whole page rather than one round trip per row, and
+    is skipped entirely when no listed automation has ever run.
     """
     ids = {a.last_run_id for a in automations if a.last_run_id and a.last_run_status}
     if not ids:
@@ -93,15 +93,6 @@ async def _last_runs(
         )
         for row in rows
     }
-
-
-def _document_is_valid(document: dict[str, Any]) -> bool:
-    """Cheap list-view validity: the flags `validate_document` stamped at save time.
-
-    Deliberately not a re-validation — the list renders dozens of rows and building the
-    catalog per row would make it a much more expensive endpoint than it needs to be.
-    """
-    return all(step.get("valid", True) for step in (document.get("steps") or []))
 
 
 def _summary(
@@ -122,7 +113,7 @@ def _summary(
         trigger_summary=trigger_summary,
         next_run_at=scheduler.next_run_at(automation.id),
         last_run=last_run,
-        valid=_document_is_valid(document),
+        valid=automation.valid,
         updated_at=to_ms(automation.updated_at),
     )
 

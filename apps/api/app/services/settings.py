@@ -81,6 +81,16 @@ async def get_settings_for_client(session: AsyncSession) -> SettingsPayload:
     )
 
 
+async def get_timezone(session: AsyncSession) -> str:
+    """The workspace IANA timezone, used to resolve schedules and `{{trigger.date}}`.
+
+    Read straight off the row rather than through `get_settings_for_client`, which shapes
+    a client payload (and decrypts keys) the scheduler and executor have no use for.
+    """
+    row = await _get_or_create_row(session)
+    return row.timezone or "UTC"
+
+
 async def save_settings(session: AsyncSession, payload: SettingsPayload) -> None:
     """Encrypt each provider's apiKey, persist; leave the tools blob untouched."""
     row = await _get_or_create_row(session)

@@ -20,6 +20,8 @@ dependencies = [
   "anthropic>=0.40",
   "jsonschema>=4.23",
   "croniter>=3",
+  "apscheduler>=3.10,<4",
+  "psycopg[binary]>=3.2",
   "tzdata",
 ]
 
