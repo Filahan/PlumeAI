@@ -37,3 +37,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Python bytecode / pytest
+__pycache__/
+*.pyc
+.pytest_cache/
