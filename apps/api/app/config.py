@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Public frontend URL. OAuth callback URIs are anchored on this so the user always
     # comes back through the nginx proxy, regardless of how `gmail_oauth_start` was
     # reached internally.
-    frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
+    frontend_url: str = Field(default="http://localhost:3001", alias="FRONTEND_URL")
 
     # App
     app_env: str = Field(default="dev", alias="APP_ENV")

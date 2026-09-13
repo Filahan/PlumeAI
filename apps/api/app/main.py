@@ -10,7 +10,8 @@ from fastapi import APIRouter, FastAPI
 from sqlalchemy import text
 
 from app.config import get_settings
-from app.db.base import get_engine
+from app.db import models  # noqa: F401 — registers the tables on Base.metadata
+from app.db.base import Base, get_engine
 from app.errors import register_handlers
 from app.logging import configure_logging, get_logger
 from app.middleware import RequestLoggingMiddleware
@@ -20,6 +21,18 @@ from app.routers import conversations as conversations_router
 from app.routers import settings as settings_router
 from app.routers import tools as tools_router
 from app.routers import usage as usage_router
+
+
+async def _ensure_schema() -> None:
+    """Create any missing tables on a fresh database.
+
+    Alembic's baseline revision is intentionally empty and relies on this call (see
+    alembic/versions/*_baseline.py), so a brand-new `docker compose up` gets a usable
+    schema without running migrations by hand. Existing tables are left untouched.
+    """
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 async def _apply_runtime_migrations() -> None:
@@ -46,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log = get_logger("app.lifespan")
     log.info("startup", env=settings.app_env)
     try:
+        await _ensure_schema()
         await _apply_runtime_migrations()
     except Exception:  # noqa: BLE001
         log.warning("runtime_migrations_failed", exc_info=True)

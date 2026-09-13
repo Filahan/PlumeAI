@@ -14,14 +14,21 @@ interface AppShellProps {
   onDelete: (id: string) => void;
   /** Replaces the conversation list in the left panel (e.g. the task list on /automations). */
   leftPanel?: ReactNode;
+  /** Optional controlled state for the Settings dialog (used by the chat to open it from the composer). */
+  settingsOpen?: boolean;
+  onSettingsOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }
 
-export default function AppShell({ currentId, onSelect, onNewChat, onDelete, leftPanel, children }: AppShellProps) {
+export default function AppShell({
+  currentId, onSelect, onNewChat, onDelete, leftPanel, settingsOpen, onSettingsOpenChange, children,
+}: AppShellProps) {
   const { conversations, loaded: conversationsLoaded } = useConversationsStore();
   const { settings, setSettings, loaded: settingsLoaded } = useSettingsStore();
   const ready = conversationsLoaded && settingsLoaded;
-  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [internalSettingsOpen, setInternalSettingsOpen] = useState(false);
+  const settingsDialogOpen = settingsOpen ?? internalSettingsOpen;
+  const setSettingsDialogOpen = onSettingsOpenChange ?? setInternalSettingsOpen;
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   useEffect(() => {

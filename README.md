@@ -28,7 +28,7 @@ PlumeAI is a self-hosted alternative to ChatGPT/Claude. Bring your own keys (Ope
 
 ```bash
 docker compose up -d
-open http://localhost:3000
+open http://localhost:3001
 ```
 
 That's it. Add your provider key in Settings, configure integrations on the Tools page, start chatting.

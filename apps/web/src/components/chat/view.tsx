@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSepa
 import { ProviderLogo } from '@/components/provider-logo';
 import ImageThumb from '@/components/image-thumb';
 import ImageLightbox from '@/components/image-lightbox';
+import ProviderOnboarding from '@/components/provider-onboarding';
 import { putBlob, getBlob } from '@/lib/blob-store';
 import { processImage, blobToBase64, MAX_IMAGES_PER_MESSAGE } from '@/lib/image';
 
@@ -40,6 +41,9 @@ async function messageToContent(text: string, attachments?: AttachmentRef[]): Pr
 interface ChatViewProps {
   conversation: Conversation | null;
   settings: Settings;
+  setSettings: (s: Settings) => void;
+  /** Opens the Settings dialog (owned by the shell). */
+  onOpenSettings: () => void;
   onAddMessage: (convId: string, msg: Omit<Message, 'id' | 'timestamp'>) => string;
   onUpdateMessage: (convId: string, msgId: string, content: string, replace?: boolean) => void;
   onCreateConversation: (provider: Provider, model: string) => string;
@@ -50,7 +54,8 @@ interface ChatViewProps {
 }
 
 export default function ChatView({
-  conversation, settings, onAddMessage, onUpdateMessage, onCreateConversation, onRenameConversation, onSetConversationModel, onRecordUsage, ready,
+  conversation, settings, setSettings, onOpenSettings, onAddMessage, onUpdateMessage, onCreateConversation,
+  onRenameConversation, onSetConversationModel, onRecordUsage, ready,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -63,16 +68,30 @@ export default function ChatView({
   const [lightboxRef, setLightboxRef] = useState<AttachmentRef | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const defaultProvider = settings.defaultModel.provider;
+  const defaultModel = settings.defaultModel.model;
+  const defaultHasKey = !!findApiKey(settings, defaultProvider);
+  const firstConfiguredProvider = settings.providers[0]?.provider;
   useEffect(() => {
-    if (!conversation) {
+    if (conversation) return;
+    if (defaultHasKey || !firstConfiguredProvider) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setDraftProvider(settings.defaultModel.provider);
-      setDraftModel(settings.defaultModel.model);
+      setDraftProvider(defaultProvider);
+      setDraftModel(defaultModel);
+      return;
     }
-  }, [conversation, settings.defaultModel.provider, settings.defaultModel.model]);
+    // The default model points at a provider with no key (never configured, or deleted):
+    // fall back to the first configured provider so a new chat is usable right away.
+    setDraftProvider(firstConfiguredProvider);
+    setDraftModel(PROVIDER_MODELS[firstConfiguredProvider][0] ?? defaultModel);
+  }, [conversation, defaultProvider, defaultModel, defaultHasKey, firstConfiguredProvider]);
 
   const activeProvider = conversation?.provider ?? draftProvider;
   const activeModel = conversation?.model ?? draftModel;
+  const activeKey = findApiKey(settings, activeProvider);
+  const hasProviders = settings.providers.length > 0;
+  // Only meaningful once settings have loaded — before that we'd flash a false warning.
+  const missingKey = ready && !activeKey;
   const visionOk = supportsVision(activeProvider, activeModel);
   const pendingProcessing = pendingAttachments.some((p) => p.processing);
   const readyAttachments = pendingAttachments.filter((p) => p.ref).map((p) => p.ref!);
@@ -251,11 +270,8 @@ export default function ChatView({
       alert(`${activeModel} doesn't support images. Switch to a vision-capable model (e.g., gpt-4o, claude-3-5-sonnet).`);
       return;
     }
-    const apiKey = findApiKey(settings, activeProvider);
-    if (!apiKey) {
-      alert(`No API key configured for ${PROVIDER_NAMES[activeProvider]}. Add one in Settings.`);
-      return;
-    }
+    // Send is disabled without a key (see `missingKey`); this guards keyboard submits.
+    if (!activeKey) return;
 
     let convId = conversation?.id;
     if (!convId) convId = onCreateConversation(activeProvider, activeModel);
@@ -374,7 +390,7 @@ export default function ChatView({
 
   const hasMessages = conversation && conversation.messages.length > 0;
 
-  const sendDisabled = isLoading || pendingProcessing || (!input.trim() && readyAttachments.length === 0);
+  const sendDisabled = isLoading || pendingProcessing || missingKey || (!input.trim() && readyAttachments.length === 0);
 
   const InputBox = (
     <div className="bg-white rounded-2xl border border-[color:var(--border)] px-4 pt-3 pb-3 focus-within:border-[color:var(--ring)] transition-colors">
@@ -418,7 +434,7 @@ export default function ChatView({
             handleKeyDown(e);
           }}
           onPaste={handlePaste}
-          placeholder="Message PlumeAI… (type @ for tools)"
+          placeholder={missingKey ? 'Add an API key to start chatting' : 'Message PlumeAI… (type @ for tools)'}
           rows={1}
           className="w-full resize-none bg-transparent text-[14px] text-[color:var(--foreground)] placeholder:text-[color:var(--muted-foreground)] outline-none min-h-[24px] max-h-[200px] leading-relaxed"
           disabled={isLoading}
@@ -505,6 +521,27 @@ export default function ChatView({
           </button>
         )}
       </div>
+
+      {missingKey && (
+        <div
+          role="status"
+          className="mt-2.5 flex items-center gap-2 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2 text-[12px] text-[#92400E]"
+        >
+          <AlertCircle size={13} strokeWidth={2} className="shrink-0" />
+          <span className="flex-1 min-w-0">
+            {hasProviders
+              ? `No API key for ${PROVIDER_NAMES[activeProvider]} — pick another model or add a key.`
+              : 'No API key configured yet.'}
+          </span>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="shrink-0 font-medium underline underline-offset-2 hover:opacity-80"
+          >
+            Open Settings
+          </button>
+        </div>
+      )}
     </div>
   );
 
@@ -549,6 +586,10 @@ export default function ChatView({
 
       {!ready ? (
         <div className="flex-1" />
+      ) : !hasProviders && !hasMessages ? (
+        <div className="flex-1 flex items-center justify-center px-6 py-6 overflow-y-auto">
+          <ProviderOnboarding settings={settings} setSettings={setSettings} />
+        </div>
       ) : hasMessages ? (
         <>
           <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
