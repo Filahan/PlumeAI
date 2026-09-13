@@ -234,9 +234,15 @@ recipient, a limit). A ref may only point at a step ABOVE the current one, or at
 # Rules you must not break
 - Use ONLY the integrations and actions listed in the catalog below, spelled exactly as \
 they appear. Never invent an action or guess at its input fields.
-- If what the user wants needs an integration listed as not connected, do NOT add any \
-step that uses it. Say which integration they have to connect on the Tools page, and add \
-only the steps that work without it.
+- You may use an integration that is listed as not connected — build the automation the \
+user asked for. But say plainly in `message` which integrations they have to connect on \
+the Tools page before it can run, naming each one.
+- Never invent a value the user did not give you: a recipient, an email address, a \
+channel, a page or database id, a URL, a phone number. If the value follows from the \
+conversation, write it as an `ai` field describing what it should be \
+({"kind":"ai","value":"the colleague the user asked me to notify"}). If it does not, \
+leave that field out of the step entirely and ask for it in `message` — a wrong \
+recipient is far worse than a missing one.
 - Give every step a short name in plain language (3-6 words), in the user's language.
 - If the automation has no name, or is called "New automation" or "Untitled automation", \
 include a `set_meta` with a short descriptive name.
@@ -362,12 +368,14 @@ def format_action(action: ActionLike) -> str:
 
 
 def format_catalog(catalog: CatalogLike) -> str:
-    """The usable actions, then the integrations the user still has to connect.
+    """The actions that work today, then the ones that need a connection first.
 
-    Only *connected* integrations contribute usable actions: an action the user cannot
-    run is worse than no action at all, because the model would happily build a whole
-    automation around it. The disconnected ones are still named, so the assistant can
-    tell the user what to connect instead of silently doing something else.
+    Both halves are usable: an automation is worth drafting before every integration it
+    needs is connected — the user connects them and it runs. What the split buys is an
+    assistant that *knows* which half it reached into, so it can name the integrations
+    the user still has to connect (see `SYSTEM_PROMPT`) instead of handing back something
+    that silently never runs. An MCP server with no cached tools is the one case with
+    nothing to offer: its line says so rather than inviting a guess at tool names.
 
     Registered MCP servers are listed the same way, under `mcp:<server>` — as far as a
     document is concerned they *are* integrations (an action step names one in
@@ -403,19 +411,28 @@ def format_catalog(catalog: CatalogLike) -> str:
     lines.append("# Integrations that are NOT connected")
     if disconnected or unusable_servers:
         lines.append(
-            "These are not connected (the user must connect them in Tools). Do not add "
-            "steps that use them — name the integration in your message instead:"
+            "You may use these actions too, but the automation cannot run until the user "
+            "connects them in Tools — name every one you used in your message:"
         )
         for integ in disconnected:
             lines.append(
-                f"- {integ.name} ({_one_line(integ.label) or integ.name}) — not connected "
-                "(user must connect in Tools)"
+                f"{integ.name} ({_one_line(integ.label) or integ.name}) — NOT connected "
+                "(user must connect it in Tools):"
             )
+            if integ.actions:
+                lines.extend(format_action(a) for a in integ.actions)
+            else:
+                lines.append("- (no actions)")
         for server in unusable_servers:
             reason = "disabled" if not getattr(server, "enabled", True) else "not reachable"
             lines.append(
-                f"- mcp:{server.name} (MCP server) — {reason} (user must fix it in Tools)"
+                f"mcp:{server.name} (MCP server) — {reason} "
+                "(user must fix it in Tools):"
             )
+            if server.actions:
+                lines.extend(format_action(a) for a in server.actions)
+            else:
+                lines.append("- (no tools cached — do not guess at its tool names)")
     else:
         lines.append("(none — every integration is connected)")
 

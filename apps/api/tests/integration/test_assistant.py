@@ -24,6 +24,7 @@ from app.llm.events import AgentEvent
 from app.services import assistant as assistant_svc
 from app.services import automations as automations_svc
 from app.services.assistant import (
+    CORRECTION_FAILED_CAVEAT,
     ISSUES_CAVEAT,
     REJECTED_ERROR,
     UNREADABLE_DOCUMENT_ERROR,
@@ -134,6 +135,16 @@ DANGLING_REF_REPLY = _edit(
     "Added a summary step.",
     [{"op": "add_step", "step": _ai_step("step_ccccc", "Summarize",
                                         "Summarize {{step_zzzzz.output}}")}],
+)
+STILL_DANGLING_REPLY = _edit(
+    "Tried again.",
+    [
+        {
+            "op": "update_step",
+            "step_id": "step_ccccc",
+            "patch": {"settings": {"instructions": "Summarize {{step_yyyyy.output}}"}},
+        }
+    ],
 )
 FIXED_REF_REPLY = _edit(
     "Fixed the summary step.",
@@ -421,6 +432,11 @@ async def test_error_level_issues_trigger_one_self_correction(client, session, s
     assert body["document"]["steps"][0]["settings"]["instructions"] == "Summarize today's mail"
     assert body["document"]["steps"][0]["valid"] is True
 
+    # Both batches were the user's one edit, so both are reported as one.
+    assert body["operationsApplied"] == 2
+    assert body["summary"] == ["Added step 'Summarize'", "Updated step 'Summarize'"]
+    assert body["versionNumber"] == created["versionNumber"] + 2
+
     # The correction turn was given the issues *and* the document as it stood.
     correction = provider.calls[1]["messages"][-1]
     assert correction.role == "user"
@@ -431,13 +447,37 @@ async def test_error_level_issues_trigger_one_self_correction(client, session, s
 
     row = await _row(session, created["id"])
     assert row.valid is True
+    assert row.assistant_messages[1]["summary"] == body["summary"]
 
 
-async def test_issues_that_survive_the_correction_are_flagged_in_the_message(
+async def test_issues_that_survive_an_applied_correction_are_flagged_in_the_message(
     client, session, script
 ) -> None:
-    # Both turns leave the same dangling reference. The edit still stands (it is
-    # versioned and visible), but the user is told it needs attention.
+    # The correction applied and still left the reference dangling. The edit stands (it
+    # is versioned and visible), but the user is told it needs attention.
+    provider = script(DANGLING_REF_REPLY, STILL_DANGLING_REPLY)
+    created = await _create(client, name="Demo")
+
+    body = await _ask(client, created["id"], "summarize my mail")
+
+    assert len(provider.calls) == 2
+    assert body["error"] is None  # something *was* applied
+    assert body["message"] == f"{STILL_DANGLING_REPLY['message']} {ISSUES_CAVEAT}"
+    assert [i["level"] for i in body["issues"]] == ["error"]
+    assert body["operationsApplied"] == 2
+    assert body["document"]["steps"][0]["valid"] is False
+
+    row = await _row(session, created["id"])
+    assert row.valid is False
+    assert len(row.document["steps"]) == 1
+
+
+async def test_a_rejected_correction_keeps_the_message_of_the_edit_that_landed(
+    client, session, script
+) -> None:
+    # The correction turn repeats the same `add_step`, which is refused (duplicate id).
+    # The first batch is still on the document, so its message is what describes the
+    # automation — the refused turn described work that does not exist.
     provider = script(DANGLING_REF_REPLY)
     created = await _create(client, name="Demo")
 
@@ -445,14 +485,17 @@ async def test_issues_that_survive_the_correction_are_flagged_in_the_message(
 
     assert len(provider.calls) == 2
     assert body["error"] is None  # something *was* applied
-    assert body["message"].endswith(ISSUES_CAVEAT)
+    assert body["message"] == f"{DANGLING_REF_REPLY['message']} {CORRECTION_FAILED_CAVEAT}"
+    assert ISSUES_CAVEAT not in body["message"]
+    assert body["operationsApplied"] == 1
+    assert body["summary"] == ["Added step 'Summarize'"]
     assert [i["level"] for i in body["issues"]] == ["error"]
     assert body["versionNumber"] == created["versionNumber"] + 1
-    assert body["document"]["steps"][0]["valid"] is False
 
     row = await _row(session, created["id"])
     assert row.valid is False
     assert len(row.document["steps"]) == 1
+    assert row.assistant_messages[1]["content"] == body["message"]
 
 
 # --- test runs ---------------------------------------------------------------------------

@@ -104,6 +104,9 @@ UNREADABLE_DOCUMENT_ERROR = (
     "Restore an earlier version from the version history and I'll pick it up from there."
 )
 ISSUES_CAVEAT = "Some fields still need attention in the editor."
+CORRECTION_FAILED_CAVEAT = (
+    "I tried to fix the remaining issues but couldn't; please check the highlighted fields."
+)
 
 RETRY_INSTRUCTION = (
     "Your operations were rejected and nothing was changed: {error} "
@@ -139,13 +142,41 @@ class AssistantResult:
 
 @dataclass
 class _Applied:
-    """The outcome of the last batch that actually landed on the document."""
+    """Everything that actually landed on the document this turn.
+
+    A turn can apply *two* batches (the model's first, then its self-correction), and
+    what the user is shown has to be the whole edit: `operations` and `summary`
+    accumulate across both, while `document`, `issues` and `version_number` are simply
+    the latest state. `message` is the reply that accompanied the most recent batch that
+    applied — not the one that was refused afterwards.
+    """
 
     document: dict[str, Any]
     issues: list[ValidationIssue]
     version_number: int
     summary: list[str]
     operations: int
+    message: str
+
+    def then(
+        self,
+        *,
+        document: dict[str, Any],
+        issues: list[ValidationIssue],
+        version_number: int,
+        summary: list[str],
+        operations: int,
+        message: str,
+    ) -> _Applied:
+        """This outcome, followed by a second batch that also applied."""
+        return _Applied(
+            document=document,
+            issues=issues,
+            version_number=version_number,
+            summary=[*self.summary, *summary],
+            operations=self.operations + operations,
+            message=message,
+        )
 
 
 _OPS_ADAPTER: TypeAdapter[list[Operation]] = TypeAdapter(list[Operation])
@@ -389,12 +420,16 @@ async def chat(
                 # past it. Anything else is a real failure and propagates.
                 rejection = getattr(exc, "detail", None) or str(exc)
             else:
-                applied = _Applied(
-                    document=dump_document(document),
-                    issues=issues,
-                    version_number=number,
-                    summary=summary,
-                    operations=len(ops),
+                landed = {
+                    "document": dump_document(document),
+                    "issues": issues,
+                    "version_number": number,
+                    "summary": summary,
+                    "operations": len(ops),
+                    "message": message,
+                }
+                applied = (
+                    _Applied(**landed) if applied is None else applied.then(**landed)
                 )
                 errors = [i for i in issues if i.level == "error"]
                 if not errors or not corrections:
@@ -460,9 +495,14 @@ async def chat(
         version_number = applied.version_number
         summary, ops_count = applied.summary, applied.operations
         error = None
-        if any(i.level == "error" for i in issues):
-            # Never report success silently: the edit landed, but the automation still
-            # needs a human to finish it.
+        # The message describes the edit that landed, so it comes from the batch that
+        # landed — a correction that was refused afterwards described work that does not
+        # exist. Either way the user is told the automation still needs attention: never
+        # report success silently.
+        message = applied.message
+        if rejection is not None:
+            message = f"{message} {CORRECTION_FAILED_CAVEAT}".strip()
+        elif any(i.level == "error" for i in issues):
             message = f"{message} {ISSUES_CAVEAT}".strip()
     else:
         document, issues, version_number = _current_state(

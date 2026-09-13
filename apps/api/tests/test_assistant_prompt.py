@@ -299,6 +299,19 @@ def test_system_prompt_covers_the_three_field_kinds_and_every_operation() -> Non
     assert '{"provider":"openai","model":"gpt-4o"}' in SYSTEM_PROMPT
 
 
+def test_system_prompt_lets_the_assistant_build_with_unconnected_integrations() -> None:
+    # The product rule: draft it anyway, but say what has to be connected before it runs.
+    assert "You may use an integration that is listed as not connected" in SYSTEM_PROMPT
+    assert "before it can run" in SYSTEM_PROMPT
+
+
+def test_system_prompt_forbids_inventing_values_the_user_never_gave() -> None:
+    assert "Never invent a value the user did not give you" in SYSTEM_PROMPT
+    # The two ways out: describe it as an `ai` field, or leave it out and ask.
+    assert '{"kind":"ai","value":"the colleague the user asked me to notify"}' in SYSTEM_PROMPT
+    assert "leave that field out of the step entirely and ask for it in `message`" in SYSTEM_PROMPT
+
+
 def test_system_prompt_forbids_an_integration_prefixed_action_name() -> None:
     assert '"builtin.web_search"` is wrong' in SYSTEM_PROMPT
     assert "bare action name" in SYSTEM_PROMPT
@@ -351,16 +364,25 @@ def test_format_catalog_lists_connected_actions_and_builtins() -> None:
     assert "builtin.web_search" not in text
 
 
-def test_format_catalog_keeps_disconnected_actions_out_of_the_usable_list() -> None:
+def test_format_catalog_offers_disconnected_actions_under_their_own_heading() -> None:
+    # An automation is worth drafting before every integration it needs is connected, so
+    # the actions are offered — but in the half of the catalog whose heading (and prompt
+    # rule) says the user has to connect them first.
     text = format_catalog(_catalog())
     usable, _, rest = text.partition("# Integrations that are NOT connected")
 
-    # The action itself must never appear as something the assistant may use…
     assert "notion_create_page" not in usable
-    assert "notion_create_page" not in text
-    # …but the integration is still named, with what the user has to do about it.
-    assert "notion (Notion)" in rest
-    assert "not connected (user must connect in Tools)" in rest
+    assert 'integration: "notion", action: "notion_create_page"' in rest
+    assert "notion (Notion) — NOT connected (user must connect it in Tools):" in rest
+    assert "cannot run until the user connects them in Tools" in rest
+
+
+def test_format_catalog_does_not_offer_tool_names_it_does_not_have() -> None:
+    # An MCP server that has never synced has no cached tools; inviting the model to
+    # name one would be inviting it to invent one.
+    text = format_catalog(_catalog())
+    assert "mcp:stripe (MCP server) — not reachable (user must fix it in Tools):" in text
+    assert "do not guess at its tool names" in text
 
 
 def test_format_catalog_lists_a_connected_mcp_server_like_any_other_integration() -> None:
