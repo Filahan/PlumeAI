@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crypto import decrypt, encrypt
 from app.db.models import Settings as SettingsRow
+from app.schemas.settings import DEFAULT_SETTINGS
 
 log = structlog.get_logger("app.services.tool_credentials")
 
@@ -28,7 +29,17 @@ async def _get_or_create_row(session: AsyncSession) -> SettingsRow:
         await session.execute(select(SettingsRow).where(SettingsRow.id == 1))
     ).scalar_one_or_none()
     if row is None:
-        row = SettingsRow(id=1, providers=[], default_model={}, tools={}, tool_credentials={})
+        # Seed the same defaults `app.services.settings` would: this path can be the
+        # first thing to touch the settings row on a fresh database (the tools catalog
+        # is built before anyone opens the settings page), and an empty `default_model`
+        # would then fail to validate on the next read.
+        row = SettingsRow(
+            id=1,
+            providers=[],
+            default_model=DEFAULT_SETTINGS.default_model.model_dump(by_alias=True),
+            tools={},
+            tool_credentials={},
+        )
         session.add(row)
         await session.flush()
     return row

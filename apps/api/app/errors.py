@@ -71,6 +71,12 @@ class BadRequest(AppError):
     type_slug = "bad-request"
 
 
+class Conflict(AppError):
+    status_code = 409
+    title = "Conflict"
+    type_slug = "conflict"
+
+
 class ValidationFailure(AppError):
     status_code = 422
     title = "Validation failed"

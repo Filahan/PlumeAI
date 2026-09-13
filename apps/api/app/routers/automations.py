@@ -1,291 +1,490 @@
-"""Automations: CRUD + interview chat + run (SSE)."""
+"""The `/automations` API: automation CRUD, document editing, version history and runs.
+
+Reading a document is always a *fresh* validation against the live catalog, never the
+`issues` that happened to be true when it was saved — an integration disconnected since
+the last edit has to show up as a problem the next time the builder opens the
+automation, not the next time somebody edits it.
+
+Writes all funnel through `app.services.automations.save_document`, which decides
+whether the edit is worth a new version. Runs are created here but executed elsewhere:
+`POST /{id}/runs` persists a `queued` run and hands the id to
+`app.services.executor.start_run_in_background`, which is a no-op seam until Task 4b.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
-import time
 from collections.abc import AsyncIterator
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Response, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.agent.runner import stream_agent
 from app.auth import CurrentUser
 from app.db.base import get_session
-from app.errors import AppError
-from app.llm.base import ChatMessage
-from app.llm.factory import get_provider_for
+from app.db.models import Automation, AutomationVersion, Run, RunStep
+from app.errors import NotFound
 from app.schemas.automations import (
-    ChatTaskRequest,
-    ChatTaskResponse,
-    CreateTaskRequest,
-    RunTaskRequest,
-    TaskPayload,
-    TaskRun,
-    UpdateTaskRequest,
+    AutomationDetail,
+    AutomationSummary,
+    CancelRunResponse,
+    CreateAutomationRequest,
+    LastRunPayload,
+    OperationsRequest,
+    OperationsResponse,
+    PatchAutomationRequest,
+    ReplaceDocumentRequest,
+    RunDetail,
+    RunStepPayload,
+    RunSummary,
+    StartRunRequest,
+    StartRunResponse,
+    ValidateRequest,
+    ValidateResponse,
+    VersionDetail,
+    VersionSummary,
 )
+from app.schemas.documents import AutomationDocument
 from app.services import automations as svc
-from app.services.interview import generate_task_title, interview
-from app.services.usage import record_usage
-from app.tools.registry import list_available_tool_schemas
+from app.services import executor, run_events, scheduler
+from app.services import runs as runs_svc
+from app.services.documents import describe_trigger, diff_summary, dump_document
+from app.utils import to_ms
 
 router = APIRouter(prefix="/automations", tags=["automations"])
 log = structlog.get_logger("app.automations")
 
 DBSession = Annotated[AsyncSession, Depends(get_session)]
 
-
-# ─── CRUD ────────────────────────────────────────────────────────────────────────────
-
-
-@router.get("", response_model=list[TaskPayload], response_model_by_alias=True)
-async def list_tasks_route(user: CurrentUser, session: DBSession) -> list[TaskPayload]:
-    return await svc.list_tasks(session)
+# Events the executor publishes carry a `type`; this one means "stop reading".
+RUN_FINISHED_EVENT = "run_finished"
 
 
-@router.post("", response_model=TaskPayload, response_model_by_alias=True)
-async def create_task_route(
-    body: CreateTaskRequest, user: CurrentUser, session: DBSession
-) -> TaskPayload:
-    return await svc.create_task(session, body)
+# ─── payload builders ────────────────────────────────────────────────────────────────
 
 
-@router.patch("/{task_id}", response_model=TaskPayload, response_model_by_alias=True)
-async def update_task_route(
-    task_id: str, body: UpdateTaskRequest, user: CurrentUser, session: DBSession
-) -> TaskPayload:
-    return await svc.update_task(session, task_id, body)
+def _sse(event: dict[str, Any]) -> dict[str, str]:
+    return {"data": json.dumps(event, separators=(",", ":"), default=str)}
 
 
-@router.delete("/{task_id}")
-async def delete_task_route(
-    task_id: str, user: CurrentUser, session: DBSession
-) -> dict[str, str]:
-    await svc.delete_task(session, task_id)
-    return {"status": "ok"}
+def _last_run(automation: Automation) -> LastRunPayload | None:
+    if not automation.last_run_status:
+        return None
+    return LastRunPayload(status=automation.last_run_status, ended_at=None)
 
 
-# ─── Interview chat ──────────────────────────────────────────────────────────────────
+def _document_is_valid(document: dict[str, Any]) -> bool:
+    """Cheap list-view validity: the flags `validate_document` stamped at save time.
+
+    Deliberately not a re-validation — the list renders dozens of rows and building the
+    catalog per row would make it a much more expensive endpoint than it needs to be.
+    """
+    return all(step.get("valid", True) for step in (document.get("steps") or []))
+
+
+def _summary(automation: Automation) -> AutomationSummary:
+    document = automation.document or {}
+    trigger_summary = "manual trigger"
+    try:
+        trigger_summary = describe_trigger(
+            AutomationDocument.model_validate(document).trigger
+        )
+    except Exception:  # noqa: BLE001 — a broken draft must not break the whole list
+        log.warning("automation_trigger_undescribable", automation_id=automation.id)
+    return AutomationSummary(
+        id=automation.id,
+        name=automation.name,
+        enabled=automation.enabled,
+        trigger_summary=trigger_summary,
+        next_run_at=scheduler.next_run_at(automation.id),
+        last_run=_last_run(automation),
+        valid=_document_is_valid(document),
+        updated_at=to_ms(automation.updated_at),
+    )
+
+
+async def _detail(session: AsyncSession, automation: Automation) -> AutomationDetail:
+    """Re-validate the stored draft so `issues` reflect the catalog as it is right now."""
+    document = automation.document or {}
+    issues: list[Any] = []
+    try:
+        parsed = AutomationDocument.model_validate(document)
+    except Exception:  # noqa: BLE001 — show the raw draft rather than 500ing on it
+        log.warning("automation_document_unparseable", automation_id=automation.id)
+    else:
+        validated, issues = await svc.validate_draft(session, parsed)
+        document = dump_document(validated)
+
+    return AutomationDetail(
+        id=automation.id,
+        name=automation.name,
+        enabled=automation.enabled,
+        document=document,
+        version_number=await svc.current_version_number(session, automation),
+        issues=issues,
+        next_run_at=scheduler.next_run_at(automation.id),
+        assistant_messages=list(automation.assistant_messages or []),
+        last_run=_last_run(automation),
+        created_at=to_ms(automation.created_at),
+        updated_at=to_ms(automation.updated_at),
+    )
+
+
+def _version_summary(version: AutomationVersion) -> VersionSummary:
+    return VersionSummary(
+        number=version.number,
+        created_by=version.created_by,  # type: ignore[arg-type]
+        created_at=to_ms(version.created_at),
+    )
+
+
+def _run_summary(run: Run, version_number: int | None) -> RunSummary:
+    return RunSummary(
+        id=run.id,
+        automation_id=run.automation_id,
+        version_number=version_number,
+        trigger=run.trigger,  # type: ignore[arg-type]
+        status=run.status,  # type: ignore[arg-type]
+        stopped_by_step_id=run.stopped_by_step_id,
+        error=run.error,
+        input_tokens=run.input_tokens,
+        output_tokens=run.output_tokens,
+        started_at=to_ms(run.started_at) if run.started_at else None,
+        ended_at=to_ms(run.ended_at) if run.ended_at else None,
+        duration_ms=run.duration_ms,
+        created_at=to_ms(run.created_at),
+    )
+
+
+def _run_step(step: RunStep) -> RunStepPayload:
+    return RunStepPayload(
+        id=step.id,
+        step_id=step.step_id,
+        index=step.index,
+        name=step.name,
+        type=step.type,
+        status=step.status,  # type: ignore[arg-type]
+        attempt=step.attempt,
+        resolved_input=step.resolved_input,
+        output=step.output,
+        error=step.error,
+        trace=list(step.trace or []),
+        started_at=to_ms(step.started_at) if step.started_at else None,
+        ended_at=to_ms(step.ended_at) if step.ended_at else None,
+        duration_ms=step.duration_ms,
+    )
+
+
+def _run_detail(run: Run, steps: list[RunStep], version_number: int | None) -> RunDetail:
+    return RunDetail(
+        **_run_summary(run, version_number).model_dump(),
+        steps=[_run_step(s) for s in steps],
+    )
+
+
+async def _version_numbers(session: AsyncSession, runs: list[Run]) -> dict[str, int]:
+    """`version_id` → `number` for the versions referenced by `runs` (one query)."""
+    ids = {r.version_id for r in runs if r.version_id}
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(AutomationVersion.id, AutomationVersion.number).where(
+                AutomationVersion.id.in_(ids)
+            )
+        )
+    ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+def _diff_from_raw(old_raw: dict[str, Any], new: AutomationDocument) -> list[str]:
+    """Diff a raw stored document against a freshly saved one, for the PUT summary."""
+    return diff_summary(AutomationDocument.model_validate(old_raw), new)
+
+
+async def _run_in_automation(
+    session: AsyncSession, automation_id: str, run_id: str
+) -> tuple[Run, list[RunStep]]:
+    run, steps = await runs_svc.get_run(session, run_id)
+    if run.automation_id != automation_id:
+        raise NotFound(f"Run {run_id} not found.")
+    return run, steps
+
+
+# ─── automations ─────────────────────────────────────────────────────────────────────
+
+
+@router.get("", response_model=list[AutomationSummary], response_model_by_alias=True)
+async def list_automations_route(
+    user: CurrentUser, session: DBSession
+) -> list[AutomationSummary]:
+    return [_summary(a) for a in await svc.list_automations(session)]
 
 
 @router.post(
-    "/chat", response_model=ChatTaskResponse, response_model_by_alias=True, response_model_exclude_none=True
+    "",
+    response_model=AutomationDetail,
+    response_model_by_alias=True,
+    status_code=status.HTTP_201_CREATED,
 )
-async def chat_route(
-    body: ChatTaskRequest, user: CurrentUser, session: DBSession
-) -> ChatTaskResponse:
-    task = await svc.get_task(session, body.task_id)
-    history = list(task.messages or [])
-    is_first = len(history) == 0
-
-    # Interview + title generation run in parallel — first-exchange overhead is minimal.
-    interview_coro = interview(
-        session,
-        provider=task.provider,
-        model=task.model,
-        history=history,
-        user_message=body.message,
+async def create_automation_route(
+    body: CreateAutomationRequest, user: CurrentUser, session: DBSession
+) -> AutomationDetail:
+    automation = await svc.create_automation(
+        session, name=body.name, document=body.document
     )
-    title_coro: asyncio.Future[str] | asyncio.Task[str]
-    if is_first and not task.title:
-        title_coro = asyncio.create_task(
-            generate_task_title(session, task.provider, task.model, body.message)
-        )
-    else:
-        f: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-        f.set_result(task.title or "")
-        title_coro = f
-
-    result = await interview_coro
-    generated_title = await title_coro
-
-    user_msg = {"role": "user", "content": body.message}
-    if result.kind == "ask":
-        asst_msg: dict[str, object] = {"role": "assistant", "content": result.question}
-        if result.options:
-            asst_msg["options"] = result.options
-        new_messages = [user_msg, asst_msg]
-        await svc.append_messages(
-            session,
-            body.task_id,
-            new_messages,  # type: ignore[arg-type]
-            title=generated_title if generated_title and not task.title else None,
-        )
-        resp = ChatTaskResponse(question=result.question, options=result.options)
-    else:
-        new_messages = [user_msg, {"role": "assistant", "content": "Skill ready."}]
-        await svc.append_messages(
-            session,
-            body.task_id,
-            new_messages,  # type: ignore[arg-type]
-            prompt=result.skill,
-            title=generated_title if generated_title and not task.title else None,
-        )
-        resp = ChatTaskResponse(finalized=True, skill=result.skill)
-
-    if generated_title and not task.title:
-        resp.title = generated_title
-    return resp
+    return await _detail(session, automation)
 
 
-# ─── Run (SSE) ───────────────────────────────────────────────────────────────────────
+@router.post("/validate", response_model=ValidateResponse, response_model_by_alias=True)
+async def validate_route(
+    body: ValidateRequest, user: CurrentUser, session: DBSession
+) -> ValidateResponse:
+    """Dry run: validate a document the client is editing without touching the database.
+
+    Declared before the `/{automation_id}` routes so "validate" is never read as an id.
+    """
+    doc = AutomationDocument.model_validate(body.document)
+    validated, issues = await svc.validate_draft(session, doc)
+    return ValidateResponse(document=dump_document(validated), issues=issues)
 
 
-def _sse(event: dict) -> dict:
-    return {"data": json.dumps(event, separators=(",", ":"))}
+@router.get("/{automation_id}", response_model=AutomationDetail, response_model_by_alias=True)
+async def get_automation_route(
+    automation_id: str, user: CurrentUser, session: DBSession
+) -> AutomationDetail:
+    automation = await svc.get_automation(session, automation_id)
+    return await _detail(session, automation)
 
 
-RUN_SYSTEM_PROMPT_TEMPLATE = (
-    "Today's date is {today}. When the task mentions 'today', 'yesterday', 'last week', "
-    "etc., resolve them to concrete dates yourself before calling tools. For Gmail "
-    "searches specifically, the date format Gmail expects is YYYY/MM/DD (e.g. "
-    "`after:{today_slash}`) — never pass the literal word 'today' to the Gmail API.\n\n"
-    "You are an automation agent. Use the available tools to actually accomplish the task — "
-    "search the web, read pages, call HTTP APIs (GET/POST/PUT/PATCH/DELETE), or use any "
-    "connected integration tools (e.g. Gmail) — rather than saying you cannot. "
-    "When the task is complete, reply with only the final result."
+@router.put(
+    "/{automation_id}", response_model=OperationsResponse, response_model_by_alias=True
 )
+async def replace_document_route(
+    automation_id: str,
+    body: ReplaceDocumentRequest,
+    user: CurrentUser,
+    session: DBSession,
+) -> OperationsResponse:
+    """Whole-document replace, as written by the JSON editor. Unlike every other write,
+    a document that isn't a well-formed `AutomationDocument` is rejected (422)."""
+    automation = await svc.get_automation(session, automation_id)
+    old = automation.document or {}
+    validated, issues, number = await svc.save_document(
+        session, automation, body.document, created_by="json"
+    )
+    summary: list[str] = []
+    try:
+        summary = _diff_from_raw(old, validated)
+    except Exception:  # noqa: BLE001 — a previously-unparseable draft has no diff to show
+        summary = []
+    return OperationsResponse(
+        document=dump_document(validated),
+        issues=issues,
+        version_number=number,
+        summary=summary,
+    )
 
 
-def _build_run_system_prompt() -> str:
-    from datetime import datetime, timezone
+@router.patch(
+    "/{automation_id}", response_model=AutomationDetail, response_model_by_alias=True
+)
+async def patch_automation_route(
+    automation_id: str,
+    body: PatchAutomationRequest,
+    user: CurrentUser,
+    session: DBSession,
+) -> AutomationDetail:
+    automation = await svc.get_automation(session, automation_id)
+    if body.name is not None:
+        await svc.rename(session, automation, body.name)
+    if body.enabled is not None:
+        await svc.set_enabled(session, automation, body.enabled)
+    return await _detail(session, automation)
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return RUN_SYSTEM_PROMPT_TEMPLATE.format(today=today, today_slash=today.replace("-", "/"))
+
+@router.delete("/{automation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_automation_route(
+    automation_id: str, user: CurrentUser, session: DBSession
+) -> Response:
+    automation = await svc.get_automation(session, automation_id)
+    await svc.delete_automation(session, automation)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/run")
-async def run_route(
-    body: RunTaskRequest, request: Request, user: CurrentUser, session: DBSession
+# ─── document editing ────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/{automation_id}/operations",
+    response_model=OperationsResponse,
+    response_model_by_alias=True,
+)
+async def apply_operations_route(
+    automation_id: str, body: OperationsRequest, user: CurrentUser, session: DBSession
+) -> OperationsResponse:
+    automation = await svc.get_automation(session, automation_id)
+    validated, issues, number, summary = await svc.apply_ops(
+        session, automation, body.operations, created_by="user"
+    )
+    return OperationsResponse(
+        document=dump_document(validated),
+        issues=issues,
+        version_number=number,
+        summary=summary,
+    )
+
+
+# ─── versions ────────────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/{automation_id}/versions",
+    response_model=list[VersionSummary],
+    response_model_by_alias=True,
+)
+async def list_versions_route(
+    automation_id: str, user: CurrentUser, session: DBSession
+) -> list[VersionSummary]:
+    await svc.get_automation(session, automation_id)
+    return [_version_summary(v) for v in await svc.list_versions(session, automation_id)]
+
+
+@router.get(
+    "/{automation_id}/versions/{number}",
+    response_model=VersionDetail,
+    response_model_by_alias=True,
+)
+async def get_version_route(
+    automation_id: str, number: int, user: CurrentUser, session: DBSession
+) -> VersionDetail:
+    await svc.get_automation(session, automation_id)
+    version = await svc.get_version(session, automation_id, number)
+    return VersionDetail(
+        number=version.number,
+        created_by=version.created_by,  # type: ignore[arg-type]
+        created_at=to_ms(version.created_at),
+        document=version.document,
+    )
+
+
+@router.post(
+    "/{automation_id}/versions/{number}/restore",
+    response_model=OperationsResponse,
+    response_model_by_alias=True,
+)
+async def restore_version_route(
+    automation_id: str, number: int, user: CurrentUser, session: DBSession
+) -> OperationsResponse:
+    automation = await svc.get_automation(session, automation_id)
+    validated, issues, new_number, summary = await svc.restore_version(
+        session, automation, number
+    )
+    return OperationsResponse(
+        document=dump_document(validated),
+        issues=issues,
+        version_number=new_number,
+        summary=summary,
+    )
+
+
+# ─── runs ────────────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/{automation_id}/runs",
+    response_model=StartRunResponse,
+    response_model_by_alias=True,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_run_route(
+    automation_id: str, body: StartRunRequest, user: CurrentUser, session: DBSession
+) -> StartRunResponse:
+    """Queue a run and hand it to the executor. 409 when one is already in flight."""
+    automation = await svc.get_automation(session, automation_id)
+    run = await runs_svc.create_run(session, automation, trigger=body.trigger)
+    # Committed here rather than by the dependency so the background executor (Task 4b),
+    # which opens its own session, can actually see the run it's about to be handed.
+    await session.commit()
+    executor.start_run_in_background(run.id)
+    return StartRunResponse(run_id=run.id)
+
+
+@router.get(
+    "/{automation_id}/runs", response_model=list[RunSummary], response_model_by_alias=True
+)
+async def list_runs_route(
+    automation_id: str,
+    user: CurrentUser,
+    session: DBSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = runs_svc.DEFAULT_RUN_LIMIT,
+    before: Annotated[int | None, Query(description="createdAt cursor, epoch ms")] = None,
+) -> list[RunSummary]:
+    await svc.get_automation(session, automation_id)
+    runs = await runs_svc.list_runs(session, automation_id, limit=limit, before=before)
+    numbers = await _version_numbers(session, runs)
+    return [_run_summary(r, numbers.get(r.version_id or "")) for r in runs]
+
+
+@router.get(
+    "/{automation_id}/runs/{run_id}", response_model=RunDetail, response_model_by_alias=True
+)
+async def get_run_route(
+    automation_id: str, run_id: str, user: CurrentUser, session: DBSession
+) -> RunDetail:
+    run, steps = await _run_in_automation(session, automation_id, run_id)
+    numbers = await _version_numbers(session, [run])
+    return _run_detail(run, steps, numbers.get(run.version_id or ""))
+
+
+@router.post(
+    "/{automation_id}/runs/{run_id}/cancel",
+    response_model=CancelRunResponse,
+    response_model_by_alias=True,
+)
+async def cancel_run_route(
+    automation_id: str, run_id: str, user: CurrentUser, session: DBSession
+) -> CancelRunResponse:
+    await _run_in_automation(session, automation_id, run_id)
+    return CancelRunResponse(status=await runs_svc.cancel_run(session, run_id))  # type: ignore[arg-type]
+
+
+@router.get("/{automation_id}/runs/{run_id}/events")
+async def run_events_route(
+    automation_id: str, run_id: str, user: CurrentUser, session: DBSession
 ) -> EventSourceResponse:
-    task = await svc.get_task(session, body.task_id)
-    if not task.prompt or not task.prompt.strip():
-        from app.errors import BadRequest
+    """Live progress for one run.
 
-        raise BadRequest("Task has no skill prompt to run. Finalize the interview first.")
+    Always opens with a `snapshot` built from the database, so a client that connects
+    late (or reconnects) starts from the authoritative state rather than from whatever
+    happens to be published next. A run that has already finished gets the snapshot and
+    an immediate end-of-stream.
+    """
+    run, steps = await _run_in_automation(session, automation_id, run_id)
+    numbers = await _version_numbers(session, [run])
+    snapshot = _run_detail(run, steps, numbers.get(run.version_id or ""))
+    finished = run.status in runs_svc.TERMINAL_RUN_STATUSES
 
-    provider_name = task.provider
-    model = task.model
-    skill = task.prompt
-    conversation_id = task.id
+    # Subscribe before yielding the snapshot: anything the executor publishes while the
+    # snapshot is being serialized is then queued rather than lost.
+    queue = run_events.subscribe(run_id)
 
-    provider = await get_provider_for(session, provider_name)
-    tools = await list_available_tool_schemas(session)
-
-    # Mark running.
-    task.status = "running"
-    task.output = ""
-    task.transcript = []
-    task.error = None
-    await session.flush()
-
-    messages: list[ChatMessage] = [
-        ChatMessage(role="system", content=_build_run_system_prompt()),
-        ChatMessage(role="user", content=skill),
-    ]
-
-    async def generator() -> AsyncIterator[dict]:
-        started_at = int(time.time() * 1000)
-        assistant_buf = ""
-        transcript: list[dict] = []
-        idx_by_id: dict[str, int] = {}
-        input_tokens = 0
-        output_tokens = 0
-        status = "succeeded"
-        error: str | None = None
-
+    async def generator() -> AsyncIterator[dict[str, str]]:
         try:
-            async for event in stream_agent(
-                provider=provider,
-                model=model,
-                messages=messages,
-                tools=tools,
-                session=session,
-            ):
-                if await request.is_disconnected():
-                    log.info("client_disconnected_mid_run", task_id=conversation_id)
-                    status = "cancelled"
-                    return
-
-                t = event["type"]
-                if t == "text":
-                    assistant_buf += event["delta"]
-                elif t == "tool_call":
-                    if assistant_buf:
-                        transcript.append({"kind": "assistant", "text": assistant_buf})
-                        assistant_buf = ""
-                    idx = len(transcript)
-                    idx_by_id[event["id"]] = idx
-                    transcript.append(
-                        {
-                            "kind": "tool",
-                            "tool": event["tool"],
-                            "args": event["args"],
-                            "result": "",
-                            "ok": True,
-                        }
-                    )
-                elif t == "tool_result":
-                    idx = idx_by_id.get(event["id"])
-                    if idx is not None:
-                        transcript[idx]["result"] = event["result"]
-                        transcript[idx]["ok"] = event["ok"]
-                elif t == "final":
-                    if assistant_buf and (
-                        not transcript or transcript[-1].get("kind") == "tool"
-                    ):
-                        transcript.append({"kind": "assistant", "text": assistant_buf})
-                    assistant_buf = event["text"] or assistant_buf
-                elif t == "usage":
-                    input_tokens = event["inputTokens"]
-                    output_tokens = event["outputTokens"]
-                elif t == "error":
-                    status = "failed"
-                    error = event["message"]
-                yield _sse(event)
-        except AppError as exc:
-            status = "failed"
-            error = exc.detail
-            log.warning("run_app_error", task_id=conversation_id, detail=exc.detail)
-            yield _sse({"type": "error", "message": exc.detail})
-        except Exception as exc:  # noqa: BLE001
-            status = "failed"
-            error = str(exc)
-            log.error("run_unhandled", task_id=conversation_id, exc_info=True)
-            yield _sse({"type": "error", "message": error})
+            yield _sse({"type": "snapshot", "run": snapshot.model_dump(by_alias=True)})
+            if finished:
+                return
+            while True:
+                item = await queue.get()
+                if item is run_events.SENTINEL:
+                    break
+                yield _sse(item)
+                if item.get("type") == RUN_FINISHED_EVENT:
+                    break
         finally:
-            ended_at = int(time.time() * 1000)
-            run = TaskRun(
-                status=status if status in {"succeeded", "failed", "cancelled"} else "failed",
-                started_at=started_at,
-                ended_at=ended_at,
-                duration_ms=ended_at - started_at,
-                error=error,
-            )
-            try:
-                await svc.append_run(
-                    session,
-                    conversation_id,
-                    run=run,
-                    output=assistant_buf,
-                    transcript=transcript,
-                    status=status,
-                    error=error,
-                )
-                if status == "succeeded":
-                    await record_usage(
-                        session,
-                        provider=provider_name,
-                        model=model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                    )
-            except Exception:  # noqa: BLE001
-                log.warning("run_persist_failed", task_id=conversation_id, exc_info=True)
-            yield _sse({"type": "done", "status": status})
+            run_events.unsubscribe(run_id, queue)
 
     return EventSourceResponse(generator())

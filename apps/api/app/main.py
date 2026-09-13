@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.db import models  # noqa: F401 — registers the tables on Base.metadata
-from app.db.base import Base, get_engine
+from app.db.base import Base, get_engine, session_scope
 from app.errors import register_handlers
 from app.logging import configure_logging, get_logger
 from app.middleware import RequestLoggingMiddleware
@@ -21,6 +21,8 @@ from app.routers import conversations as conversations_router
 from app.routers import settings as settings_router
 from app.routers import tools as tools_router
 from app.routers import usage as usage_router
+from app.services.legacy_migration import convert_legacy_tasks
+from app.services.runs import mark_orphaned_runs_failed
 
 
 async def _ensure_schema() -> None:
@@ -36,10 +38,13 @@ async def _ensure_schema() -> None:
 
 
 async def _apply_runtime_migrations() -> None:
-    """Idempotent ALTER TABLE statements applied on startup.
+    """Idempotent schema changes applied on startup.
 
     Cheaper than running Alembic from the container entrypoint and keeps schema
-    drift in sync for self-hosted users who don't run migrations manually.
+    drift in sync for self-hosted users who don't run migrations manually. Every
+    statement here has a counterpart in an Alembic revision (currently
+    `0002_tool_credentials` and `0003_automations_v2`) and both paths are guarded the
+    same way, so whichever runs first wins and the other is a no-op.
     """
     engine = get_engine()
     async with engine.begin() as conn:
@@ -49,6 +54,36 @@ async def _apply_runtime_migrations() -> None:
                 "tool_credentials JSONB NOT NULL DEFAULT '{}'::jsonb"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE settings ADD COLUMN IF NOT EXISTS "
+                "timezone TEXT NOT NULL DEFAULT 'UTC'"
+            )
+        )
+
+        # Legacy tasks → automations, once. `tasks_legacy` existing is the marker that
+        # the conversion already happened (by this path or by `alembic upgrade`).
+        has_tasks = (
+            await conn.execute(text("SELECT to_regclass('public.tasks')"))
+        ).scalar()
+        has_legacy = (
+            await conn.execute(text("SELECT to_regclass('public.tasks_legacy')"))
+        ).scalar()
+        if has_tasks is not None and has_legacy is None:
+            converted = await conn.run_sync(convert_legacy_tasks)
+            await conn.execute(text("ALTER TABLE tasks RENAME TO tasks_legacy"))
+            log = get_logger("app.lifespan")
+            log.info("legacy_tasks_migrated", converted=converted)
+
+
+async def _recover_interrupted_runs() -> None:
+    """Fail any run left `queued`/`running` by the previous process.
+
+    Runs only exist in the API process, so nothing is executing them after a restart;
+    without this they would block new runs of the same automation forever (409).
+    """
+    async with session_scope() as session:
+        await mark_orphaned_runs_failed(session)
 
 
 @asynccontextmanager
@@ -61,6 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         await _ensure_schema()
         await _apply_runtime_migrations()
+        await _recover_interrupted_runs()
     except Exception:  # noqa: BLE001
         log.warning("runtime_migrations_failed", exc_info=True)
     try:
