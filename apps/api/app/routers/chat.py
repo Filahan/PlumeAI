@@ -135,7 +135,10 @@ async def chat_stream(
             log.error("chat_stream_unhandled", exc_type=type(exc).__name__, exc_info=True)
             yield _sse({"type": "error", "message": str(exc)})
         finally:
-            if status == "succeeded":
+            # Record whatever the provider reported even on a failed round: a stream that
+            # died mid-answer still burned tokens, and the runner forwards the usage it saw
+            # before re-raising.
+            if input_tokens or output_tokens:
                 try:
                     await record_usage(
                         session,

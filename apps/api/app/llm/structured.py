@@ -86,30 +86,28 @@ async def _drain(stream: AsyncIterator[AgentEvent]) -> _Attempt:
     return attempt
 
 
-def _check(
-    raw: str, validator: Draft202012Validator
-) -> tuple[dict[str, Any] | None, _Invalid | None]:
-    """Parse + schema-check the tool arguments."""
+def _check(raw: str, validator: Draft202012Validator) -> dict[str, Any] | _Invalid:
+    """Parse + schema-check the tool arguments: the payload, or why it was rejected."""
     try:
         payload = json.loads(raw)
     except ValueError as exc:
-        return None, _Invalid(
+        return _Invalid(
             message=f"the arguments were not valid JSON ({exc}).", kind="invalid_json"
         )
     if not isinstance(payload, dict):
-        return None, _Invalid(
+        return _Invalid(
             message="the arguments must be a JSON object, not a bare value or list.",
             kind="not_an_object",
         )
     error: ValidationError | None = next(iter(validator.iter_errors(payload)), None)
     if error is not None:
-        return None, _Invalid(
+        return _Invalid(
             message=f"the payload did not match the schema ({error.message}).",
             kind="schema_violation",
             json_path=error.json_path,
             validator=str(error.validator),
         )
-    return payload, None
+    return payload
 
 
 async def complete_json(
@@ -166,13 +164,12 @@ async def complete_json(
         if attempt.raw is None:
             invalid = _Invalid(message="the model returned no tool call.", kind="no_tool_call")
         else:
-            payload, invalid_now = _check(attempt.raw, validator)
-            if payload is not None:
+            checked = _check(attempt.raw, validator)
+            if not isinstance(checked, _Invalid):
                 return StructuredResult(
-                    data=payload, input_tokens=total_in, output_tokens=total_out
+                    data=checked, input_tokens=total_in, output_tokens=total_out
                 )
-            assert invalid_now is not None
-            invalid = invalid_now
+            invalid = checked
 
         # Only the schema-shaped facts are logged — `invalid.message` can quote the
         # model's payload, which may carry user data, so it stays in the prompt.

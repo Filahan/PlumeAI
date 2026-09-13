@@ -243,10 +243,13 @@ class AnthropicProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         *,
         tool_choice: ToolChoice | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[AgentEvent]:
         # Build (and therefore validate) the request eagerly so a bad `tool_choice` raises
         # here rather than on the consumer's first `__anext__`.
-        params = build_request(model, messages, tools, tool_choice)
+        params = build_request(
+            model, messages, tools, tool_choice, max_tokens=max_tokens or MAX_TOKENS
+        )
         return self._stream(params)
 
     async def _stream(self, params: dict[str, Any]) -> AsyncIterator[AgentEvent]:
@@ -255,6 +258,9 @@ class AnthropicProvider(LLMProvider):
         # content-block index; accumulate per index and flush on content_block_stop.
         acc: dict[int, dict[str, str]] = {}
         saw_event = False
+        # Whether this response involved a tool_use block at all. Truncation matters much
+        # more for tool calls (half a JSON argument is unusable) than for prose.
+        saw_tool_use = False
         final: Any = None
 
         # `messages.stream()` only builds the manager — the HTTP request (and therefore any
@@ -273,6 +279,7 @@ class AnthropicProvider(LLMProvider):
                     if kind == "content_block_start":
                         block = getattr(event, "content_block", None)
                         if block is not None and getattr(block, "type", "") == "tool_use":
+                            saw_tool_use = True
                             acc[event.index] = {
                                 "id": getattr(block, "id", "") or "",
                                 "name": getattr(block, "name", "") or "",
@@ -329,14 +336,20 @@ class AnthropicProvider(LLMProvider):
             "outputTokens": final.usage.output_tokens or 0,
         }
 
-        stop_reason = getattr(final, "stop_reason", None)
-        if stop_reason == "max_tokens":
-            # Whatever we streamed is truncated — a half-written JSON tool argument would
-            # burn a structured-output retry on something the model got right.
+        if getattr(final, "stop_reason", None) == "max_tokens":
             log.warning(
-                "anthropic_response_truncated", model=model, max_tokens=params["max_tokens"]
+                "anthropic_response_truncated",
+                model=model,
+                max_tokens=params["max_tokens"],
+                tool_use=saw_tool_use,
             )
-            raise ProviderError(
-                f"Anthropic response hit the {params['max_tokens']}-token cap and is truncated.",
-                extra={"reason": "max_tokens"},
-            )
+            # Truncated prose is still a usable answer, and the chat path has already been
+            # streamed it — failing the round here would throw it away. Truncated tool
+            # arguments are not usable (half-written JSON), so those do fail, which also
+            # stops `complete_json` from spending a retry on output the model got right.
+            if saw_tool_use:
+                raise ProviderError(
+                    f"Anthropic response hit the {params['max_tokens']}-token cap while "
+                    "writing a tool call, so the arguments are truncated.",
+                    extra={"reason": "max_tokens"},
+                )

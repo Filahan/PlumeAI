@@ -638,6 +638,22 @@ async def test_tool_choice_string_reaches_the_anthropic_wire() -> None:
     assert out.pop()["tool_choice"] == {"type": "any"}
 
 
+async def test_max_tokens_is_plumbed_into_the_request() -> None:
+    out = await _run_stream(
+        [_block_start(0, type="text", text=""), _text_delta(0, "x"), _block_stop(0, type="text")],
+        model="m",
+        messages=[ChatMessage(role="user", content="hi")],
+        max_tokens=256,
+    )
+    assert out.pop()["max_tokens"] == 256
+
+
+def test_max_tokens_defaults_to_the_module_constant() -> None:
+    assert build_request("m", [ChatMessage(role="user", content="hi")], None, None)[
+        "max_tokens"
+    ] == MAX_TOKENS
+
+
 # --- block types we don't model ---------------------------------------------------------
 
 
@@ -719,7 +735,7 @@ async def _run_stream_with_final(events: list[SimpleNamespace], final: SimpleNam
     return out
 
 
-async def test_max_tokens_stop_reason_raises_after_yielding_what_streamed() -> None:
+async def test_max_tokens_inside_a_tool_call_raises_after_yielding_what_streamed() -> None:
     events = [
         _block_start(0, type="tool_use", id="toolu_1", name="emit"),
         _json_delta(0, '{"answer": "half'),
@@ -744,6 +760,48 @@ async def test_max_tokens_stop_reason_raises_after_yielding_what_streamed() -> N
     assert seen[0]["args"] == '{"answer": "half'
     assert exc.value.extra == {"reason": "max_tokens"}
     assert "truncated" in exc.value.detail
+
+
+async def test_max_tokens_with_text_only_finishes_normally() -> None:
+    """Truncated prose is still a usable answer — failing the round would discard it."""
+    events = [
+        _block_start(0, type="text", text=""),
+        _text_delta(0, "a long answer that ran out of "),
+        _block_stop(0, type="text"),
+    ]
+    final = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=3, output_tokens=8192), stop_reason="max_tokens"
+    )
+
+    out = await _run_stream_with_final(events, final)
+
+    assert out == [
+        {"type": "text", "delta": "a long answer that ran out of "},
+        {"type": "usage", "inputTokens": 3, "outputTokens": 8192},
+    ]
+
+
+async def test_max_tokens_after_a_completed_tool_call_still_raises() -> None:
+    """A tool_use block was involved, so the arguments may be cut off — don't trust them."""
+    events = [
+        _block_start(0, type="text", text=""),
+        _text_delta(0, "calling"),
+        _block_stop(0, type="text"),
+        _block_start(1, type="tool_use", id="t1", name="emit"),
+        _json_delta(1, '{"a": 1}'),
+        _block_stop(1, type="tool_use", id="t1", name="emit"),
+    ]
+    final = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=1, output_tokens=2), stop_reason="max_tokens"
+    )
+    provider = AnthropicProvider(api_key="test")
+    provider.client.messages.stream = (  # type: ignore[assignment]
+        lambda **p: _FakeStream(events, final)
+    )
+    with pytest.raises(ProviderError) as exc:
+        async for _ in provider.stream_chat(model="m", messages=[]):
+            pass
+    assert exc.value.extra == {"reason": "max_tokens"}
 
 
 async def test_normal_stop_reason_does_not_raise() -> None:

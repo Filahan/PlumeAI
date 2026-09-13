@@ -38,9 +38,13 @@ class _Round:
 async def _consume_round(
     stream: AsyncIterator[AgentEvent],
     emit: list[AgentEvent],
+    round_: _Round,
 ) -> _Round:
-    """Drain a provider stream into a `_Round`, forwarding text/usage events to the caller."""
-    round_ = _Round()
+    """Drain a provider stream into `round_`, buffering text events into `emit`.
+
+    Both accumulators are owned by the caller so that whatever arrived before a mid-stream
+    failure is still available to it when this raises.
+    """
     async for ev in stream:
         kind = ev.get("type")
         if kind == "text":
@@ -78,8 +82,23 @@ async def stream_agent(
 
     for iteration in range(MAX_ITERATIONS):
         emitted: list[AgentEvent] = []
+        round_ = _Round()
         stream = provider.stream_chat(model=model, messages=messages, tools=tools)
-        round_ = await _consume_round(stream, emitted)
+        try:
+            await _consume_round(stream, emitted, round_)
+        except Exception:
+            # Text is buffered so we can decide on tool calls before forwarding it. If the
+            # round dies mid-stream, hand over whatever did arrive (plus the tokens it
+            # cost) before letting the error surface — otherwise a partial answer the user
+            # already paid for is silently dropped.
+            for ev in emitted:
+                yield ev
+            total_in += round_.input_tokens
+            total_out += round_.output_tokens
+            if total_in or total_out:
+                yield {"type": "usage", "inputTokens": total_in, "outputTokens": total_out}
+            raise
+
         total_in += round_.input_tokens
         total_out += round_.output_tokens
 

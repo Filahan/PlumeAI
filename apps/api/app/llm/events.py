@@ -3,6 +3,10 @@
 The same `AgentEvent` union is yielded by every LLM provider and consumed by the agent
 runner / SSE endpoint. The client receives these as JSON payloads in the SSE `data` field,
 matching the protocol the legacy Node implementation used.
+
+Ordering is guaranteed only for `text` deltas, which always arrive in order; `usage` and
+`tool_call` may arrive in either order relative to each other (OpenAI flushes tool calls at
+end-of-stream, after its usage chunk; Anthropic emits them inline, before usage).
 """
 
 from __future__ import annotations
