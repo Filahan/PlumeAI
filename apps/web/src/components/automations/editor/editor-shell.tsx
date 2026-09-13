@@ -4,8 +4,9 @@ import { useEffect } from 'react';
 import { AlertCircle, Loader2 } from 'lucide-react';
 import { useAutomationsStore, useCurrentAutomation } from '@/lib/automations/store';
 import EditorHeader from '@/components/automations/editor/editor-header';
-import { CanvasSlot, InspectorSlot } from '@/components/automations/editor/slots';
-import JsonView from '@/components/automations/json/json-view';
+import AutomationCanvas from '@/components/automations/canvas/automation-canvas';
+import InspectorPanel from '@/components/automations/inspector/inspector-panel';
+import JsonEditor from '@/components/automations/json/json-editor';
 import RunPanel from '@/components/automations/runs/run-panel';
 import IssuesList from '@/components/automations/issues-list';
 
@@ -67,7 +68,7 @@ export default function EditorShell({ id }: { id: string }) {
           <>
             <div className="flex-1 min-w-0 flex flex-col">
               <div className="flex-1 min-h-0">
-                <CanvasSlot />
+                <AutomationCanvas />
               </div>
               {current.issues.length > 0 && (
                 <div className="shrink-0 max-h-[96px] overflow-y-auto border-t border-[color:var(--border)] bg-white px-4 py-2">
@@ -75,11 +76,11 @@ export default function EditorShell({ id }: { id: string }) {
                 </div>
               )}
             </div>
-            {current.inspectorOpen && <InspectorSlot />}
+            {current.inspectorOpen && <InspectorPanel />}
           </>
         ) : (
-          <div className="flex-1 min-w-0">
-            <JsonView />
+          <div className="flex-1 min-w-0 min-h-0">
+            <JsonEditor />
           </div>
         )}
       </div>
