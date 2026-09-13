@@ -30,7 +30,7 @@ class HistoryTurn(APISchema):
 
 
 class ChatStreamRequest(APISchema):
-    provider: Literal["openai", "anthropic", "openrouter"]
+    provider: Literal["openai", "anthropic"]
     model: str
     history: list[HistoryTurn] = Field(default_factory=list)
     new_message: Content

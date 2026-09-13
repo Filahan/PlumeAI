@@ -12,7 +12,6 @@ from app.services.settings import get_settings_for_client
 
 PROVIDER_BASE_URLS = {
     "openai": None,  # OpenAI SDK default
-    "openrouter": "https://openrouter.ai/api/v1",
     "anthropic": None,  # Anthropic SDK default
 }
 

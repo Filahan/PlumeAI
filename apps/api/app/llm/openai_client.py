@@ -1,4 +1,4 @@
-"""OpenAI + OpenRouter provider — both speak the OpenAI chat-completions wire format."""
+"""OpenAI provider — speaks the OpenAI chat-completions wire format."""
 
 from __future__ import annotations
 
@@ -79,7 +79,8 @@ def build_request(
 
 
 class OpenAICompatProvider(LLMProvider):
-    """OpenAI-compatible streaming client. Used for both OpenAI and OpenRouter."""
+    """OpenAI-compatible streaming client. `base_url` defaults to OpenAI's own API but
+    can be overridden to point at any OpenAI-compatible endpoint."""
 
     def __init__(self, api_key: str, base_url: str | None = None) -> None:
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)

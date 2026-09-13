@@ -2,8 +2,8 @@
 
 Getting a machine-readable object out of an LLM is done the same way for every provider we
 support: declare a single function tool whose parameters *are* the JSON Schema we want,
-force the model to call it, and read the arguments back. That works identically on OpenAI,
-OpenRouter and Anthropic because `LLMProvider.stream_chat` already normalizes tool calls.
+force the model to call it, and read the arguments back. That works identically on OpenAI
+and Anthropic because `LLMProvider.stream_chat` already normalizes tool calls.
 
 Anything the model gets wrong (malformed JSON, a payload that violates the schema) is fed
 back to it as a follow-up turn so it can try again. Anything the *provider* gets wrong

@@ -46,8 +46,9 @@ async def _apply_runtime_migrations() -> None:
     Cheaper than running Alembic from the container entrypoint and keeps schema
     drift in sync for self-hosted users who don't run migrations manually. Every
     statement here has a counterpart in an Alembic revision (currently
-    `0002_tool_credentials` and `0003_automations_v2`) and both paths are guarded the
-    same way, so whichever runs first wins and the other is a no-op.
+    `0002_tool_credentials`, `0003_automations_v2` and `0005_drop_tasks_legacy`) and
+    both paths are guarded the same way, so whichever runs first wins and the other is
+    a no-op.
     """
     engine = get_engine()
     async with engine.begin() as conn:
@@ -83,6 +84,30 @@ async def _apply_runtime_migrations() -> None:
             await conn.execute(text("ALTER TABLE tasks RENAME TO tasks_legacy"))
             log = get_logger("app.lifespan")
             log.info("legacy_tasks_migrated", converted=converted)
+
+        # Drop `tasks_legacy` once it's no longer needed anywhere in the app (there is
+        # no ORM model for it at all — see `app.services.legacy_migration`). It only
+        # ever exists as the read-only remnant of the rename above (or of Alembic
+        # revision `0003_automations_v2`), and by construction its data was already
+        # copied into `automations` *before* that rename — see `0005_drop_tasks_legacy`.
+        # Re-check `to_regclass` rather than reusing `has_legacy`: the rename above may
+        # have just created the table in this same transaction.
+        has_legacy_now = (
+            await conn.execute(text("SELECT to_regclass('public.tasks_legacy')"))
+        ).scalar()
+        if has_legacy_now is not None:
+            automations_count = (
+                await conn.execute(text("SELECT count(*) FROM automations"))
+            ).scalar()
+            legacy_count = (
+                await conn.execute(text("SELECT count(*) FROM tasks_legacy"))
+            ).scalar()
+            # Safety net on top of the above: only drop once the data is visibly in
+            # `automations` (non-empty), or there was never anything in `tasks_legacy`
+            # to begin with — never drop what might be the only copy of real data.
+            if automations_count > 0 or legacy_count == 0:
+                await conn.execute(text("DROP TABLE tasks_legacy"))
+                get_logger("app.lifespan").info("tasks_legacy_dropped")
 
 
 async def _enforce_one_active_run() -> None:
