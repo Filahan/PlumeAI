@@ -81,6 +81,10 @@ async def _ensure_database() -> None:
 
 async def _create_schema() -> None:
     """Rebuild every table from the models, discarding whatever a previous run left."""
+    assert TEST_DB_NAME.endswith("_test"), (
+        f"refusing to drop the schema of {TEST_DB_NAME!r} — the throwaway database name "
+        "must end in `_test` or this could tear down someone's real data"
+    )
     engine = create_async_engine(_test_database_url(), poolclass=NullPool)
     try:
         async with engine.begin() as conn:

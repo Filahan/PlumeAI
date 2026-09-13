@@ -66,6 +66,7 @@ def _create_chat_tables(conn: sa.Connection) -> None:
         )
     )
     conn.execute(text("CREATE INDEX messages_conversation_idx ON messages (conversation_id)"))
+    conn.execute(text("CREATE INDEX messages_timestamp_idx ON messages (timestamp)"))
 
 
 def _has(conn: sa.Connection, table: str) -> bool:

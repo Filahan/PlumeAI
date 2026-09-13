@@ -642,6 +642,7 @@ class _Execution:
                 # `usage_entries.conversation_id` is a free-text correlation id with no FK;
                 # the run id is what a usage row for an automation should point back at.
                 conversation_id=run.id,
+                source="run",
             )
         duration_ms = run.duration_ms
         committed = True

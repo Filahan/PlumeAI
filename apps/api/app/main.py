@@ -44,9 +44,9 @@ async def _apply_runtime_migrations() -> None:
     Cheaper than running Alembic from the container entrypoint and keeps schema
     drift in sync for self-hosted users who don't run migrations manually. Every
     statement here has a counterpart in an Alembic revision (currently
-    `0002_tool_credentials`, `0003_automations_v2`, `0005_drop_tasks_legacy` and
-    `0006_drop_chat_tables`) and both paths are guarded the same way, so whichever runs
-    first wins and the other is a no-op.
+    `0002_tool_credentials`, `0003_automations_v2`, `0005_drop_tasks_legacy`,
+    `0006_drop_chat_tables` and `0007_usage_entry_source`) and both paths are guarded
+    the same way, so whichever runs first wins and the other is a no-op.
     """
     engine = get_engine()
     async with engine.begin() as conn:
@@ -67,6 +67,12 @@ async def _apply_runtime_migrations() -> None:
                 "ALTER TABLE automations ADD COLUMN IF NOT EXISTS "
                 "valid BOOLEAN NOT NULL DEFAULT true"
             )
+        )
+        # "run" (the executor) vs "assistant" (the builder assistant) — see
+        # `app.services.usage.record_usage`. Nullable, defaulted to nothing: existing
+        # rows stay `NULL` rather than being guessed at.
+        await conn.execute(
+            text("ALTER TABLE usage_entries ADD COLUMN IF NOT EXISTS source TEXT")
         )
 
         # Legacy tasks → automations, once. `tasks_legacy` existing is the marker that

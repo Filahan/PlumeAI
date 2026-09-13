@@ -268,6 +268,7 @@ async def test_the_turn_records_usage_against_the_automation(client, session, sc
     assert len(entries) == 1
     assert entries[0].input_tokens == 120
     assert entries[0].output_tokens == 40
+    assert entries[0].source == "assistant"
 
 
 async def test_history_is_replayed_on_the_next_turn(client, script) -> None:

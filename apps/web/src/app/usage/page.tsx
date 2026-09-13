@@ -58,15 +58,23 @@ export default function UsagePage() {
     let totalTokens = 0;
     let totalCost = 0;
     // One entry per LLM round; `conversationId` correlates them — a run id for automation
-    // runs, an automation id for the builder assistant.
-    const seenRuns = new Set<string>();
+    // runs, an automation id for the builder assistant. `source` tells the two apart (both
+    // are 32-hex uuids, so counting `conversationId` alone would mix runs and assistant
+    // turns together); rows written before `source` existed carry `source: null`.
+    const runIds = new Set<string>();
+    const legacyIds = new Set<string>();
+    let hasTaggedEntries = false;
     const modelMap = new Map<string, ModelSummary>();
     for (const e of filtered) {
       const tokens = e.inputTokens + e.outputTokens;
       const cost = getCost(pricing, e.model, e.inputTokens, e.outputTokens);
       totalTokens += tokens;
       totalCost += cost;
-      if (e.conversationId) seenRuns.add(e.conversationId);
+      if (e.source != null) hasTaggedEntries = true;
+      if (e.conversationId) {
+        if (e.source === 'run') runIds.add(e.conversationId);
+        else if (e.source == null) legacyIds.add(e.conversationId);
+      }
       const existing = modelMap.get(e.model);
       if (existing) {
         existing.calls += 1;
@@ -77,7 +85,12 @@ export default function UsagePage() {
       }
     }
     const models = Array.from(modelMap.values()).sort((a, b) => b.tokens - a.tokens);
-    return { totalTokens, totalCost, calls: filtered.length, models, runs: seenRuns.size };
+    // Once at least one row in range is tagged, count runs precisely. Only fall back to
+    // the older, ambiguous "sources" count (and wording) when every row in range predates
+    // the `source` column, since then runs can't be told apart from assistant turns.
+    const runsCount = hasTaggedEntries ? runIds.size : legacyIds.size;
+    const runsLabel = hasTaggedEntries ? 'run' : 'source';
+    return { totalTokens, totalCost, calls: filtered.length, models, runsCount, runsLabel };
   }, [filtered, pricing]);
 
   return (
@@ -138,7 +151,7 @@ export default function UsagePage() {
               <StatCard icon={<Coins size={16} strokeWidth={2} />} label="Tokens" value={formatTokens(stats.totalTokens)} />
               <StatCard icon={<DollarSign size={16} strokeWidth={2} />} label="Cost" value={formatCost(stats.totalCost)} accent="text-emerald-700" />
               <StatCard icon={<Zap size={16} strokeWidth={2} />} label="Calls" value={stats.calls.toString()} />
-              <StatCard icon={<Layers size={16} strokeWidth={2} />} label="Models" value={stats.models.length.toString()} subtitle={`${stats.runs} run${stats.runs === 1 ? '' : 's'}`} />
+              <StatCard icon={<Layers size={16} strokeWidth={2} />} label="Models" value={stats.models.length.toString()} subtitle={`${stats.runsCount} ${stats.runsLabel}${stats.runsCount === 1 ? '' : 's'}`} />
             </div>
 
             {/* Chart card */}

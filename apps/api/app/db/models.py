@@ -60,6 +60,12 @@ class UsageEntry(Base):
     # to point at — the column is kept as-is so the existing rows and the usage dashboard
     # do not need a rewrite.
     conversation_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Disambiguates what `conversation_id` actually is: "run" when it's an automation
+    # run id (written by the executor), "assistant" when it's an automation id (written
+    # by the builder assistant). Nullable so rows written before this column existed
+    # (both kinds of correlation id look alike — a 32-hex uuid) are left as `NULL`
+    # rather than guessed at; see `app.services.usage.record_usage`.
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)

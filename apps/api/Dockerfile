@@ -21,6 +21,12 @@ RUN pip install --no-cache-dir uv==0.5.13
 COPY pyproject.toml ./
 RUN uv pip install --system --requirements pyproject.toml
 
+# Dev dependency group (tests). uv 0.5.13's `pip install` has no `--group` flag — that
+# needs `uv sync`/`uv export`, which assume a project venv + uv.lock we don't use here
+# in --system mode — so mirror `[dependency-groups] dev` from pyproject.toml directly.
+# This is what makes `docker compose exec -T api pytest -q tests` work without `uv run`.
+RUN uv pip install --system "pytest>=8" "pytest-asyncio>=0.24" "httpx>=0.27"
+
 # Copy app + alembic.
 COPY app/ ./app/
 COPY alembic.ini ./alembic.ini

@@ -188,6 +188,10 @@ trigger that doesn't set its own timezone, and for what "today" and "now" mean i
 (`{{trigger.date}}`, relative dates, etc). A schedule trigger can also carry its own timezone,
 independent of the workspace default.
 
+**Upgrading.** This release drops the `conversations` and `messages` tables (the old chat-first
+UI's transcripts) on first startup, and that migration cannot be reversed. If you have data in
+those tables you want to keep, back up your database before upgrading.
+
 ## Development
 
 **Run the backend tests:**

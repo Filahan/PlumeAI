@@ -28,6 +28,7 @@ async def list_usage(user: CurrentUser, session: DBSession) -> list[UsageEntryPa
         UsageEntryPayload(
             timestamp=_dt_ms(r.timestamp),
             conversation_id=r.conversation_id,
+            source=r.source,
             provider=r.provider,
             model=r.model,
             input_tokens=r.input_tokens,

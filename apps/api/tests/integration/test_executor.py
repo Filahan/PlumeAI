@@ -922,6 +922,7 @@ async def test_usage_is_recorded_for_the_whole_run(
     assert (entries[0].input_tokens, entries[0].output_tokens) == (15, 5)
     assert entries[0].provider == "openai"
     assert entries[0].model == "gpt-4o-mini"
+    assert entries[0].source == "run"
 
     reloaded, _ = await runs_svc.get_run(session, run_id)
     assert (reloaded.input_tokens, reloaded.output_tokens) == (15, 5)

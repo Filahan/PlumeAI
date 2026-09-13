@@ -51,6 +51,9 @@ export interface UsageEntry {
    *  automation runs, the automation id for the builder assistant. The name is the wire
    *  field (historical); it is never a chat conversation any more. */
   conversationId: string | null;
+  /** Which of the two `conversationId` is — "run" (an automation run) or "assistant"
+   *  (the builder assistant). `null` for rows written before this field existed. */
+  source: 'run' | 'assistant' | null;
   provider: Provider;
   model: string;
   inputTokens: number;

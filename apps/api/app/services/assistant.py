@@ -487,6 +487,7 @@ async def chat(
             input_tokens=total_in,
             output_tokens=total_out,
             conversation_id=automation.id,
+            source="assistant",
         )
 
     if applied is not None:
