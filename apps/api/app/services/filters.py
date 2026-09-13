@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.schemas.documents import Condition, Rules
+from app.schemas.documents import Condition, FieldValue, Rules
 from app.services.refs import parse_refs, resolve_field
+
+_REASON_VALUE_LIMIT = 200
 
 _OP_SYMBOLS: dict[str, str] = {
     "eq": "==",
@@ -25,12 +27,18 @@ _OP_SYMBOLS: dict[str, str] = {
 _UNARY_OPS = {"is_empty", "is_not_empty", "is_true", "is_false"}
 
 
-def _label(fv: Any) -> str:
+def _truncate(text: str, limit: int = _REASON_VALUE_LIMIT) -> str:
+    """Cap a string at `limit` characters, so a huge step output doesn't blow up a
+    filter's reason string."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _label(fv: FieldValue) -> str:
     if fv.kind == "ref":
         # e.g. "{{step_x.output.count}}" -> "count"
         path = parse_refs(fv.value)[0]
         return path.rsplit(".", 1)[-1].rsplit("[", 1)[0]
-    return repr(fv.value)
+    return _truncate(repr(fv.value))
 
 
 def _is_empty(value: Any) -> bool:
@@ -50,17 +58,32 @@ def _as_number(value: Any) -> float:
     raise ValueError(f"cannot compare non-numeric value {value!r}")
 
 
+def _member_eq(item: Any, right: Any) -> bool:
+    """Equality for one `contains` candidate: case-insensitive when both sides are
+    strings, plain `==` otherwise."""
+    if isinstance(item, str) and isinstance(right, str):
+        return item.lower() == right.lower()
+    return item == right
+
+
 def _contains(left: Any, right: Any) -> bool:
+    """`contains`/`not_contains` semantics:
+
+    - `str` left: case-insensitive substring check.
+    - `list`/`tuple`/`set` left (a **flat** list — nested containers aren't unpacked or
+      searched recursively): membership check, case-insensitive wherever both the
+      candidate item and `right` are strings; other items compare with plain `==`. So a
+      mixed list like `["Urgent", 3, None]` matches `"urgent"` case-insensitively and
+      still matches `3` exactly.
+    - `dict` left: membership check against its keys, using the same case-insensitive-
+      for-strings rule.
+    - anything else: `False` — there's no meaningful "contains", and this must not
+      raise (a bad field type is a filter-authoring mistake, not a crash).
+    """
     if isinstance(left, str):
         return str(right).lower() in left.lower()
-    if isinstance(left, (list, tuple, set)):
-        items = list(left)
-        if isinstance(right, str) and all(isinstance(item, str) for item in items):
-            return right.lower() in [item.lower() for item in items]
-        return right in items
-    if isinstance(left, dict):
-        return right in left
-    # Not a string/list/dict: no meaningful "contains" — treat as false, not a crash.
+    if isinstance(left, (list, tuple, set, dict)):
+        return any(_member_eq(item, right) for item in left)
     return False
 
 
@@ -101,12 +124,15 @@ def _evaluate_condition(
 
     if cond.op in _UNARY_OPS:
         result = _apply_op(cond.op, left_value, None)
-        reason = f"{label} ({left_value!r}) {symbol} → {str(result).lower()}"
+        reason = f"{label} ({_truncate(repr(left_value))}) {symbol} → {str(result).lower()}"
         return result, reason
 
     right_value = resolve_field(cond.right, outputs, ctx) if cond.right is not None else None
     result = _apply_op(cond.op, left_value, right_value)
-    reason = f"{label} ({left_value!r}) {symbol} {right_value!r} → {str(result).lower()}"
+    reason = (
+        f"{label} ({_truncate(repr(left_value))}) {symbol} "
+        f"{_truncate(repr(right_value))} → {str(result).lower()}"
+    )
     return result, reason
 
 

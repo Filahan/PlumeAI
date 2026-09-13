@@ -17,28 +17,43 @@ Canonical serialization: always dump a document with
 optional fields (e.g. `retry`, `timeout_seconds`, `every_minutes`) instead of writing
 them as explicit `null`s, which is what keeps the round trip byte-for-byte identical to
 the document as authored. `app.services.documents.dump_document` wraps this exact call
-so every caller uses the same one.
+so every caller uses the same one. One consequence: this normalizes away the difference
+between an *absent* optional key and one explicitly set to `null` — loading a document
+that has `"retry": null` and dumping it again produces a document with no `retry` key at
+all, not a `null` one; the two are treated as identical everywhere in this module.
+
+All models are **frozen** (immutable after construction) — see `DocSchema.model_config`.
+`app.services.documents.apply_operations` never mutates a document in place; it builds
+new model instances (via `model_copy(update=...)` or fresh construction) and returns
+them, so a caller holding a reference to the old document is guaranteed it hasn't
+changed out from under it.
+
+The `{{ path }}` reference grammar used by `kind: "ref"` `FieldValue`s lives in the leaf
+module `app.schemas.refs` (not here), so both this module and `app.services.refs` can
+import it without an import cycle.
 """
 
 from __future__ import annotations
 
-import re
+from collections import Counter
 from typing import Annotated, Any, Literal, Union
-from zoneinfo import available_timezones
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.base import APISchema
-
-REF_PATTERN = r"^\{\{\s*[A-Za-z0-9_]+(\.[A-Za-z0-9_]+|\[\d+\])*\s*\}\}$"
-_REF_RE = re.compile(REF_PATTERN)
+from app.schemas.refs import REF_FULLMATCH_RE
 
 
 class DocSchema(APISchema):
-    """Base for automation-document models: snake_case field names, snake_case JSON."""
+    """Base for automation-document models: snake_case field names, snake_case JSON,
+    and frozen (immutable after construction) so documents can be shared/aliased freely.
+    """
 
-    model_config = ConfigDict(alias_generator=None, populate_by_name=True, from_attributes=True)
+    model_config = ConfigDict(
+        alias_generator=None, populate_by_name=True, from_attributes=True, frozen=True
+    )
 
 
 # --- field values (literal / ref / ai) --------------------------------------------------
@@ -51,7 +66,7 @@ class FieldValue(DocSchema):
     @model_validator(mode="after")
     def _check_value(self) -> FieldValue:
         if self.kind == "ref":
-            if not isinstance(self.value, str) or not _REF_RE.match(self.value):
+            if not isinstance(self.value, str) or not REF_FULLMATCH_RE.fullmatch(self.value):
                 raise ValueError(
                     f"ref value must look like '{{{{step_x.output}}}}', got {self.value!r}"
                 )
@@ -80,13 +95,21 @@ class ActionSettings(DocSchema):
 
 class AiOutput(DocSchema):
     mode: Literal["text", "json"] = "text"
-    schema_: dict | None = Field(default=None, alias="schema")
+    schema_: dict[str, Any] | None = Field(default=None, alias="schema")
 
 
 class AiStepSettings(DocSchema):
     instructions: str = Field(min_length=1)
     tools: list[str] = Field(default_factory=list)
     output: AiOutput = Field(default_factory=AiOutput)
+
+    @field_validator("tools")
+    @classmethod
+    def _check_tool_names(cls, tools: list[str]) -> list[str]:
+        for tool in tools:
+            if not isinstance(tool, str) or not tool.strip():
+                raise ValueError(f"tool names must be non-empty strings, got {tool!r}")
+        return tools
 
 
 # --- filter steps --------------------------------------------------------------------------
@@ -106,11 +129,32 @@ ConditionOp = Literal[
     "is_false",
 ]
 
+_UNARY_CONDITION_OPS = frozenset({"is_empty", "is_not_empty", "is_true", "is_false"})
+
 
 class Condition(DocSchema):
     left: FieldValue
     op: ConditionOp
     right: FieldValue | None = None
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> Condition:
+        if self.left.kind == "ai":
+            raise ValueError(
+                "condition 'left' cannot use kind 'ai' (AI resolution isn't available "
+                "inside filter rules)"
+            )
+        if self.right is not None and self.right.kind == "ai":
+            raise ValueError(
+                "condition 'right' cannot use kind 'ai' (AI resolution isn't available "
+                "inside filter rules)"
+            )
+        if self.op in _UNARY_CONDITION_OPS:
+            if self.right is not None:
+                raise ValueError(f"condition op {self.op!r} does not take a 'right' operand")
+        elif self.right is None:
+            raise ValueError(f"condition op {self.op!r} requires a 'right' operand")
+        return self
 
 
 class Rules(DocSchema):
@@ -139,7 +183,7 @@ class StepBase(DocSchema):
     id: str = Field(pattern=r"^step_[a-z0-9]{5,}$")
     name: str
     retry: RetryPolicy | None = None
-    timeout_seconds: int | None = None
+    timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
     valid: bool = True
 
 
@@ -173,8 +217,12 @@ class ScheduleSettings(DocSchema):
     @field_validator("timezone")
     @classmethod
     def _check_timezone(cls, v: str | None) -> str | None:
-        if v is not None and v not in available_timezones():
-            raise ValueError(f"unknown timezone: {v!r}")
+        if v is None:
+            return v
+        try:
+            ZoneInfo(v)
+        except (KeyError, ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone: {v!r}") from exc
         return v
 
     @model_validator(mode="after")
@@ -184,8 +232,13 @@ class ScheduleSettings(DocSchema):
                 raise ValueError("cron mode requires a non-empty 'cron' expression")
             if not croniter.is_valid(self.cron):
                 raise ValueError(f"invalid cron expression: {self.cron!r}")
-        elif self.mode == "interval" and self.every_minutes is None:
-            raise ValueError("interval mode requires 'every_minutes'")
+            if self.every_minutes is not None:
+                raise ValueError("cron mode must not also set 'every_minutes'")
+        elif self.mode == "interval":
+            if self.every_minutes is None:
+                raise ValueError("interval mode requires 'every_minutes'")
+            if self.cron is not None:
+                raise ValueError("interval mode must not also set 'cron'")
         return self
 
 
@@ -219,8 +272,8 @@ class AutomationDocument(DocSchema):
     @field_validator("steps")
     @classmethod
     def _unique_step_ids(cls, steps: list[Step]) -> list[Step]:
-        ids = [s.id for s in steps]
-        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        counts = Counter(s.id for s in steps)
+        dupes = sorted(step_id for step_id, count in counts.items() if count > 1)
         if dupes:
             raise ValueError(f"duplicate step ids: {dupes}")
         return steps
@@ -236,6 +289,20 @@ class AddStep(DocSchema):
 
 
 class UpdateStep(DocSchema):
+    """Edit an existing step by shallow-merging `patch` onto its top-level fields
+    (`name`, `retry`, `timeout_seconds`, `valid`, ...) — each key in `patch` simply
+    overwrites the corresponding field.
+
+    `settings` is the one exception: when `patch` includes a `settings` key, it is
+    merged **one level deep** into the step's existing settings dict (so
+    `{"settings": {"action": "x"}}` changes only `action`, leaving `integration`/
+    `input`/etc. as they were), rather than replacing the whole settings object — a
+    caller that wants to fully replace a nested value (e.g. `input`) includes that
+    whole key in `patch["settings"]`.
+
+    `patch` must not include `id` — an `update_step` cannot re-identify a step.
+    """
+
     op: Literal["update_step"] = "update_step"
     step_id: str
     patch: dict[str, Any] = Field(default_factory=dict)

@@ -90,6 +90,45 @@ def test_contains_on_list_of_strings_is_case_insensitive() -> None:
     assert result is False  # "Billing" (case-insensitively) IS in the list
 
 
+def test_contains_on_mixed_list_is_case_insensitive_for_string_items() -> None:
+    result, _ = evaluate_rules(
+        _rules(Condition(left=_lit(["Urgent", 3, None]), op="contains", right=_lit("urgent"))),
+        OUTPUTS,
+        CTX,
+    )
+    assert result is True
+
+    result, _ = evaluate_rules(
+        _rules(Condition(left=_lit(["Urgent", 3, None]), op="contains", right=_lit(3))),
+        OUTPUTS,
+        CTX,
+    )
+    assert result is True  # non-string items still compare with plain equality
+
+
+def test_contains_on_dict_checks_keys_case_insensitively() -> None:
+    result, _ = evaluate_rules(
+        _rules(
+            Condition(
+                left=_lit({"Urgent": True, "billing": False}), op="contains", right=_lit("urgent")
+            )
+        ),
+        OUTPUTS,
+        CTX,
+    )
+    assert result is True
+
+
+def test_reason_string_truncates_long_values() -> None:
+    long_value = "x" * 500
+    result, reason = evaluate_rules(
+        _rules(Condition(left=_lit(long_value), op="is_not_empty")), OUTPUTS, CTX
+    )
+    assert result is True
+    assert reason.count("x") < 500  # the repr got cut off, not displayed in full
+    assert "…" in reason
+
+
 def test_contains_on_non_string_non_collection_left_returns_false_not_raise() -> None:
     result, reason = evaluate_rules(
         _rules(Condition(left=_ref("step_a.output.count"), op="contains", right=_lit("3"))),

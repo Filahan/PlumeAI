@@ -166,6 +166,30 @@ def test_schedule_settings_every_minutes_bounds() -> None:
         ScheduleSettings(mode="interval", every_minutes=10081)
 
 
+def test_schedule_settings_modes_are_mutually_exclusive() -> None:
+    with pytest.raises(ValidationError):
+        ScheduleSettings(mode="cron", cron="0 8 * * *", every_minutes=15)
+    with pytest.raises(ValidationError):
+        ScheduleSettings(mode="interval", every_minutes=15, cron="0 8 * * *")
+
+
+def test_step_timeout_seconds_bounds() -> None:
+    def _step(**kwargs: object) -> ActionStep:
+        return ActionStep(
+            id="step_aaaaa",
+            name="x",
+            settings=ActionSettings(integration="gmail", action="gmail_search"),
+            **kwargs,
+        )
+
+    _step(timeout_seconds=1)  # lower bound ok
+    _step(timeout_seconds=3600)  # upper bound ok
+    with pytest.raises(ValidationError):
+        _step(timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        _step(timeout_seconds=3601)
+
+
 def test_retry_policy_bounds() -> None:
     RetryPolicy(max_attempts=1, backoff_seconds=0)  # lower bounds ok
     RetryPolicy(max_attempts=10, backoff_seconds=300)  # upper bounds ok
@@ -186,6 +210,53 @@ def test_retry_policy_backoff_seconds_serializes_as_int() -> None:
     assert dumped["backoff_seconds"] == 10
     assert isinstance(dumped["backoff_seconds"], int)
     assert '"backoff_seconds":10' in policy.model_dump_json(by_alias=True).replace(" ", "")
+
+
+def test_condition_binary_op_requires_right() -> None:
+    Condition(
+        left=FieldValue(kind="literal", value=1),
+        op="gt",
+        right=FieldValue(kind="literal", value=0),
+    )
+    with pytest.raises(ValidationError):
+        Condition(left=FieldValue(kind="literal", value=1), op="gt")
+
+
+def test_condition_unary_op_forbids_right() -> None:
+    Condition(left=FieldValue(kind="literal", value=""), op="is_empty")
+    with pytest.raises(ValidationError):
+        Condition(
+            left=FieldValue(kind="literal", value=""),
+            op="is_empty",
+            right=FieldValue(kind="literal", value=0),
+        )
+
+
+@pytest.mark.parametrize("op", ["is_empty", "is_not_empty", "is_true", "is_false"])
+def test_condition_unary_ops_never_require_right(op: str) -> None:
+    Condition(left=FieldValue(kind="literal", value=1), op=op)
+
+
+def test_condition_rejects_ai_kind_on_left() -> None:
+    with pytest.raises(ValidationError):
+        Condition(left=FieldValue(kind="ai", value="guess"), op="is_empty")
+
+
+def test_condition_rejects_ai_kind_on_right() -> None:
+    with pytest.raises(ValidationError):
+        Condition(
+            left=FieldValue(kind="literal", value=1),
+            op="eq",
+            right=FieldValue(kind="ai", value="guess"),
+        )
+
+
+def test_ai_step_settings_rejects_empty_tool_names() -> None:
+    AiStepSettings(instructions="Go", tools=["gmail_get"])
+    with pytest.raises(ValidationError):
+        AiStepSettings(instructions="Go", tools=[""])
+    with pytest.raises(ValidationError):
+        AiStepSettings(instructions="Go", tools=["  "])
 
 
 def test_filter_settings_requires_matching_field_for_mode() -> None:
@@ -298,21 +369,43 @@ def test_update_step_shallow_merges_top_level_fields() -> None:
     assert new_doc.steps[0].settings.action == "gmail_search"  # untouched
 
 
-def test_update_step_replaces_settings_wholesale() -> None:
+def test_update_step_settings_patch_merges_one_level_deep() -> None:
+    """`settings` in a patch is merged one level deep onto the existing settings dict,
+    not replaced wholesale — a patch that only sets `action` keeps `integration`."""
     doc = _basic_doc()
     new_doc = apply_operations(
         doc,
         [
             UpdateStep(
                 step_id="step_aaaaa",
-                patch={"settings": {"integration": "slack", "action": "slack_send_message"}},
+                patch={"settings": {"action": "gmail_get"}},
             )
         ],
     )
     updated = new_doc.steps[0]
-    assert updated.settings.integration == "slack"
-    assert updated.settings.action == "slack_send_message"
-    assert updated.settings.input == {}
+    assert updated.settings.integration == "gmail"  # kept from the existing settings
+    assert updated.settings.action == "gmail_get"  # overwritten by the patch
+
+
+def test_update_step_settings_patch_can_set_new_keys() -> None:
+    doc = _basic_doc()
+    new_doc = apply_operations(
+        doc,
+        [
+            UpdateStep(
+                step_id="step_aaaaa",
+                patch={
+                    "settings": {
+                        "input": {"query": {"kind": "literal", "value": "dana"}},
+                    }
+                },
+            )
+        ],
+    )
+    updated = new_doc.steps[0]
+    assert updated.settings.integration == "gmail"  # kept
+    assert updated.settings.action == "gmail_search"  # kept
+    assert updated.settings.input["query"].value == "dana"  # replaced whole "input" key
 
 
 def test_update_step_unknown_id_raises() -> None:
@@ -321,20 +414,18 @@ def test_update_step_unknown_id_raises() -> None:
         apply_operations(doc, [UpdateStep(step_id="step_zzzzz", patch={"name": "x"})])
 
 
+def test_update_step_rejects_id_in_patch() -> None:
+    doc = _basic_doc()
+    with pytest.raises(ValueError, match="must not include 'id'"):
+        apply_operations(doc, [UpdateStep(step_id="step_aaaaa", patch={"id": "step_bbbbb"})])
+
+
 def test_update_step_patch_making_step_invalid_raises() -> None:
     doc = _basic_doc()
-    # "id" no longer matches the step id pattern -> the patched step fails Step validation.
-    with pytest.raises(ValidationError):
-        apply_operations(doc, [UpdateStep(step_id="step_aaaaa", patch={"id": "not-a-valid-id"})])
-
-
-def test_update_step_patch_with_missing_required_settings_field_raises() -> None:
-    doc = _basic_doc()
-    # Replacing settings wholesale but dropping the required "action" key.
+    # timeout_seconds is bounded 1..3600 -> the patched step fails Step validation.
     with pytest.raises(ValidationError):
         apply_operations(
-            doc,
-            [UpdateStep(step_id="step_aaaaa", patch={"settings": {"integration": "gmail"}})],
+            doc, [UpdateStep(step_id="step_aaaaa", patch={"timeout_seconds": 99999})]
         )
 
 
@@ -395,6 +486,56 @@ def test_apply_operations_applies_in_order() -> None:
         ],
     )
     assert [s.id for s in new_doc.steps] == ["step_ccccc", "step_aaaaa"]
+
+
+# --- immutability --------------------------------------------------------------------------
+
+
+def test_documents_are_frozen() -> None:
+    doc = _basic_doc()
+    with pytest.raises(ValidationError):
+        doc.name = "New name"  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        doc.steps[0].name = "New step name"  # type: ignore[misc]
+
+
+def test_apply_operations_does_not_mutate_or_alias_old_document() -> None:
+    old = _basic_doc()
+    new = apply_operations(old, [UpdateStep(step_id="step_aaaaa", patch={"name": "Renamed"})])
+
+    # The old document is untouched...
+    assert old.steps[0].name == "First"
+    # ...and the new document's steps list (and the updated step itself) are distinct
+    # objects from the old document's, not aliases into it.
+    assert old.steps is not new.steps
+    assert old.steps[0] is not new.steps[0]
+    assert new.steps[0].name == "Renamed"
+
+
+def test_apply_operations_never_mutates_across_many_ops() -> None:
+    old = _basic_doc()
+    new_step = ActionStep(
+        id="step_ccccc",
+        name="Third",
+        settings=ActionSettings(integration="gmail", action="gmail_search"),
+    )
+    snapshot = old.model_copy(deep=True)
+    apply_operations(
+        old,
+        [
+            AddStep(step=new_step),
+            UpdateStep(step_id="step_bbbbb", patch={"name": "Renamed"}),
+            MoveStep(step_id="step_ccccc", index=0),
+            RemoveStep(step_id="step_aaaaa"),
+            SetMeta(name="Different"),
+            SetTrigger(
+                trigger=ScheduleTrigger(
+                    settings=ScheduleSettings(mode="interval", every_minutes=5)
+                )
+            ),
+        ],
+    )
+    assert old == snapshot
 
 
 # --- Operation discriminator ----------------------------------------------------------------
@@ -506,6 +647,175 @@ def test_validate_document_wrong_literal_type_is_error() -> None:
     _, issues = validate_document(doc, StubCatalog())
     errors = [i for i in issues if i.level == "error"]
     assert any("invalid value for 'max_results'" in e.message for e in errors)
+
+
+def test_validate_document_templated_literal_skips_type_check() -> None:
+    """`max_results` is an integer field, but a templated literal (containing a
+    `{{ ref }}`) is resolved to a string at runtime via interpolation — it must not be
+    type-checked against the field's declared JSON type today."""
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_aaaaa",
+                name="Search",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="gmail_search",
+                    input={
+                        "query": FieldValue(kind="literal", value="dana"),
+                        "max_results": FieldValue(
+                            kind="literal", value="{{trigger.now}} results"
+                        ),
+                    },
+                ),
+            )
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    errors = [i for i in issues if i.level == "error"]
+    assert errors == []
+
+
+def test_validate_document_ref_catalog_schema_reported_as_issue_not_exception() -> None:
+    """A catalog `input_schema` with a `$ref` that doesn't resolve must never raise out
+    of `validate_document` — it must become an error-level issue instead."""
+    bad_meta = ActionMeta(
+        name="broken_ref_action",
+        integration="gmail",
+        label="Broken",
+        description="Has a dangling $ref.",
+        input_schema={
+            "type": "object",
+            "properties": {"count": {"$ref": "#/$defs/DoesNotExist"}},
+            "required": [],
+        },
+    )
+    catalog = StubCatalog(actions={"broken_ref_action": bad_meta})
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            ActionStep(
+                id="step_aaaaa",
+                name="Broken",
+                settings=ActionSettings(
+                    integration="gmail",
+                    action="broken_ref_action",
+                    input={"count": FieldValue(kind="literal", value=1)},
+                ),
+            )
+        ],
+    )
+    new_doc, issues = validate_document(doc, catalog)  # must not raise
+    errors = [i for i in issues if i.level == "error"]
+    assert errors  # some error was reported for the dangling $ref
+    assert new_doc.steps[0].valid is False
+
+
+def test_validate_document_unknown_tool_is_warning() -> None:
+    doc = AutomationDocument(
+        name="d",
+        model=ModelRef(provider="openai", model="gpt-4o-mini"),
+        trigger=ManualTrigger(),
+        steps=[
+            AiStep(
+                id="step_aaaaa",
+                name="Summarize",
+                settings=AiStepSettings(instructions="Go.", tools=["not_a_real_tool"]),
+            )
+        ],
+    )
+    _, issues = validate_document(doc, StubCatalog())
+    warnings = [i for i in issues if i.level == "warning"]
+    errors = [i for i in issues if i.level == "error"]
+    assert any("unknown tool" in w.message for w in warnings)
+    assert errors == []
+
+
+def test_validate_document_never_raises_on_hostile_input() -> None:
+    """A grab-bag of adversarial documents/catalogs: `validate_document` must always
+    return `(doc, issues)`, never raise."""
+
+    class HostileCatalog:
+        def find_action(self, name: str) -> ActionMeta | None:
+            if name == "boom":
+                raise RuntimeError("catalog blew up")
+            if name == "weird_schema":
+                return ActionMeta(
+                    name="weird_schema",
+                    integration="gmail",
+                    label="Weird",
+                    description="",
+                    input_schema={"type": "object", "properties": {"x": {"type": 12345}}},
+                )
+            if name == "not_a_dict_schema":
+                return ActionMeta(
+                    name="not_a_dict_schema",
+                    integration="gmail",
+                    label="Weird",
+                    description="",
+                    input_schema="not even a dict",  # type: ignore[arg-type]
+                )
+            return None
+
+        def is_connected(self, integration: str) -> bool:
+            return True
+
+    hostile_docs = [
+        AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                ActionStep(
+                    id="step_aaaaa",
+                    name="Boom",
+                    settings=ActionSettings(integration="gmail", action="boom"),
+                )
+            ],
+        ),
+        AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                ActionStep(
+                    id="step_aaaaa",
+                    name="Weird",
+                    settings=ActionSettings(
+                        integration="gmail",
+                        action="weird_schema",
+                        input={"x": FieldValue(kind="literal", value=1)},
+                    ),
+                )
+            ],
+        ),
+        AutomationDocument(
+            name="d",
+            model=ModelRef(provider="openai", model="gpt-4o-mini"),
+            trigger=ManualTrigger(),
+            steps=[
+                ActionStep(
+                    id="step_aaaaa",
+                    name="Not a dict schema",
+                    settings=ActionSettings(
+                        integration="gmail",
+                        action="not_a_dict_schema",
+                        input={"x": FieldValue(kind="literal", value=1)},
+                    ),
+                )
+            ],
+        ),
+    ]
+
+    for doc in hostile_docs:
+        new_doc, issues = validate_document(doc, HostileCatalog())
+        assert isinstance(issues, list)
+        assert isinstance(new_doc, AutomationDocument)
 
 
 def test_validate_document_unknown_input_field_is_warning() -> None:
@@ -824,7 +1134,13 @@ def test_validate_document_schema_error_reported_as_issue_not_raised() -> None:
     )
     new_doc, issues = validate_document(doc, catalog)  # must not raise
     errors = [i for i in issues if i.level == "error"]
-    assert any("invalid input schema" in e.message for e in errors)
+    # jsonschema may surface a malformed schema as SchemaError *or* another exception
+    # type (e.g. UnknownType for a bad "type" keyword) depending on where it's
+    # detected — either way it must become an issue, not an exception.
+    assert any(
+        "invalid input schema" in e.message or "could not validate field" in e.message
+        for e in errors
+    )
     assert new_doc.steps[0].valid is False
 
 
@@ -910,6 +1226,39 @@ def test_diff_summary_no_changes_is_empty() -> None:
     old = _basic_doc()
     new = apply_operations(old, [])
     assert diff_summary(old, new) == []
+
+
+def test_diff_summary_reordered_steps() -> None:
+    old = _basic_doc()
+    new = apply_operations(old, [MoveStep(step_id="step_bbbbb", index=0)])
+    lines = diff_summary(old, new)
+    assert "Reordered steps" in lines
+
+
+def test_diff_summary_no_reorder_when_only_added_or_removed() -> None:
+    old = _basic_doc()
+    new_step = ActionStep(
+        id="step_ccccc",
+        name="Third",
+        settings=ActionSettings(integration="gmail", action="gmail_search"),
+    )
+    new = apply_operations(old, [AddStep(step=new_step)])  # appended, order preserved
+    lines = diff_summary(old, new)
+    assert "Reordered steps" not in lines
+
+
+def test_diff_summary_updated_description() -> None:
+    old = _basic_doc()
+    new = apply_operations(old, [SetMeta(description="A new description")])
+    lines = diff_summary(old, new)
+    assert "Updated description" in lines
+
+
+def test_diff_summary_changed_model() -> None:
+    old = _basic_doc()
+    new = apply_operations(old, [SetMeta(model=ModelRef(provider="anthropic", model="claude"))])
+    lines = diff_summary(old, new)
+    assert "Changed model to anthropic/claude" in lines
 
 
 def test_describe_trigger() -> None:

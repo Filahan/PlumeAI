@@ -124,6 +124,17 @@ _DEFAULT_ACTIONS: dict[str, ActionMeta] = {
             "required": ["channel", "text"],
         },
     ),
+    "gmail_get": ActionMeta(
+        name="gmail_get",
+        integration="gmail",
+        label="Get Gmail message",
+        description="Fetch one email by id.",
+        input_schema={
+            "type": "object",
+            "properties": {"message_id": {"type": "string"}},
+            "required": ["message_id"],
+        },
+    ),
 }
 
 

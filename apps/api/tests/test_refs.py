@@ -76,6 +76,23 @@ def test_resolve_path_error_message_includes_path() -> None:
         resolve_path({"a": {"b": {}}}, "a.b.c")
 
 
+def test_resolve_path_index_into_dict_raises_ref_error() -> None:
+    """`{}[0]` is a dict subscript in Python, and would raise `KeyError` (not
+    `IndexError`) if we forwarded it straight to `current[index]` — must become a
+    `RefError` either way."""
+    with pytest.raises(RefError):
+        resolve_path({"a": {}}, "a[0]")
+
+
+def test_resolve_path_rejects_dunder_attribute_access() -> None:
+    """Path resolution only ever indexes `dict`/`list`/`tuple`; it must never fall back
+    to `getattr`, or a path like `a.__class__` could walk Python object internals."""
+    with pytest.raises(RefError):
+        resolve_path({"a": 1}, "a.__class__")
+    with pytest.raises(RefError):
+        resolve_path({"a": "text"}, "a.__class__.__base__")
+
+
 # --- resolve_ref -----------------------------------------------------------------------------
 
 
@@ -125,6 +142,19 @@ def test_interpolate_multiple_refs() -> None:
     outputs = {"step_a": {"x": 1}, "step_b": {"y": 2}}
     result = interpolate("{{step_a.output.x}} and {{step_b.output.y}}", outputs, {})
     assert result == "1 and 2"
+
+
+def test_interpolate_renders_bool_and_none_as_json_scalars() -> None:
+    outputs = {"step_a": {"flag": True, "missing": None}}
+    assert interpolate("{{step_a.output.flag}}", outputs, {}) == "true"
+    assert interpolate("{{step_a.output.missing}}", outputs, {}) == "null"
+
+
+def test_interpolate_does_not_escape_non_ascii() -> None:
+    outputs = {"step_a": {"name": "café"}}
+    assert interpolate("Hi {{step_a.output.name}}", outputs, {}) == "Hi café"
+    outputs = {"step_a": {"names": ["café", "naïve"]}}
+    assert interpolate("{{step_a.output.names}}", outputs, {}) == '["café","naïve"]'
 
 
 # --- resolve_field ---------------------------------------------------------------------------
