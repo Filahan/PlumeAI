@@ -14,11 +14,67 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ToolNotConfigured
-from app.integrations.base import CredentialField, Integration
+from app.integrations.base import ActionMeta, CredentialField, Integration
 from app.services.tool_credentials import get_credentials
 from app.tools.base import TIMEOUT_SECONDS, ToolResult, cap
 
 DISCORD_BASE = "https://discord.com/api/v10"
+
+# ─── Setup guide + catalog metadata (ported from apps/web/src/lib/tools/registry-client.ts) ──
+
+DISCORD_SETUP: dict[str, Any] = {
+    "intro": (
+        "Discord uses a bot token. Create a bot once in the Discord Developer Portal "
+        "and paste the token above."
+    ),
+    "steps": [
+        {
+            "title": "Create a Discord application",
+            "description": 'Pick a name (e.g. "PlumeAI bot").',
+            "link": {
+                "label": "Open Discord Developer Portal",
+                "url": "https://discord.com/developers/applications",
+            },
+        },
+        {
+            "title": "Enable the Bot and copy its token",
+            "description": (
+                'In the "Bot" tab, click "Reset Token" and copy the value — it is shown '
+                "only once. Paste it into the Credentials section above."
+            ),
+        },
+        {
+            "title": "Invite the bot to your server",
+            "description": (
+                'OAuth2 → URL Generator → scope "bot" + permissions (Send Messages, Read '
+                "Message History). Open the generated URL and pick the server."
+            ),
+        },
+    ],
+    "note": (
+        "Privileges: Send Messages, Read Message History. The bot can only see channels "
+        "you grant it access to."
+    ),
+}
+
+DISCORD_ACTION_META: dict[str, ActionMeta] = {
+    "discord_list_guilds": ActionMeta(
+        label="List servers",
+        output_description="Servers (guilds) the bot has been invited to, with id and name.",
+    ),
+    "discord_list_channels": ActionMeta(
+        label="List channels",
+        output_description="Channels in the server with id, name, and type.",
+    ),
+    "discord_list_messages": ActionMeta(
+        label="Read messages",
+        output_description="Recent messages with author, content, and timestamp.",
+    ),
+    "discord_send_message": ActionMeta(
+        label="Send a message",
+        output_description="Confirmation with the sent message id.",
+    ),
+}
 
 # ─── OpenAI function-calling schemas ──────────────────────────────────────────────────
 
@@ -231,6 +287,11 @@ class DiscordIntegration(Integration):
     description = "Send messages, read messages, and list channels in Discord servers."
     setup_url = ""  # No OAuth — credentials are entered in the Tools UI.
     schemas = DISCORD_SCHEMAS
+
+    logo_url = "https://cdn.simpleicons.org/discord"
+    connect_mode = "config"
+    setup = DISCORD_SETUP
+    action_meta = DISCORD_ACTION_META
 
     credentials_namespace = "discord"
     credentials_fields = [

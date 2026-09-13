@@ -8,8 +8,74 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integrations.base import ActionMeta
 from app.integrations.google.base import GoogleOAuthIntegration
 from app.tools.base import ToolResult, cap
+
+# ─── Setup guide + catalog metadata (ported from apps/web/src/lib/tools/registry-client.ts) ──
+
+GOOGLE_SETUP: dict[str, Any] = {
+    "intro": (
+        "Uses Google OAuth — set up the OAuth client once, share it across every "
+        "Google integration."
+    ),
+    "steps": [
+        {
+            "title": "Create an OAuth client in Google Cloud Console",
+            "description": (
+                'Pick "Web application" as the type. Reuse an existing client if you have one.'
+            ),
+            "link": {
+                "label": "Open Credentials",
+                "url": "https://console.cloud.google.com/apis/credentials",
+            },
+        },
+        {
+            "title": 'Add this URL to your OAuth client\'s "Authorized redirect URIs"',
+            "copy": {
+                "label": "Authorized redirect URI",
+                "value": "__ORIGIN__/api/tools/google/oauth/callback",
+            },
+        },
+        {
+            "title": (
+                "Paste the generated Client ID and Client Secret into the Credentials "
+                "section above"
+            ),
+            "description": (
+                "One credential pair unlocks Gmail, Drive, Calendar, and every future "
+                "Google integration."
+            ),
+        },
+    ],
+}
+
+GMAIL_ACTION_META: dict[str, ActionMeta] = {
+    "gmail_search": ActionMeta(
+        label="Search emails",
+        output_description="Matching messages with id, sender, subject, date, and snippet.",
+    ),
+    "gmail_get": ActionMeta(
+        label="Get an email",
+        output_description="Full message: subject, from, to, date, labels, and body.",
+    ),
+    "gmail_send": ActionMeta(
+        label="Send an email",
+        output_description="Confirmation with the sent message id.",
+    ),
+    "gmail_modify": ActionMeta(
+        label="Add or remove labels",
+        output_description="Confirmation of the labels added and removed.",
+    ),
+    "gmail_mark_read": ActionMeta(
+        label="Mark read or unread",
+        output_description="Confirmation of the read/unread state change.",
+    ),
+    "gmail_trash": ActionMeta(
+        label="Trash an email",
+        output_description="Confirmation the message was moved to trash.",
+    ),
+}
 
 # ─── OpenAI function-calling schemas ──────────────────────────────────────────────────
 
@@ -339,6 +405,11 @@ class GmailIntegration(GoogleOAuthIntegration):
     description = "Read, send, label, and trash Gmail messages."
     setup_url = "/api/tools/gmail/oauth/start"
     schemas = GMAIL_SCHEMAS
+
+    logo_url = "https://cdn.simpleicons.org/gmail"
+    connect_mode = "oauth"
+    setup = GOOGLE_SETUP
+    action_meta = GMAIL_ACTION_META
 
     tool_key = "gmail"
     scopes = " ".join(

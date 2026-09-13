@@ -14,6 +14,7 @@ import httpx
 import structlog
 
 from app.errors import ToolError
+from app.integrations.base import ActionMeta, describe_action
 from app.tools.base import (
     TIMEOUT_SECONDS,
     USER_AGENT,
@@ -96,6 +97,27 @@ BUILTIN_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 BUILTIN_NAMES = {s["function"]["name"] for s in BUILTIN_SCHEMAS}
+
+# Human-facing metadata for the catalog (`GET /tools`). Keyed by function name.
+BUILTIN_ACTION_META: dict[str, ActionMeta] = {
+    "web_search": ActionMeta(
+        label="Search the web",
+        output_description="Top results with title, url, and snippet.",
+    ),
+    "web_fetch": ActionMeta(
+        label="Fetch a web page",
+        output_description="Readable text content of the page.",
+    ),
+    "http": ActionMeta(
+        label="HTTP request",
+        output_description="Response status code and body text.",
+    ),
+}
+
+
+def describe_builtin_actions() -> list[dict[str, Any]]:
+    """Catalog-ready descriptors for the built-in tools, integration="builtin"."""
+    return [describe_action(s, "builtin", BUILTIN_ACTION_META) for s in BUILTIN_SCHEMAS]
 
 
 # ───────────────────── tiny HTML helpers ─────────────────────

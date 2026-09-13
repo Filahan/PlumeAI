@@ -8,8 +8,70 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integrations.base import ActionMeta
 from app.integrations.google.base import GoogleOAuthIntegration
 from app.tools.base import ToolResult, cap
+
+# ─── Setup guide + catalog metadata (ported from apps/web/src/lib/tools/registry-client.ts) ──
+
+GOOGLE_SETUP: dict[str, Any] = {
+    "intro": (
+        "Uses Google OAuth — set up the OAuth client once, share it across every "
+        "Google integration."
+    ),
+    "steps": [
+        {
+            "title": "Create an OAuth client in Google Cloud Console",
+            "description": (
+                'Pick "Web application" as the type. Reuse an existing client if you have one.'
+            ),
+            "link": {
+                "label": "Open Credentials",
+                "url": "https://console.cloud.google.com/apis/credentials",
+            },
+        },
+        {
+            "title": 'Add this URL to your OAuth client\'s "Authorized redirect URIs"',
+            "copy": {
+                "label": "Authorized redirect URI",
+                "value": "__ORIGIN__/api/tools/google/oauth/callback",
+            },
+        },
+        {
+            "title": (
+                "Paste the generated Client ID and Client Secret into the Credentials "
+                "section above"
+            ),
+            "description": (
+                "One credential pair unlocks Gmail, Drive, Calendar, and every future "
+                "Google integration."
+            ),
+        },
+    ],
+}
+
+CALENDAR_ACTION_META: dict[str, ActionMeta] = {
+    "calendar_list_events": ActionMeta(
+        label="List events",
+        output_description="Events in the window with id, summary, start/end, and location.",
+    ),
+    "calendar_get_event": ActionMeta(
+        label="Get an event",
+        output_description="Full event details: summary, time, attendees, and description.",
+    ),
+    "calendar_create_event": ActionMeta(
+        label="Create an event",
+        output_description="Confirmation with the new event's id and link.",
+    ),
+    "calendar_update_event": ActionMeta(
+        label="Update an event",
+        output_description="Confirmation the event was updated.",
+    ),
+    "calendar_delete_event": ActionMeta(
+        label="Delete an event",
+        output_description="Confirmation the event was deleted.",
+    ),
+}
 
 # ─── OpenAI function-calling schemas ──────────────────────────────────────────────────
 
@@ -370,6 +432,11 @@ class CalendarIntegration(GoogleOAuthIntegration):
     description = "Read, create, update, and delete events on Google Calendar."
     setup_url = "/api/tools/calendar/oauth/start"
     schemas = CALENDAR_SCHEMAS
+
+    logo_url = "https://cdn.simpleicons.org/googlecalendar"
+    connect_mode = "oauth"
+    setup = GOOGLE_SETUP
+    action_meta = CALENDAR_ACTION_META
 
     tool_key = "calendar"
     scopes = "https://www.googleapis.com/auth/calendar.events"

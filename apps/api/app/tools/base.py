@@ -29,6 +29,7 @@ class ToolResult:
 
     ok: bool
     content: str
+    data: Any | None = None
 
 
 class ToolFn(Protocol):

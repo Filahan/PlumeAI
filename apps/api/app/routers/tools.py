@@ -29,6 +29,8 @@ from app.db.base import get_session
 from app.errors import BadRequest, NotFound, ToolNotConfigured
 from app.integrations.base import Integration
 from app.integrations.registry import find_integration_by_name
+from app.schemas.catalog import CatalogResponse
+from app.services.catalog import build_catalog
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 log = structlog.get_logger("app.tools.oauth")
@@ -36,6 +38,17 @@ log = structlog.get_logger("app.tools.oauth")
 DBSession = Annotated[AsyncSession, Depends(get_session)]
 
 STATE_TTL_SECONDS = 600
+
+
+# ─── Catalog ──────────────────────────────────────────────────────────────────────────
+
+
+@router.get("", response_model=CatalogResponse, response_model_by_alias=True)
+async def get_tools_catalog(user: CurrentUser, session: DBSession) -> CatalogResponse:
+    """Every registered integration (with live connection status) + the builtin tools.
+    Single source of truth for the frontend's tool/integration catalog."""
+    catalog = await build_catalog(session)
+    return CatalogResponse.model_validate(catalog)
 
 
 def _callback_path(integ: Integration) -> str:
