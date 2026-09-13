@@ -23,6 +23,7 @@ export default function NodeCard({
   needsAttention = false,
   runStatus = null,
   dashed = false,
+  highlight = false,
 }: {
   icon: ReactNode;
   /** 1-based badge; omitted for the trigger. */
@@ -34,6 +35,8 @@ export default function NodeCard({
   needsAttention?: boolean;
   runStatus?: RunStepStatus | null;
   dashed?: boolean;
+  /** Just changed by the assistant — ringed for a couple of seconds. */
+  highlight?: boolean;
 }) {
   const skipped = runStatus === 'skipped';
 
@@ -47,7 +50,9 @@ export default function NodeCard({
       } ${
         selected
           ? 'border-[color:var(--primary)] ring-2 ring-[color:var(--primary)]'
-          : 'border-[color:var(--border)] hover:bg-[color:var(--surface-muted)]/60'
+          : highlight
+            ? 'border-[color:var(--primary)]/40 ring-2 ring-[color:var(--primary)]/25'
+            : 'border-[color:var(--border)] hover:bg-[color:var(--surface-muted)]/60'
       }`}
     >
       {icon}

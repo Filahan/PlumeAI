@@ -35,3 +35,8 @@ export function useStepRunStatus(stepId: string): RunStepStatus | null {
     (s) => s.current?.activeRun?.steps.find((r) => r.stepId === stepId)?.status ?? null
   );
 }
+
+/** True for a moment after an assistant turn added or rewrote this step. */
+export function useStepRecentlyChanged(stepId: string): boolean {
+  return useAutomationsStore((s) => s.recentlyChangedStepIds.includes(stepId));
+}

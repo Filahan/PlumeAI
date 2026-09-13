@@ -21,6 +21,7 @@ import { create } from 'zustand';
 import { ApiError, automations as api, tools as toolsApi } from '@/lib/api';
 import { applyRunEvent, subscribeRun } from './run-stream';
 import type {
+  AssistantMessage,
   AutomationDocument,
   AutomationSummary,
   Catalog,
@@ -33,11 +34,44 @@ import type {
 import { documentsEqual, isRunActive } from './types';
 
 const VALIDATE_DEBOUNCE_MS = 400;
+/** How long the canvas rings the steps an assistant turn touched. */
+const HIGHLIGHT_MS = 2000;
 
 export type EditorMode = 'design' | 'json';
 
 /** What the inspector is pointed at. `null` = nothing selected. */
 export type Selection = { kind: 'trigger' } | { kind: 'step'; stepId: string } | null;
+
+/** The builder assistant's drawer state.
+ *
+ *  Top-level rather than part of `current`, because `pendingFirstMessage` is written by
+ *  the home page *before* the editor (and therefore `current`) exists. */
+export interface AssistantSlice {
+  /** The transcript as the server has it, oldest first. */
+  messages: AssistantMessage[];
+  sending: boolean;
+  /** Request-level failure — no API key for the provider, or the provider itself down.
+   *  A turn the assistant got wrong is *not* this: it rides along in the transcript as
+   *  the entry's own `error`. */
+  error: string | null;
+  /** What the last turn applied, one human sentence per change. */
+  lastSummary: string[];
+  /** Version to restore for "Undo" — the document as it was before the last turn, or
+   *  null when that turn changed nothing (or has already been undone). */
+  lastVersionBefore: number | null;
+  /** Typed on the home page before it navigates; the editor sends it as the first
+   *  message once `open(id)` has resolved. */
+  pendingFirstMessage: string | null;
+}
+
+const EMPTY_ASSISTANT: AssistantSlice = {
+  messages: [],
+  sending: false,
+  error: null,
+  lastSummary: [],
+  lastVersionBefore: null,
+  pendingFirstMessage: null,
+};
 
 export interface CurrentAutomation {
   id: string;
@@ -58,6 +92,10 @@ export interface CurrentAutomation {
   saveError: string | null;
   /** The server's own wording behind the banner's "Details" disclosure. */
   saveErrorDetail: string | null;
+  /** Per-field problems the *rejected write* carried (`operations.0.set_trigger`, …).
+   *  They describe the request, not the document, so they live next to the banner
+   *  instead of in `issues` — which the canvas and the inspector read. */
+  saveErrorIssues: ValidationIssue[];
 
   selection: Selection;
   mode: EditorMode;
@@ -88,6 +126,11 @@ interface AutomationsState {
   /** The canvas step picker. `index` is where the chosen step will be inserted; it is
    *  set by whichever "+" was clicked (an edge, the trailing card, the empty state). */
   stepPicker: { open: boolean; index: number | null };
+
+  assistant: AssistantSlice;
+  /** Steps an assistant turn just added or rewrote, cleared by a timeout. The canvas
+   *  rings them so the user can see what the drawer is talking about. */
+  recentlyChangedStepIds: string[];
 }
 
 interface AutomationsActions {
@@ -125,6 +168,13 @@ interface AutomationsActions {
 
   openStepPicker(index: number): void;
   closeStepPicker(): void;
+
+  sendAssistantMessage(text: string): Promise<void>;
+  undoAssistant(): Promise<void>;
+  clearAssistant(): Promise<void>;
+  /** Queue the home page's first message; consumed once the editor has opened. */
+  setAssistantFirstMessage(text: string): void;
+  consumeAssistantFirstMessage(): string | null;
 }
 
 type Store = AutomationsState & AutomationsActions;
@@ -143,6 +193,9 @@ let writeQueue: Promise<unknown> = Promise.resolve();
  *  stamp is still the newest, so a late echo can never revert a newer edit. */
 let writeStamp = 0;
 
+/** Clears `recentlyChangedStepIds` two seconds after a turn lit it up. */
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
 function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
   // `then(task, task)` so one rejected write does not poison the queue behind it.
   const run = writeQueue.then(task, task);
@@ -151,6 +204,25 @@ function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
     () => undefined
   );
   return run;
+}
+
+function cancelHighlight(): void {
+  if (highlightTimer !== null) {
+    clearTimeout(highlightTimer);
+    highlightTimer = null;
+  }
+}
+
+/** Ids of the steps `after` added or rewrote relative to `before` — a moved step is not
+ *  a change, so the comparison is by id rather than by position. */
+function changedStepIds(before: AutomationDocument, after: AutomationDocument): string[] {
+  const previous = new Map(before.steps.map((step) => [step.id, step]));
+  return after.steps
+    .filter((step) => {
+      const was = previous.get(step.id);
+      return was === undefined || !documentsEqual(was, step);
+    })
+    .map((step) => step.id);
 }
 
 function stopRunStream(): void {
@@ -173,11 +245,22 @@ function errorMessage(e: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Per-field problems the API attached to a rejected write. `ApiError` already
- *  normalized the three possible envelopes (see `lib/api/client.ts`). */
-function issuesFromError(e: unknown): ValidationIssue[] | null {
+/** Issues a rejected write raised **about the document** — the `extra.issues` of a 422
+ *  from `PUT /automations/{id}`, already in the shape `IssuesList` renders. Only these
+ *  may replace `current.issues`. */
+function documentIssuesFromError(e: unknown): ValidationIssue[] | null {
   if (!(e instanceof ApiError)) return null;
-  return e.issues.length > 0 ? e.issues : null;
+  const extra = e.problem?.extra as { issues?: unknown } | undefined;
+  if (!Array.isArray(extra?.issues) || extra.issues.length === 0) return null;
+  return extra.issues as ValidationIssue[];
+}
+
+/** Issues a rejected write raised **about the request** — FastAPI's `errors[]`, whose
+ *  paths point into the payload (`operations.0.set_trigger`) and say nothing about the
+ *  document. They belong to the banner, not to `current.issues`. */
+function requestIssuesFromError(e: unknown): ValidationIssue[] {
+  if (!(e instanceof ApiError)) return [];
+  return documentIssuesFromError(e) ? [] : e.issues;
 }
 
 /** The server's raw wording, kept out of the banner itself — a Pydantic `detail` is
@@ -192,6 +275,20 @@ export const useAutomationsStore = create<Store>((set, get) => {
   /** Patch `current` only when it is still the automation the caller was acting on. */
   const patchCurrent = (id: string, patch: Partial<CurrentAutomation>): void => {
     set((s) => (s.current && s.current.id === id ? { current: { ...s.current, ...patch } } : s));
+  };
+
+  /** Ring the given steps on the canvas for a moment, then stop. */
+  const flashSteps = (stepIds: string[]): void => {
+    cancelHighlight();
+    if (stepIds.length === 0) {
+      set({ recentlyChangedStepIds: [] });
+      return;
+    }
+    set({ recentlyChangedStepIds: stepIds });
+    highlightTimer = setTimeout(() => {
+      highlightTimer = null;
+      set({ recentlyChangedStepIds: [] });
+    }, HIGHLIGHT_MS);
   };
 
   const subscribe = (automationId: string, runId: string): void => {
@@ -212,7 +309,13 @@ export const useAutomationsStore = create<Store>((set, get) => {
         if (nextRun === cur.activeRun && runs === cur.runs) return s;
         return { current: { ...cur, activeRun: nextRun, runs } };
       });
-      if (evt.type === 'run_finished') {
+      // A polled snapshot is the only thing that arrives once the SSE stream has been
+      // given up on, so a terminal status there has to close the run out too —
+      // otherwise the history and the sidebar keep the run's last in-flight state.
+      const finished =
+        evt.type === 'run_finished' ||
+        (evt.type === 'snapshot' && !isRunActive(evt.run.status));
+      if (finished) {
         stopRunStream();
         void get().refreshRuns();
         void get().loadList();
@@ -229,6 +332,8 @@ export const useAutomationsStore = create<Store>((set, get) => {
     currentLoading: false,
     currentError: null,
     stepPicker: { open: false, index: null },
+    assistant: EMPTY_ASSISTANT,
+    recentlyChangedStepIds: [],
 
     // ── list ──────────────────────────────────────────────────────────────────────
 
@@ -265,6 +370,7 @@ export const useAutomationsStore = create<Store>((set, get) => {
     async open(id) {
       stopRunStream();
       cancelValidate();
+      cancelHighlight();
       const token = ++openToken;
       set({ currentLoading: true, currentError: null });
       try {
@@ -288,15 +394,23 @@ export const useAutomationsStore = create<Store>((set, get) => {
             saving: false,
             saveError: null,
             saveErrorDetail: null,
+            saveErrorIssues: [],
             selection: null,
             mode: 'design',
             pendingModeSwitch: null,
             inspectorOpen: true,
             runPanelOpen: false,
-            assistantOpen: false,
+            // Coming from the home page's "describe it" box, the drawer is the point.
+            assistantOpen: get().assistant.pendingFirstMessage !== null,
             runs,
             activeRunId: latest?.id ?? null,
             activeRun: null,
+          },
+          recentlyChangedStepIds: [],
+          assistant: {
+            ...EMPTY_ASSISTANT,
+            messages: detail.assistantMessages,
+            pendingFirstMessage: get().assistant.pendingFirstMessage,
           },
         });
         if (latest) void get().selectRun(latest.id);
@@ -313,8 +427,17 @@ export const useAutomationsStore = create<Store>((set, get) => {
     close() {
       stopRunStream();
       cancelValidate();
+      cancelHighlight();
       openToken += 1;
-      set({ current: null, currentLoading: false, currentError: null });
+      // `pendingFirstMessage` survives: the home page sets it before it navigates, and
+      // the editor it is meant for has not mounted yet.
+      set((state) => ({
+        current: null,
+        currentLoading: false,
+        currentError: null,
+        recentlyChangedStepIds: [],
+        assistant: { ...EMPTY_ASSISTANT, pendingFirstMessage: state.assistant.pendingFirstMessage },
+      }));
     },
 
     // ── list-level mutations ──────────────────────────────────────────────────────
@@ -400,6 +523,7 @@ export const useAutomationsStore = create<Store>((set, get) => {
           dirty: !documentsEqual(doc, cur.savedDocument),
           saveError: null,
           saveErrorDetail: null,
+          saveErrorIssues: [],
         },
       });
       get().validateDraft();
@@ -437,7 +561,12 @@ export const useAutomationsStore = create<Store>((set, get) => {
       }
       const id = cur.id;
       const stamp = ++writeStamp;
-      patchCurrent(id, { saving: true, saveError: null, saveErrorDetail: null });
+      patchCurrent(id, {
+        saving: true,
+        saveError: null,
+        saveErrorDetail: null,
+        saveErrorIssues: [],
+      });
       return enqueueWrite(async () => {
         try {
           const res = await api.operations(id, ops);
@@ -453,15 +582,19 @@ export const useAutomationsStore = create<Store>((set, get) => {
             saving: false,
             saveError: null,
             saveErrorDetail: null,
+            saveErrorIssues: [],
           });
           void get().loadList();
         } catch (e) {
           if (stamp === writeStamp) {
-            const issues = issuesFromError(e);
+            // Only document issues may replace `issues`; request-shaped ones would put
+            // payload paths in front of the canvas and the inspector.
+            const issues = documentIssuesFromError(e);
             patchCurrent(id, {
               saving: false,
               saveError: "That change wasn't accepted.",
               saveErrorDetail: errorDetail(e),
+              saveErrorIssues: requestIssuesFromError(e),
               ...(issues ? { issues } : {}),
             });
           }
@@ -475,7 +608,12 @@ export const useAutomationsStore = create<Store>((set, get) => {
       if (!cur) return;
       const { id, document } = cur;
       const stamp = ++writeStamp;
-      patchCurrent(id, { saving: true, saveError: null, saveErrorDetail: null });
+      patchCurrent(id, {
+        saving: true,
+        saveError: null,
+        saveErrorDetail: null,
+        saveErrorIssues: [],
+      });
       return enqueueWrite(async () => {
         try {
           const res = await api.put(id, document);
@@ -490,16 +628,18 @@ export const useAutomationsStore = create<Store>((set, get) => {
             saving: false,
             saveError: null,
             saveErrorDetail: null,
+            saveErrorIssues: [],
           });
           void get().loadList();
         } catch (e) {
           if (stamp !== writeStamp) return;
           // 422 → keep the draft (and its dirty flag) so the user can fix it in place.
-          const issues = issuesFromError(e);
+          const issues = documentIssuesFromError(e);
           patchCurrent(id, {
             saving: false,
             saveError: "That change wasn't accepted.",
             saveErrorDetail: errorDetail(e),
+            saveErrorIssues: requestIssuesFromError(e),
             ...(issues ? { issues } : {}),
           });
         }
@@ -539,6 +679,7 @@ export const useAutomationsStore = create<Store>((set, get) => {
         dirty: false,
         saveError: null,
         saveErrorDetail: null,
+        saveErrorIssues: [],
         pendingModeSwitch: null,
       });
       // The issues on screen were computed against the draft we just dropped.
@@ -601,10 +742,15 @@ export const useAutomationsStore = create<Store>((set, get) => {
         patchCurrent(
           id,
           e instanceof ApiError && e.status === 409
-            ? { saveError: 'A run is already in progress.', saveErrorDetail: null }
+            ? {
+                saveError: 'A run is already in progress.',
+                saveErrorDetail: null,
+                saveErrorIssues: [],
+              }
             : {
                 saveError: errorMessage(e, 'Failed to start run'),
                 saveErrorDetail: errorDetail(e),
+                saveErrorIssues: [],
               }
         );
         throw e;
@@ -628,6 +774,7 @@ export const useAutomationsStore = create<Store>((set, get) => {
         patchCurrent(id, {
           saveError: errorMessage(e, 'Failed to cancel run'),
           saveErrorDetail: errorDetail(e),
+          saveErrorIssues: [],
         });
         return;
       }
@@ -679,6 +826,172 @@ export const useAutomationsStore = create<Store>((set, get) => {
     closeStepPicker() {
       set({ stepPicker: { open: false, index: null } });
     },
+
+    // ── assistant ─────────────────────────────────────────────────────────────────
+
+    async sendAssistantMessage(text) {
+      const trimmed = text.trim();
+      const cur = get().current;
+      if (!cur || trimmed.length === 0 || get().assistant.sending) return;
+      if (cur.dirty) {
+        // The turn is applied to the document the *server* holds, and its echo would
+        // silently replace the unsaved JSON draft on screen.
+        set((s) => ({
+          assistant: {
+            ...s.assistant,
+            error: 'Save or discard your JSON changes before asking the assistant.',
+          },
+        }));
+        return;
+      }
+
+      const id = cur.id;
+      const versionBefore = cur.versionNumber;
+      // The user's bubble goes up immediately; the turn itself takes seconds. The
+      // server's transcript replaces it wholesale when the response lands.
+      const optimistic: AssistantMessage = { role: 'user', content: trimmed, ts: Date.now() };
+      set((s) => ({
+        assistant: {
+          ...s.assistant,
+          messages: [...s.assistant.messages, optimistic],
+          sending: true,
+          error: null,
+        },
+      }));
+
+      const stamp = ++writeStamp;
+      // Serialized with every other document write: the turn edits the document too.
+      await enqueueWrite(async () => {
+        try {
+          const res = await api.assistant(id, trimmed);
+          // Navigated away (or to another automation) while the turn was in flight.
+          if (get().current?.id !== id) return;
+          const before = get().current?.savedDocument ?? null;
+          set((s) => ({
+            assistant: {
+              ...s.assistant,
+              messages: res.assistantMessages,
+              sending: false,
+              error: null,
+              lastSummary: res.summary,
+              lastVersionBefore: res.operationsApplied > 0 ? versionBefore : null,
+            },
+          }));
+          // A newer write was issued while this one was in flight — let its echo land,
+          // exactly as `applyOperations` does.
+          if (stamp !== writeStamp) return;
+          cancelValidate();
+          patchCurrent(id, {
+            document: res.document,
+            savedDocument: res.document,
+            issues: res.issues,
+            versionNumber: res.versionNumber,
+            dirty: false,
+            saving: false,
+            saveError: null,
+            saveErrorDetail: null,
+            saveErrorIssues: [],
+          });
+          if (res.operationsApplied > 0 && before) {
+            flashSteps(changedStepIds(before, res.document));
+            void get().loadList();
+          }
+          if (res.runId) {
+            // The turn asked for a test run — put the live run in front of the user.
+            await get().refreshRuns();
+            get().setRunPanelOpen(true);
+            void get().selectRun(res.runId);
+          }
+        } catch (e) {
+          if (get().current?.id !== id) return;
+          set((s) => ({
+            assistant: {
+              ...s.assistant,
+              sending: false,
+              error: errorMessage(e, 'The assistant could not answer.'),
+            },
+          }));
+        }
+      });
+    },
+
+    /** Restores the version the last turn edited on top of. One step back, not a stack:
+     *  `lastVersionBefore` is cleared afterwards, which is what disables the button. */
+    async undoAssistant() {
+      const cur = get().current;
+      const target = get().assistant.lastVersionBefore;
+      if (!cur || target === null || get().assistant.sending) return;
+      const id = cur.id;
+      const stamp = ++writeStamp;
+      set((s) => ({ assistant: { ...s.assistant, sending: true, error: null } }));
+      await enqueueWrite(async () => {
+        try {
+          const res = await api.restore(id, target);
+          if (get().current?.id !== id) return;
+          set((s) => ({
+            assistant: { ...s.assistant, sending: false, lastVersionBefore: null, error: null },
+          }));
+          if (stamp !== writeStamp) return;
+          cancelValidate();
+          cancelHighlight();
+          patchCurrent(id, {
+            document: res.document,
+            savedDocument: res.document,
+            issues: res.issues,
+            versionNumber: res.versionNumber,
+            dirty: false,
+            saving: false,
+            saveError: null,
+            saveErrorDetail: null,
+            saveErrorIssues: [],
+          });
+          set({ recentlyChangedStepIds: [] });
+          void get().loadList();
+        } catch (e) {
+          if (get().current?.id !== id) return;
+          set((s) => ({
+            assistant: {
+              ...s.assistant,
+              sending: false,
+              error: errorMessage(e, 'Could not undo that change.'),
+            },
+          }));
+        }
+      });
+    },
+
+    async clearAssistant() {
+      const cur = get().current;
+      if (!cur) return;
+      const id = cur.id;
+      // Optimistic: the transcript is conversation state, nothing about the document.
+      set({ assistant: EMPTY_ASSISTANT });
+      try {
+        await api.clearAssistant(id);
+      } catch (e) {
+        if (get().current?.id !== id) return;
+        set((s) => ({
+          assistant: {
+            ...s.assistant,
+            error: errorMessage(e, 'Could not clear the conversation.'),
+          },
+        }));
+      }
+    },
+
+    setAssistantFirstMessage(text) {
+      const trimmed = text.trim();
+      set((s) => ({
+        assistant: { ...s.assistant, pendingFirstMessage: trimmed.length > 0 ? trimmed : null },
+      }));
+    },
+
+    consumeAssistantFirstMessage() {
+      const pending = get().assistant.pendingFirstMessage;
+      if (pending === null) return null;
+      set((s) => ({ assistant: { ...s.assistant, pendingFirstMessage: null } }));
+      return pending;
+    },
   };
 });
 
@@ -701,6 +1014,12 @@ export function useCurrentAutomation(): CurrentAutomation | null {
 /** Document-level validation issues, or an empty list when nothing is open. */
 export function useEditorIssues(): ValidationIssue[] {
   return useAutomationsStore((s) => s.current?.issues ?? NO_ISSUES);
+}
+
+/** Per-field problems of the last rejected write — rendered inside the error banner,
+ *  never by the canvas or the inspector (see `CurrentAutomation.saveErrorIssues`). */
+export function useEditorSaveErrorIssues(): ValidationIssue[] {
+  return useAutomationsStore((s) => s.current?.saveErrorIssues ?? NO_ISSUES);
 }
 
 /** The open automation's run history (summaries only — not the streaming detail). */

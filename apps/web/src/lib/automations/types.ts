@@ -200,8 +200,8 @@ export interface AutomationDetail {
   versionNumber: number;
   issues: ValidationIssue[];
   nextRunAt: number | null;
-  /** Phase 3 assistant transcript — opaque here. */
-  assistantMessages: Record<string, unknown>[];
+  /** The builder assistant's transcript, oldest first. */
+  assistantMessages: AssistantMessage[];
   lastRun: LastRunPayload | null;
   createdAt: number;
   updatedAt: number;
@@ -218,6 +218,46 @@ export interface DocumentWriteResult {
 export interface ValidateResult {
   document: AutomationDocument;
   issues: ValidationIssue[];
+}
+
+// ─── Assistant ──────────────────────────────────────────────────────────────────────
+
+/** One stored turn of the builder assistant.
+ *
+ *  `summary`, `runId` and `error` only ever appear on an assistant turn: what its
+ *  operations changed (one human sentence each), the test run it started, and — when
+ *  its edits were rejected and nothing was applied — why. The index signature is
+ *  deliberate: the backend may add fields (an `intent`, say) and an unknown key must
+ *  not make the transcript unassignable. */
+export interface AssistantMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  /** Epoch milliseconds. */
+  ts: number;
+  summary?: string[];
+  runId?: string | null;
+  error?: string | null;
+  [key: string]: unknown;
+}
+
+/** `POST /automations/{id}/assistant` — one turn.
+ *
+ *  Carries the same `document`/`issues`/`versionNumber` triple as a document write (the
+ *  turn may have edited the document) plus what belongs to the conversation. `error` is
+ *  a message to render, not a failed request: it means the assistant's operations were
+ *  rejected and nothing was applied. */
+export interface AssistantResponse {
+  message: string;
+  /** Human sentences describing what was applied — empty when nothing was. */
+  summary: string[];
+  operationsApplied: number;
+  runId: string | null;
+  document: AutomationDocument;
+  issues: ValidationIssue[];
+  versionNumber: number;
+  /** The whole transcript, including this turn. */
+  assistantMessages: AssistantMessage[];
+  error: string | null;
 }
 
 export type VersionAuthor = 'user' | 'assistant' | 'json' | 'migration' | 'restore';

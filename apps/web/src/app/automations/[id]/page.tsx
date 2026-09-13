@@ -1,6 +1,6 @@
 'use client';
 
-import { use } from 'react';
+import { use, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import AppShell from '@/components/app-shell';
 import { AutomationsSidebar } from '@/components/automations/list/automations-sidebar';
@@ -15,6 +15,9 @@ export default function AutomationEditorPage({
   const { id } = use(params);
   const router = useRouter();
   const { deleteConversation } = useConversationsStore();
+  // Controlled so the assistant drawer can point at a missing API key (same pattern as
+  // the chat composer's missing-key notice).
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <AppShell
@@ -23,8 +26,10 @@ export default function AutomationEditorPage({
       onNewChat={() => router.push('/chat')}
       onDelete={(cid) => deleteConversation(cid)}
       leftPanel={<AutomationsSidebar />}
+      settingsOpen={settingsOpen}
+      onSettingsOpenChange={setSettingsOpen}
     >
-      <EditorShell id={id} />
+      <EditorShell id={id} onOpenSettings={() => setSettingsOpen(true)} />
     </AppShell>
   );
 }

@@ -41,19 +41,22 @@ export default function FilterForm({ step }: { step: FilterStep }) {
     latest.current = rules;
   }, [rules]);
 
-  // Row identity. Keying on the array index made React reuse a removed row's DOM — and
-  // with it the local draft inside its inputs — for whatever slid up into its place.
-  // The ids move with the rows instead, so the row the user deleted is the row that
-  // unmounts.
+  // Row identity. Keying on the array index made React reuse a removed row's DOM for
+  // whatever slid up into its place; these ids give every row a key of its own instead.
+  //
+  // The document's condition count is the single source of truth for how many rows
+  // exist, so the ids are reconciled against it in one place — adjusting state during
+  // render is React's own answer to "derived state that has to persist" — and the
+  // render uses the reconciled list rather than state that is one render behind, which
+  // would key a row by `undefined`.
   const [rowIds, setRowIds] = useState<string[]>(() => rules.conditions.map(() => nextRowId()));
   const conditionCount = rules.conditions.length;
+  let ids = rowIds;
   if (rowIds.length !== conditionCount) {
-    // Add/remove keep the ids in step themselves; this only catches the document
-    // changing underneath us (a JSON save, another operation's echo). Adjusting state
-    // during render is React's own answer to "derived state that has to persist".
     const fitted = rowIds.slice(0, conditionCount);
     while (fitted.length < conditionCount) fitted.push(nextRowId());
     setRowIds(fitted);
+    ids = fitted;
   }
 
   const setRules = (next: Rules, debounceKey?: string) => {
@@ -121,7 +124,7 @@ export default function FilterForm({ step }: { step: FilterStep }) {
 
           {rules.conditions.map((condition, index) => (
             <ConditionRow
-              key={rowIds[index]}
+              key={ids[index]}
               stepId={step.id}
               position={index}
               condition={condition}
@@ -130,7 +133,6 @@ export default function FilterForm({ step }: { step: FilterStep }) {
               onDraft={(next, key) => replaceCondition(index, next, key)}
               onFlush={(key) => flushStep(step.id, key)}
               onRemove={() => {
-                setRowIds((ids) => ids.filter((_, i) => i !== index));
                 setRules({
                   ...latest.current,
                   conditions: latest.current.conditions.filter((_, i) => i !== index),
@@ -142,7 +144,6 @@ export default function FilterForm({ step }: { step: FilterStep }) {
           <button
             type="button"
             onClick={() => {
-              setRowIds((ids) => [...ids, nextRowId()]);
               setRules({
                 ...latest.current,
                 conditions: [...latest.current.conditions, NEW_CONDITION],

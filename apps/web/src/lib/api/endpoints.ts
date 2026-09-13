@@ -11,6 +11,7 @@
 import { api } from './client';
 import type { Conversation, Message, Provider, Settings, UsageEntry } from '@/lib/types';
 import type {
+  AssistantResponse,
   AutomationDetail,
   AutomationDocument,
   AutomationSummary,
@@ -123,6 +124,18 @@ export const automations = {
     api.post<DocumentWriteResult>(`/automations/${encodeURIComponent(id)}/operations`, {
       operations,
     }),
+
+  /** One assistant turn: describe an edit in plain language, get the new document back.
+   *  Slow (an LLM round trip); 404 when no API key is configured for the automation's
+   *  provider, 502 when the provider itself fails. */
+  assistant: (id: string, message: string) =>
+    api.post<AssistantResponse>(`/automations/${encodeURIComponent(id)}/assistant`, {
+      message,
+    }),
+
+  /** Forgets the transcript. The document is untouched. */
+  clearAssistant: (id: string): Promise<void> =>
+    api.delete(`/automations/${encodeURIComponent(id)}/assistant`),
 
   versions: (id: string) =>
     api.get<VersionSummary[]>(`/automations/${encodeURIComponent(id)}/versions`),

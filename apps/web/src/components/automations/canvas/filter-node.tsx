@@ -8,6 +8,7 @@ import NodeIcon from '@/components/automations/canvas/node-icon';
 import { describeFilter } from '@/components/automations/canvas/describe-filter';
 import {
   useStepHasIssues,
+  useStepRecentlyChanged,
   useStepRunStatus,
   useStepSelected,
 } from '@/components/automations/canvas/use-canvas-selectors';
@@ -21,6 +22,7 @@ export default function FilterNode({ data }: NodeProps<Node<FilterNodeData, 'fil
   const selected = useStepSelected(step.id);
   const hasIssues = useStepHasIssues(index);
   const runStatus = useStepRunStatus(step.id);
+  const highlight = useStepRecentlyChanged(step.id);
 
   return (
     <>
@@ -33,6 +35,7 @@ export default function FilterNode({ data }: NodeProps<Node<FilterNodeData, 'fil
         onSelect={() => select({ kind: 'step', stepId: step.id })}
         needsAttention={step.valid === false || hasIssues}
         runStatus={runStatus}
+        highlight={highlight}
         dashed
       />
       <NodeHandles />

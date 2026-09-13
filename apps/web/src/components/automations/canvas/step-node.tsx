@@ -8,6 +8,7 @@ import NodeHandles from '@/components/automations/canvas/node-handles';
 import NodeIcon from '@/components/automations/canvas/node-icon';
 import {
   useStepHasIssues,
+  useStepRecentlyChanged,
   useStepRunStatus,
   useStepSelected,
 } from '@/components/automations/canvas/use-canvas-selectors';
@@ -21,6 +22,7 @@ export default function StepNode({ data }: NodeProps<Node<StepNodeData, 'step'>>
   const selected = useStepSelected(step.id);
   const hasIssues = useStepHasIssues(index);
   const runStatus = useStepRunStatus(step.id);
+  const highlight = useStepRecentlyChanged(step.id);
 
   return (
     <>
@@ -38,6 +40,7 @@ export default function StepNode({ data }: NodeProps<Node<StepNodeData, 'step'>>
         onSelect={() => select({ kind: 'step', stepId: step.id })}
         needsAttention={step.valid === false || hasIssues}
         runStatus={runStatus}
+        highlight={highlight}
       />
       <NodeHandles />
     </>

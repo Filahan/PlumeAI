@@ -32,6 +32,7 @@ export default function EditorHeader() {
   const confirmModeSwitch = useAutomationsStore((s) => s.confirmModeSwitch);
   const cancelModeSwitch = useAutomationsStore((s) => s.cancelModeSwitch);
   const toggleRunPanel = useAutomationsStore((s) => s.toggleRunPanel);
+  const toggleAssistant = useAutomationsStore((s) => s.toggleAssistant);
   const startRun = useAutomationsStore((s) => s.startRun);
   const cancelRun = useAutomationsStore((s) => s.cancelRun);
   const saveDocument = useAutomationsStore((s) => s.saveDocument);
@@ -46,6 +47,8 @@ export default function EditorHeader() {
   const dirty = useAutomationsStore((s) => s.current?.dirty ?? false);
   const saving = useAutomationsStore((s) => s.current?.saving ?? false);
   const runPanelOpen = useAutomationsStore((s) => s.current?.runPanelOpen ?? false);
+  const assistantOpen = useAutomationsStore((s) => s.current?.assistantOpen ?? false);
+  const hasAssistantMessages = useAutomationsStore((s) => s.assistant.messages.length > 0);
   const runs = useEditorRuns();
   const issues = useEditorIssues();
 
@@ -163,23 +166,23 @@ export default function EditorHeader() {
           )}
         </button>
 
-        <Tooltip>
-          <TooltipTrigger
-            render={(props) => (
-              <span {...props} className="shrink-0 inline-flex">
-                <button
-                  type="button"
-                  disabled
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-xl border border-[color:var(--border)] text-[12px] font-medium opacity-40 cursor-not-allowed"
-                >
-                  <Sparkles size={13} strokeWidth={2} />
-                  Assistant
-                </button>
-              </span>
-            )}
-          />
-          <TooltipContent side="bottom">Coming soon</TooltipContent>
-        </Tooltip>
+        <button
+          type="button"
+          onClick={() => toggleAssistant()}
+          aria-pressed={assistantOpen}
+          className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-xl text-[12px] font-medium transition ${
+            assistantOpen
+              ? 'bg-[color:var(--surface-muted)]'
+              : 'border border-[color:var(--border)] hover:bg-[color:var(--surface-muted)]'
+          }`}
+        >
+          <Sparkles size={13} strokeWidth={2} />
+          Assistant
+          {/* A conversation is waiting behind the button — say so without a number. */}
+          {hasAssistantMessages && !assistantOpen && (
+            <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--primary)]" aria-hidden />
+          )}
+        </button>
 
         <button
           type="button"
