@@ -16,6 +16,7 @@ from app.errors import register_handlers
 from app.logging import configure_logging, get_logger
 from app.mcp import manager as mcp_manager
 from app.middleware import RequestLoggingMiddleware
+from app.routers import activity as activity_router
 from app.routers import automations as automations_router
 from app.routers import mcp as mcp_router
 from app.routers import settings as settings_router
@@ -233,4 +234,8 @@ app.include_router(settings_router.router)
 app.include_router(tools_router.router)
 app.include_router(mcp_router.router)
 app.include_router(automations_router.router)
+# Cross-automation `/runs` and `/schedules` — the Activity section. Registered after
+# the automations router, which owns the per-automation `/automations/{id}/runs*`
+# paths; the two sets of paths never overlap.
+app.include_router(activity_router.router)
 app.include_router(usage_router.router)

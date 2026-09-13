@@ -37,6 +37,10 @@ ACTIVE_STEP_STATUSES = ("pending", "running")
 RESTART_ERROR = "Interrupted by server restart"
 
 DEFAULT_RUN_LIMIT = 50
+# The Activity grid pages over every automation at once, so it asks for far more rows
+# per request than the per-automation run list behind the editor does.
+DEFAULT_CROSS_RUN_LIMIT = 200
+MAX_CROSS_RUN_LIMIT = 500
 DEFAULT_KEEP_RUNS = 200
 
 # Name of the partial unique index that enforces one active run per automation; matched
@@ -193,6 +197,82 @@ async def list_runs(
     if before is not None:
         stmt = stmt.where(Run.created_at < datetime.fromtimestamp(before / 1000, tz=timezone.utc))
     return list((await session.execute(stmt)).scalars().all())
+
+
+def _cursor_to_datetime(before: int) -> datetime:
+    """An epoch-ms `before` cursor as a UTC datetime.
+
+    Cursors are millisecond-precision while `runs.created_at` is microsecond-precision,
+    so `before` is compared with a strict `<`: handing back the `createdAt` of the last
+    row of a page skips that row and everything written earlier in the same millisecond.
+    That is the same trade the per-automation listing has always made — sub-millisecond
+    ties are only reachable by seeding rows by hand, never by two real runs of the same
+    automation (one executes at a time).
+    """
+    return datetime.fromtimestamp(before / 1000, tz=timezone.utc)
+
+
+async def list_runs_across_automations(
+    session: AsyncSession,
+    *,
+    limit: int = DEFAULT_CROSS_RUN_LIMIT,
+    before: int | None = None,
+    automation_id: str | None = None,
+    statuses: list[str] | None = None,
+) -> list[tuple[Run, str, int | None]]:
+    """Newest-first page of runs across *every* automation.
+
+    Returns `(run, automation_name, version_number)` triples. The name and the version
+    number are joined in rather than looked up per row: the Activity grid renders a
+    couple of hundred runs belonging to as many automations, and resolving either of
+    those one run at a time is the N+1 this endpoint exists to avoid. The version join is
+    an outer one — pruning a version sets `runs.version_id` to NULL and must not drop the
+    run from the history it belongs to.
+    """
+    stmt = (
+        select(Run, Automation.name, AutomationVersion.number)
+        .join(Automation, Automation.id == Run.automation_id)
+        .outerjoin(AutomationVersion, AutomationVersion.id == Run.version_id)
+        .order_by(Run.created_at.desc())
+        .limit(max(1, min(limit, MAX_CROSS_RUN_LIMIT)))
+    )
+    if automation_id is not None:
+        stmt = stmt.where(Run.automation_id == automation_id)
+    if statuses:
+        stmt = stmt.where(Run.status.in_(statuses))
+    if before is not None:
+        stmt = stmt.where(Run.created_at < _cursor_to_datetime(before))
+    return [(row[0], row[1], row[2]) for row in (await session.execute(stmt)).all()]
+
+
+async def get_run_with_automation(
+    session: AsyncSession, run_id: str
+) -> tuple[Run, list[RunStep], str]:
+    """One run, its steps and the name of the automation that owns it.
+
+    The standalone counterpart of `get_run`: the Activity section reaches a run by id
+    alone, without knowing (or having to fetch) which automation it belongs to.
+    """
+    row = (
+        await session.execute(
+            select(Run, Automation.name)
+            .join(Automation, Automation.id == Run.automation_id)
+            .where(Run.id == run_id)
+        )
+    ).first()
+    if row is None:
+        raise NotFound(f"Run {run_id} not found.")
+    run, automation_name = row[0], row[1]
+    steps = list(
+        (
+            await session.execute(
+                select(RunStep).where(RunStep.run_id == run_id).order_by(RunStep.index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return run, steps, automation_name
 
 
 async def get_run(session: AsyncSession, run_id: str) -> tuple[Run, list[RunStep]]:

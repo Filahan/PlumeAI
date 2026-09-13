@@ -27,6 +27,7 @@ from app.auth import CurrentUser
 from app.db.base import get_session
 from app.db.models import Automation, AutomationVersion, Run, RunStep
 from app.errors import NotFound
+from app.routers.run_payloads import run_detail, run_summary, version_numbers
 from app.schemas.automations import (
     AssistantRequest,
     AssistantResponse,
@@ -40,7 +41,6 @@ from app.schemas.automations import (
     PatchAutomationRequest,
     ReplaceDocumentRequest,
     RunDetail,
-    RunStepPayload,
     RunSummary,
     StartRunRequest,
     StartRunResponse,
@@ -155,65 +155,6 @@ def _version_summary(version: AutomationVersion) -> VersionSummary:
         created_by=version.created_by,  # type: ignore[arg-type]
         created_at=to_ms(version.created_at),
     )
-
-
-def _run_summary(run: Run, version_number: int | None) -> RunSummary:
-    return RunSummary(
-        id=run.id,
-        automation_id=run.automation_id,
-        version_number=version_number,
-        trigger=run.trigger,  # type: ignore[arg-type]
-        status=run.status,  # type: ignore[arg-type]
-        stopped_by_step_id=run.stopped_by_step_id,
-        error=run.error,
-        input_tokens=run.input_tokens,
-        output_tokens=run.output_tokens,
-        started_at=to_ms(run.started_at) if run.started_at else None,
-        ended_at=to_ms(run.ended_at) if run.ended_at else None,
-        duration_ms=run.duration_ms,
-        created_at=to_ms(run.created_at),
-    )
-
-
-def _run_step(step: RunStep) -> RunStepPayload:
-    return RunStepPayload(
-        id=step.id,
-        step_id=step.step_id,
-        index=step.index,
-        name=step.name,
-        type=step.type,
-        status=step.status,  # type: ignore[arg-type]
-        attempt=step.attempt,
-        resolved_input=step.resolved_input,
-        output=step.output,
-        error=step.error,
-        trace=list(step.trace or []),
-        started_at=to_ms(step.started_at) if step.started_at else None,
-        ended_at=to_ms(step.ended_at) if step.ended_at else None,
-        duration_ms=step.duration_ms,
-    )
-
-
-def _run_detail(run: Run, steps: list[RunStep], version_number: int | None) -> RunDetail:
-    return RunDetail(
-        **_run_summary(run, version_number).model_dump(),
-        steps=[_run_step(s) for s in steps],
-    )
-
-
-async def _version_numbers(session: AsyncSession, runs: list[Run]) -> dict[str, int]:
-    """`version_id` → `number` for the versions referenced by `runs` (one query)."""
-    ids = {r.version_id for r in runs if r.version_id}
-    if not ids:
-        return {}
-    rows = (
-        await session.execute(
-            select(AutomationVersion.id, AutomationVersion.number).where(
-                AutomationVersion.id.in_(ids)
-            )
-        )
-    ).all()
-    return {row[0]: row[1] for row in rows}
 
 
 def _diff_from_raw(old_raw: dict[str, Any], new: AutomationDocument) -> list[str]:
@@ -492,8 +433,8 @@ async def list_runs_route(
 ) -> list[RunSummary]:
     await svc.get_automation(session, automation_id)
     runs = await runs_svc.list_runs(session, automation_id, limit=limit, before=before)
-    numbers = await _version_numbers(session, runs)
-    return [_run_summary(r, numbers.get(r.version_id or "")) for r in runs]
+    numbers = await version_numbers(session, runs)
+    return [run_summary(r, numbers.get(r.version_id or "")) for r in runs]
 
 
 @router.get(
@@ -503,8 +444,8 @@ async def get_run_route(
     automation_id: str, run_id: str, user: CurrentUser, session: DBSession
 ) -> RunDetail:
     run, steps = await _run_in_automation(session, automation_id, run_id)
-    numbers = await _version_numbers(session, [run])
-    return _run_detail(run, steps, numbers.get(run.version_id or ""))
+    numbers = await version_numbers(session, [run])
+    return run_detail(run, steps, numbers.get(run.version_id or ""))
 
 
 @router.post(
@@ -532,8 +473,8 @@ async def run_events_route(
     an immediate end-of-stream.
     """
     run, steps = await _run_in_automation(session, automation_id, run_id)
-    numbers = await _version_numbers(session, [run])
-    snapshot = _run_detail(run, steps, numbers.get(run.version_id or ""))
+    numbers = await version_numbers(session, [run])
+    snapshot = run_detail(run, steps, numbers.get(run.version_id or ""))
     finished = run.status in runs_svc.TERMINAL_RUN_STATUSES
 
     # Subscribe before yielding the snapshot: anything the executor publishes while the
