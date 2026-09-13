@@ -1,4 +1,4 @@
-"""Response schemas for `GET /tools` — the merged integration + builtin action catalog."""
+"""Response schemas for `GET /tools` — the merged integration + builtin + MCP catalog."""
 
 from __future__ import annotations
 
@@ -33,6 +33,24 @@ class CatalogIntegrationSchema(APISchema):
     actions: list[CatalogActionSchema] = Field(default_factory=list)
 
 
+class CatalogMcpServerSchema(APISchema):
+    """One registered MCP server. Serialized as `mcpServers[]` on `GET /tools`.
+
+    Connection details are deliberately absent — the command, URL and the names of the
+    secrets it carries live on `GET /mcp/servers` (see `app.schemas.mcp`), which is the
+    endpoint the settings UI reads; this one only has to say which actions exist and
+    whether they can be run.
+    """
+
+    name: str
+    transport: str
+    enabled: bool = True
+    connected: bool = False
+    last_error: str | None = None
+    actions: list[CatalogActionSchema] = Field(default_factory=list)
+
+
 class CatalogResponse(APISchema):
     integrations: list[CatalogIntegrationSchema]
     builtin_actions: list[CatalogActionSchema]
+    mcp_servers: list[CatalogMcpServerSchema] = Field(default_factory=list)

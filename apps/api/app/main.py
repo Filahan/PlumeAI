@@ -14,10 +14,12 @@ from app.db import models  # noqa: F401 — registers the tables on Base.metadat
 from app.db.base import Base, get_engine, session_scope
 from app.errors import register_handlers
 from app.logging import configure_logging, get_logger
+from app.mcp import manager as mcp_manager
 from app.middleware import RequestLoggingMiddleware
 from app.routers import automations as automations_router
 from app.routers import chat as chat_router
 from app.routers import conversations as conversations_router
+from app.routers import mcp as mcp_router
 from app.routers import settings as settings_router
 from app.routers import tools as tools_router
 from app.routers import usage as usage_router
@@ -151,6 +153,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await executor.cancel_all()
         except Exception:  # noqa: BLE001
             log.warning("run_cancellation_failed", exc_info=True)
+        # MCP connections own subprocesses (stdio) and HTTP sessions; closing them here
+        # is what reaps those children instead of leaving them to the process exit.
+        try:
+            await mcp_manager.close_all()
+        except Exception:  # noqa: BLE001
+            log.warning("mcp_shutdown_failed", exc_info=True)
         log.info("shutdown")
 
 
@@ -180,6 +188,7 @@ app.include_router(health)
 app.include_router(settings_router.router)
 app.include_router(chat_router.router)
 app.include_router(tools_router.router)
+app.include_router(mcp_router.router)
 app.include_router(automations_router.router)
 app.include_router(usage_router.router)
 app.include_router(conversations_router.router)

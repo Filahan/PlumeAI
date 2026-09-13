@@ -10,6 +10,8 @@ The automation-builder tables (`automations`, `automation_versions`, `runs`,
 is deliberately gone from `Base.metadata` so `create_all` never recreates that table;
 the migration reaches the old rows through Core table definitions instead (see
 `app.services.legacy_migration`).
+
+`mcp_servers` is new in revision `0004_mcp_servers`.
 """
 
 from __future__ import annotations
@@ -236,3 +238,49 @@ class RunStep(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (Index("run_steps_run_idx", "run_id", "index"),)
+
+
+# ─── MCP servers ─────────────────────────────────────────────────────────────────────
+
+
+class McpServer(Base):
+    """One registered MCP server whose tools become actions in the catalog.
+
+    `config_enc` is an AES-GCM blob (`{ciphertext, iv}` — see `app.crypto`) around the
+    transport-specific connection details, because both shapes carry secrets: a stdio
+    server's `env` holds API keys, and an HTTP server's `headers` hold the bearer token.
+    Never returned to the client as-is; `app.services.mcp_servers.public_view` exposes the
+    names of those entries and nothing else.
+
+    `cached_tools` is the listing from the server's last successful sync
+    (`[{name, description, input_schema}]`). The catalog and the tool registry read it
+    instead of connecting, so assembling the action list never depends on a third-party
+    server being up; `POST /mcp/servers/{id}/refresh` is what re-reads it.
+    """
+
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Slug (`^[a-z0-9][a-z0-9_-]{1,30}$`): it becomes part of every tool id
+    # (`mcp__<name>__<tool>`) and of the catalog integration name (`mcp:<name>`).
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    transport: Mapped[str] = mapped_column(Text, nullable=False)  # stdio | http
+    config_enc: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    # Opt-out of the SSRF guard for `http` servers on the operator's own network.
+    allow_private_network: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    cached_tools: Mapped[list[dict]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )

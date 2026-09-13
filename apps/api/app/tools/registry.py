@@ -1,4 +1,10 @@
-"""Tool dispatch: routes a tool-call name to either a builtin or an integration."""
+"""Tool dispatch: routes a tool-call name to a builtin, an integration, or an MCP tool.
+
+MCP tools are the only ones whose existence is data rather than code: they are named
+`mcp__<server>__<tool>` (see `app.mcp.schemas.tool_id`) and resolved against the cached
+listing of the registered servers, so a tool that vanished from a server since the last
+sync is rejected here instead of being sent to it.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,14 @@ from app.integrations.registry import (
     find_integration_for_function,
     list_configured_integrations,
 )
+from app.mcp import (
+    DEFAULT_CALL_TIMEOUT,
+    get_manager,
+    is_mcp_tool_id,
+    parse_tool_id,
+    to_openai_schema,
+)
+from app.services import mcp_servers as mcp_service
 from app.tools.base import ToolResult, safe_json_args
 from app.tools.builtin import BUILTIN_DISPATCH, BUILTIN_NAMES, BUILTIN_SCHEMAS
 
@@ -23,11 +37,26 @@ def builtin_tool_schemas() -> list[dict[str, Any]]:
     return list(BUILTIN_SCHEMAS)
 
 
+async def mcp_tool_schemas(session: AsyncSession) -> list[dict[str, Any]]:
+    """One function schema per tool of every *enabled* MCP server.
+
+    Read from `mcp_servers.cached_tools`, never from the servers themselves: this runs
+    before every agent turn and every automation step, and a slow (or dead) MCP server
+    must not slow down (or break) the ones that work.
+    """
+    schemas: list[dict[str, Any]] = []
+    for server in await mcp_service.list_servers(session, enabled_only=True):
+        for tool in mcp_service.cached_tools(server):
+            schemas.append(to_openai_schema(server.name, tool))
+    return schemas
+
+
 async def list_available_tool_schemas(session: AsyncSession) -> list[dict[str, Any]]:
-    """Built-ins + all integrations the user has currently connected."""
+    """Built-ins + all integrations the user has currently connected + MCP tools."""
     schemas: list[dict[str, Any]] = list(BUILTIN_SCHEMAS)
     for integ in await list_configured_integrations(session):
         schemas.extend(integ.schemas)
+    schemas.extend(await mcp_tool_schemas(session))
     return schemas
 
 
@@ -49,6 +78,44 @@ def _is_retryable(exc: AppError) -> bool:
     return bool(exc.extra.get("retryable", True))
 
 
+async def execute_mcp_tool(
+    name: str, args: dict[str, Any], session: AsyncSession
+) -> ToolResult:
+    """Dispatch one `mcp__<server>__<tool>` call to its server.
+
+    Every rejection here is permanent (`retryable=False`): an unparseable id, a server
+    that was deleted or disabled, a tool the server no longer advertises — none of that
+    changes on a second attempt, and the automation executor should surface it to the
+    author rather than spend its retry budget on it.
+    """
+    parsed = parse_tool_id(name)
+    if parsed is None:
+        return ToolResult(ok=False, content=f"Unknown tool: {name}", retryable=False)
+    server_name, tool_name = parsed
+
+    server = await mcp_service.get_server_by_name(session, server_name)
+    if server is None:
+        return ToolResult(
+            ok=False, content=f"Unknown MCP server: {server_name}", retryable=False
+        )
+    if not server.enabled:
+        return ToolResult(
+            ok=False,
+            content=f"MCP server '{server_name}' is disabled.",
+            retryable=False,
+        )
+    if tool_name not in {t.name for t in mcp_service.cached_tools(server)}:
+        return ToolResult(
+            ok=False,
+            content=f"MCP server '{server_name}' has no tool named '{tool_name}'.",
+            retryable=False,
+        )
+
+    return await get_manager().call_tool(
+        mcp_service.server_config(server), tool_name, args, timeout=DEFAULT_CALL_TIMEOUT
+    )
+
+
 async def execute_tool(name: str, raw_args: str, session: AsyncSession) -> ToolResult:
     """Dispatch a tool call. Errors are wrapped into a failed `ToolResult` so the agent
     loop can feed the error back to the LLM rather than killing the stream.
@@ -60,6 +127,8 @@ async def execute_tool(name: str, raw_args: str, session: AsyncSession) -> ToolR
     try:
         if name in BUILTIN_NAMES:
             return await BUILTIN_DISPATCH[name](args)
+        if is_mcp_tool_id(name):
+            return await execute_mcp_tool(name, args, session)
         integ = find_integration_for_function(name)
         if integ is not None:
             return await integ.execute(name, args, session)
