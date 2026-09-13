@@ -1,31 +1,5 @@
 export type Provider = 'openai' | 'anthropic';
 
-export interface AttachmentRef {
-  id: string;        // blob-store key (uuid)
-  mime: string;      // 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
-  width: number;
-  height: number;
-  size: number;      // bytes, post-resize
-}
-
-export interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-  attachments?: AttachmentRef[];
-}
-
-export interface Conversation {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: number;
-  updatedAt: number;
-  provider: Provider;
-  model: string;
-}
-
 export interface ProviderConfig {
   id: string;
   provider: Provider;
@@ -71,15 +45,12 @@ export function findApiKey(settings: Settings, provider: Provider): string {
   return settings.providers.find((p) => p.provider === provider)?.apiKey ?? '';
 }
 
-export function supportsVision(provider: Provider, model: string): boolean {
-  if (provider === 'openai') return /^gpt-4o|^gpt-4\.1|^o\d/.test(model);
-  if (provider === 'anthropic') return /^claude-3/.test(model);
-  return false;
-}
-
 export interface UsageEntry {
   timestamp: number;
-  conversationId: string;
+  /** Free-text correlation id the server records with each LLM round — the run id for
+   *  automation runs, the automation id for the builder assistant. The name is the wire
+   *  field (historical); it is never a chat conversation any more. */
+  conversationId: string | null;
   provider: Provider;
   model: string;
   inputTokens: number;

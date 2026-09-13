@@ -10,8 +10,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "WebUI - Chat Interface",
-  description: "Simple, clean chat interface for LLMs",
+  title: "PlumeAI",
+  description: "Build and run AI automations",
 };
 
 export default function RootLayout({

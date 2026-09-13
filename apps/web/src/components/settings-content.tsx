@@ -288,7 +288,7 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
             </SelectContent>
           </Select>
           <p className="text-[11px] text-[#a8a8a8] leading-relaxed">
-            Used for new conversations. You can change it per-conversation from the chat input.
+            Used by new automations and the builder assistant. AI steps can pick their own model.
           </p>
         </section>
       )}

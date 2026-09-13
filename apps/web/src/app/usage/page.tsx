@@ -2,10 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import AppShell from '@/components/app-shell';
 import UsageChart, { type UsageRange } from '@/components/usage-chart';
-import { useUsageStore, useConversationsStore } from '@/lib/store-provider';
+import { useUsageStore } from '@/lib/store-provider';
 import { getCost, formatTokens, formatCost } from '@/lib/pricing';
 import { ProviderLogo } from '@/components/provider-logo';
 import { PROVIDER_NAMES, PROVIDER_ACCENT, Provider, UsageEntry } from '@/lib/types';
@@ -35,8 +34,6 @@ interface ModelSummary {
 }
 
 export default function UsagePage() {
-  const router = useRouter();
-  const { conversations, deleteConversation } = useConversationsStore();
   const { usageLog, pricing, loaded } = useUsageStore();
   const [range, setRange] = useState<UsageRange>('7d');
 
@@ -60,14 +57,16 @@ export default function UsagePage() {
   const stats = useMemo(() => {
     let totalTokens = 0;
     let totalCost = 0;
-    const seenConvs = new Set<string>();
+    // One entry per LLM round; `conversationId` correlates them — a run id for automation
+    // runs, an automation id for the builder assistant.
+    const seenRuns = new Set<string>();
     const modelMap = new Map<string, ModelSummary>();
     for (const e of filtered) {
       const tokens = e.inputTokens + e.outputTokens;
       const cost = getCost(pricing, e.model, e.inputTokens, e.outputTokens);
       totalTokens += tokens;
       totalCost += cost;
-      seenConvs.add(e.conversationId);
+      if (e.conversationId) seenRuns.add(e.conversationId);
       const existing = modelMap.get(e.model);
       if (existing) {
         existing.calls += 1;
@@ -78,25 +77,17 @@ export default function UsagePage() {
       }
     }
     const models = Array.from(modelMap.values()).sort((a, b) => b.tokens - a.tokens);
-    return { totalTokens, totalCost, calls: filtered.length, models, conversations: seenConvs.size };
+    return { totalTokens, totalCost, calls: filtered.length, models, runs: seenRuns.size };
   }, [filtered, pricing]);
 
-  const conversationCount = conversations.length;
-
   return (
-    <AppShell
-      currentId={null}
-      onSelect={(id) => router.push(`/chat/${id}`)}
-      onNewChat={() => router.push('/chat')}
-      onDelete={(id) => deleteConversation(id)}
-      leftPanel={false}
-    >
+    <AppShell>
       <div className="w-full max-w-[1100px] mx-auto px-8 py-8 overflow-y-auto h-full">
         {/* Header */}
         <div className="flex items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="text-[20px] font-semibold tracking-tight">Usage</h1>
-            <p className="text-[11px] text-[color:var(--muted-foreground)]">Tokens and cost across your conversations.</p>
+            <p className="text-[11px] text-[color:var(--muted-foreground)]">Tokens and cost across your automation runs.</p>
           </div>
 
           {/* Range pills */}
@@ -131,13 +122,13 @@ export default function UsagePage() {
             </div>
             <h2 className="text-[16px] font-semibold mb-1">No usage yet</h2>
             <p className="text-[13px] text-[color:var(--muted-foreground)] mb-5">
-              Start a conversation to see your token consumption broken down here.
+              Run an automation to see your token consumption broken down here.
             </p>
             <Link
-              href="/chat"
+              href="/"
               className="inline-flex items-center gap-2 h-10 px-4 rounded-full bg-[color:var(--primary)] text-white text-[13px] font-medium hover:opacity-90 transition"
             >
-              Back to chat
+              Back to automations
             </Link>
           </div>
         ) : (
@@ -147,7 +138,7 @@ export default function UsagePage() {
               <StatCard icon={<Coins size={16} strokeWidth={2} />} label="Tokens" value={formatTokens(stats.totalTokens)} />
               <StatCard icon={<DollarSign size={16} strokeWidth={2} />} label="Cost" value={formatCost(stats.totalCost)} accent="text-emerald-700" />
               <StatCard icon={<Zap size={16} strokeWidth={2} />} label="Calls" value={stats.calls.toString()} />
-              <StatCard icon={<Layers size={16} strokeWidth={2} />} label="Models" value={stats.models.length.toString()} subtitle={`${conversationCount} conversation${conversationCount === 1 ? '' : 's'}`} />
+              <StatCard icon={<Layers size={16} strokeWidth={2} />} label="Models" value={stats.models.length.toString()} subtitle={`${stats.runs} run${stats.runs === 1 ? '' : 's'}`} />
             </div>
 
             {/* Chart card */}

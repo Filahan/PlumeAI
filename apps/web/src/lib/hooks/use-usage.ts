@@ -126,20 +126,5 @@ export function useUsage() {
     return { tokens, cost };
   }, [usageLog, now, pricing, window]);
 
-  const usageForConversation = useCallback(
-    (conversationId: string | null) => {
-      if (!conversationId) return { tokens: 0, cost: 0 };
-      let tokens = 0;
-      let cost = 0;
-      for (const e of usageLog) {
-        if (e.conversationId !== conversationId) continue;
-        tokens += e.inputTokens + e.outputTokens;
-        cost += getCost(pricing, e.model, e.inputTokens, e.outputTokens);
-      }
-      return { tokens, cost };
-    },
-    [usageLog, pricing]
-  );
-
-  return { recordUsage, recentUsage, usageForConversation, window, setWindow, usageLog, pricing, loaded };
+  return { recordUsage, recentUsage, window, setWindow, usageLog, pricing, loaded };
 }
