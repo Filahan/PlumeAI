@@ -28,6 +28,27 @@ class Settings(BaseSettings):
     app_env: str = Field(default="dev", alias="APP_ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    # MCP: whether `stdio` servers may be registered. A stdio MCP server is a command the
+    # API container runs as a subprocess, so with no built-in login (see `app/auth.py`)
+    # anyone who can reach the API can execute arbitrary commands inside the container.
+    # `http` MCP servers are unaffected (they are just an outbound request, SSRF-guarded).
+    #
+    # Kept as a string rather than `bool | None` on purpose: `docker-compose.yml` passes
+    # it through as `${MCP_ALLOW_STDIO:-}`, and an empty value has to mean "not set"
+    # (follow `APP_ENV`) rather than fail the whole process at startup.
+    mcp_allow_stdio_override: str | None = Field(default=None, alias="MCP_ALLOW_STDIO")
+
+    @property
+    def mcp_allow_stdio(self) -> bool:
+        """Unset → on in development, off everywhere else. Anything unrecognized → off."""
+        raw = (self.mcp_allow_stdio_override or "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return True
+        if not raw:
+            return self.app_env.strip().lower() in ("dev", "development", "local", "test")
+        # An explicit "false" — or a typo, which fails closed rather than open.
+        return False
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

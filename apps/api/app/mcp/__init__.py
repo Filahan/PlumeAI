@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from app.mcp.manager import (
     DEFAULT_CALL_TIMEOUT,
+    STDIO_DISABLED_MESSAGE,
     McpManager,
+    assert_stdio_allowed,
     close_all,
     get_manager,
+    stdio_allowed,
     test_server,
 )
 from app.mcp.schemas import (
@@ -33,11 +36,13 @@ from app.mcp.schemas import (
 __all__ = [
     "DEFAULT_CALL_TIMEOUT",
     "SERVER_NAME_RE",
+    "STDIO_DISABLED_MESSAGE",
     "TRANSPORTS",
     "McpManager",
     "McpServerConfig",
     "McpToolInfo",
     "Transport",
+    "assert_stdio_allowed",
     "close_all",
     "get_manager",
     "humanize_tool",
@@ -45,6 +50,7 @@ __all__ = [
     "is_mcp_tool_id",
     "parse_integration_name",
     "parse_tool_id",
+    "stdio_allowed",
     "test_server",
     "to_openai_schema",
     "tool_id",

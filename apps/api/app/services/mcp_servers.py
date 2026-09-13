@@ -14,10 +14,13 @@ invariants the rest of the feature leans on:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import structlog
 from sqlalchemy import select
@@ -26,35 +29,124 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crypto import decrypt, encrypt
 from app.db.models import McpServer
 from app.errors import BadRequest, Conflict
-from app.mcp import McpServerConfig, McpToolInfo, get_manager
+from app.mcp import McpServerConfig, McpToolInfo, assert_stdio_allowed, get_manager
 from app.mcp.schemas import SERVER_NAME_RE, TRANSPORTS
 
 log = structlog.get_logger("app.services.mcp_servers")
 
 # `last_error` is shown in the UI, and its writer is a third-party server's error text.
 MAX_ERROR_CHARS = 1_000
+# A sync happens inside a request (`POST /mcp/servers`, `…/refresh`), so it gets the same
+# budget as `POST /mcp/servers/test` rather than the manager's longer internal timeouts.
+SYNC_TIMEOUT = 20
 
 
 def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+# ───────────────────── masking ─────────────────────
+#
+# The encrypted config keeps secrets out of the database, but two of them leak through
+# *shapes* the UI wants to show: an argv like `mcp-server --api-key=sk-…`, and a URL with
+# the token in its query string. Both are masked on the way out, and the same masking runs
+# over `last_error` before it is stored — a connection error quotes the URL it failed on.
+
+MASK = "***"
+_SECRET_ARG = re.compile(
+    r"^(?P<flag>-{0,2}[\w.-]*(?:key|token|secret|password|passwd|pass|auth|credential)"
+    r"[\w.-]*)=(?P<value>.+)$",
+    re.IGNORECASE,
+)
+_SECRET_FLAG = re.compile(
+    r"^-{1,2}[\w.-]*(?:key|token|secret|password|passwd|pass|auth|credential)[\w.-]*$",
+    re.IGNORECASE,
+)
+_URL_IN_TEXT = re.compile(r"(https?://[^\s'\"]+)")
+
+
+def mask_url(url: str) -> str:
+    """`https://host/mcp?token=abc` → `https://host/mcp?token=***`.
+
+    Query *names* survive (like `header_names` does); values never do. Userinfo
+    (`https://user:pw@host`) is dropped entirely.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    netloc = parts.netloc.rpartition("@")[2] if "@" in parts.netloc else parts.netloc
+    query = parts.query
+    if query:
+        query = "&".join(
+            f"{pair.partition('=')[0]}={MASK}" if "=" in pair else pair
+            for pair in query.split("&")
+        )
+    fragment = MASK if parts.fragment else ""
+    return urlunsplit((parts.scheme, netloc, parts.path, query, fragment))
+
+
+def mask_args(args: list[str]) -> list[str]:
+    """Mask values that look like credentials: `--api-key=sk-…`, `--token sk-…`."""
+    masked: list[str] = []
+    mask_next = False
+    for arg in args:
+        if mask_next:
+            masked.append(MASK)
+            mask_next = False
+            continue
+        hit = _SECRET_ARG.match(arg)
+        if hit:
+            masked.append(f"{hit.group('flag')}={MASK}")
+            continue
+        if _SECRET_FLAG.match(arg):
+            mask_next = True
+        masked.append(arg)
+    return masked
+
+
+def mask_text(text: str) -> str:
+    """Mask every URL inside free text — used on error messages before they are stored."""
+
+    def replace(match: re.Match[str]) -> str:
+        url = match.group(1)
+        # Sentence punctuation right after a URL is not part of it.
+        trailing = ""
+        while url and url[-1] in ".,;:!?)]}\'\"":
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        return mask_url(url) + trailing
+
+    return _URL_IN_TEXT.sub(replace, text)
+
+
 # ───────────────────── validation ─────────────────────
 
 
 def validate_name(name: str) -> str:
-    cleaned = (name or "").strip().lower()
-    if not SERVER_NAME_RE.match(cleaned):
+    """Check the slug. Deliberately does *not* rewrite it.
+
+    `app.schemas.mcp` carries the same pattern, so a name that needs fixing is a 422 with
+    the field named, not a silently different server than the one the user asked for —
+    and the name is not a cosmetic label: it is half of every tool id.
+    """
+    if not SERVER_NAME_RE.match(name or ""):
         raise BadRequest(
             "MCP server name must be 2-31 characters of lowercase letters, digits, "
             "'-' or '_', starting with a letter or digit."
         )
-    return cleaned
+    return name
 
 
 def validate_transport(transport: str) -> str:
+    """Check the transport is one we speak, and that this deployment allows it.
+
+    `assert_stdio_allowed` is the `MCP_ALLOW_STDIO` gate: a stdio server is a command the
+    API container runs, and the API has no login in front of it (see `docs/security.md`).
+    """
     if transport not in TRANSPORTS:
         raise BadRequest(f"transport must be one of {', '.join(TRANSPORTS)}.")
+    assert_stdio_allowed(transport)
     return transport
 
 
@@ -208,6 +300,9 @@ async def update_server(
     enabled: bool | None = None,
 ) -> McpServer:
     """Partial update. Changing the transport requires a config for the new transport."""
+    # Editing a stdio server is as good as registering one (the command is what changes),
+    # so the `MCP_ALLOW_STDIO` gate applies to the transport this update lands on.
+    assert_stdio_allowed(transport or server.transport)
     if name is not None:
         clean_name = validate_name(name)
         if clean_name != server.name:
@@ -257,7 +352,7 @@ async def set_cached_tools(
     """
     if tools is not None:
         server.cached_tools = [t.to_dict() for t in tools]
-    server.last_error = error[:MAX_ERROR_CHARS] if error else None
+    server.last_error = mask_text(error)[:MAX_ERROR_CHARS] if error else None
     server.last_synced_at = datetime.now(timezone.utc)
     server.updated_at = datetime.now(timezone.utc)
     await session.flush()
@@ -271,7 +366,13 @@ async def sync_server(session: AsyncSession, server: McpServer) -> McpServer:
     `last_error`, which is what the UI renders and what `is_connected` reads.
     """
     try:
-        tools = await get_manager().list_tools(server_config(server), refresh=True)
+        tools = await asyncio.wait_for(
+            get_manager().list_tools(server_config(server), refresh=True), SYNC_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        return await set_cached_tools(
+            session, server, None, error=f"Syncing timed out after {SYNC_TIMEOUT}s."
+        )
     except Exception as exc:  # noqa: BLE001
         detail = getattr(exc, "detail", None)
         message = str(detail or exc) or type(exc).__name__
@@ -313,11 +414,12 @@ def public_view(server: McpServer) -> dict[str, Any]:
     if server.transport == "stdio":
         view["command"] = config.get("command")
         args = config.get("args")
-        view["args"] = [str(a) for a in args] if isinstance(args, list) else []
+        view["args"] = mask_args([str(a) for a in args]) if isinstance(args, list) else []
         env = config.get("env")
         view["env_names"] = sorted(env) if isinstance(env, dict) else []
     else:
-        view["url"] = config.get("url")
+        url = config.get("url")
+        view["url"] = mask_url(str(url)) if url else None
         headers = config.get("headers")
         view["header_names"] = sorted(headers) if isinstance(headers, dict) else []
     return view

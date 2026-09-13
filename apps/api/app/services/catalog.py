@@ -114,15 +114,19 @@ async def _build_integration(integ: Integration, session: AsyncSession) -> Catal
 
 
 def _mcp_action(server_name: str, tool: McpToolInfo) -> CatalogAction:
-    """One MCP tool as a catalog action, under the `mcp:<server>` integration."""
+    """One MCP tool as a catalog action, under the `mcp:<server>` integration.
+
+    The label is the server's own `title` when it declares one — a hand-written label
+    always beats `humanize_tool`'s guess at what the function name meant.
+    """
     return CatalogAction(
         name=tool_id(server_name, tool.name),
         integration=integration_name(server_name),
-        label=humanize_tool(tool.name),
+        label=tool.title or humanize_tool(tool.name),
         description=tool.description,
         input_schema=copy.deepcopy(tool.input_schema),
         output_description="",
-        output_schema=None,
+        output_schema=copy.deepcopy(tool.output_schema),
     )
 
 

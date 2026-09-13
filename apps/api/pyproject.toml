@@ -22,6 +22,9 @@ dependencies = [
   # MCP client (app/mcp). 2.x only: the 1.x client API (`streamablehttp_client`,
   # `ClientSession(read, write)`) was replaced by `Client` + `streamable_http_client`.
   "mcp>=2.2,<3",
+  # The wire types (`CallToolResult`, `Tool`, the error codes) live in their own
+  # distribution since 2.x and are imported directly, so they are pinned directly too.
+  "mcp-types>=2.2,<3",
   "croniter>=3",
   "apscheduler>=3.10,<4",
   "psycopg[binary]>=3.2",

@@ -24,18 +24,15 @@ from app.schemas.documents import AutomationDocument
 from app.services import automations as svc
 from app.services import mcp_servers as mcp_service
 from app.services import runs as runs_svc
+from app.services.assistant_prompt import format_catalog
 from app.services.catalog import build_catalog
 from app.services.documents import validate_document
 from app.services.executor import execute_run
 from app.tools.registry import execute_tool, list_available_tool_schemas
 
-try:  # the prompt text is being extracted out of `assistant` in a parallel change
-    from app.services.assistant_prompt import format_catalog
-except ImportError:  # pragma: no cover — whichever module owns it, the hook is the same
-    from app.services.assistant import format_catalog
-
 ECHO_SERVER = str(Path(__file__).parents[1] / "fixtures" / "echo_mcp_server.py")
 SECRET_VALUE = "s3cr3t-token-value"
+ECHO_TOOLS = {"echo", "add", "fail", "crash", "slow"}
 
 ECHO_BODY: dict[str, Any] = {
     "name": "echo",
@@ -52,22 +49,6 @@ ECHO_BODY: dict[str, Any] = {
 async def _close_mcp_connections():
     yield
     await mcp_manager.get_manager().close_all()
-
-
-async def _released(session, coro):
-    """Await a call made on the test's own session, then end its transaction.
-
-    The test session and the API's request sessions are different connections, and
-    anything that reads the catalog *seeds the `settings` row*
-    (`app.services.tool_credentials._get_or_create_row`) — which the truncate between
-    tests has removed. Holding that INSERT open while the next HTTP request tries to
-    seed the same primary key would block the request on a row lock for as long as the
-    test lives, so the transaction is closed as soon as the call returns.
-    """
-    try:
-        return await coro
-    finally:
-        await session.commit()
 
 
 async def _register(client) -> dict[str, Any]:
@@ -87,8 +68,8 @@ async def test_create_server_connects_and_caches_its_tools(client) -> None:
     assert payload["enabled"] is True
     assert payload["connected"] is True
     assert payload["lastError"] is None
-    assert payload["toolCount"] == 3
-    assert {t["name"] for t in payload["tools"]} == {"echo", "add", "fail"}
+    assert payload["toolCount"] == len(ECHO_TOOLS)
+    assert {t["name"] for t in payload["tools"]} == ECHO_TOOLS
     assert payload["lastSyncedAt"] > 0
 
 
@@ -200,7 +181,7 @@ async def test_refresh_re_reads_the_tools(client, session) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["toolCount"] == 3
+    assert payload["toolCount"] == len(ECHO_TOOLS)
     assert payload["lastError"] is None
     assert payload["connected"] is True
 
@@ -216,7 +197,7 @@ async def test_update_replaces_the_config_and_re_syncs(client) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["envNames"] == []
-    assert payload["toolCount"] == 3
+    assert payload["toolCount"] == len(ECHO_TOOLS)
 
 
 async def test_update_can_rename(client) -> None:
@@ -226,7 +207,7 @@ async def test_update_can_rename(client) -> None:
 
     assert response.status_code == 200
     assert response.json()["name"] == "echo2"
-    assert response.json()["toolCount"] == 3
+    assert response.json()["toolCount"] == len(ECHO_TOOLS)
 
 
 async def test_delete_removes_the_server(client) -> None:
@@ -246,7 +227,7 @@ async def test_test_endpoint_probes_without_saving(client) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert {t["name"] for t in body["tools"]} == {"echo", "add", "fail"}
+    assert {t["name"] for t in body["tools"]} == ECHO_TOOLS
     # Nothing was persisted.
     assert (await client.get("/mcp/servers")).json()["servers"] == []
 
@@ -276,7 +257,12 @@ async def test_get_tools_lists_the_mcp_server_and_its_actions(client) -> None:
     assert server["transport"] == "stdio"
     action = next(a for a in server["actions"] if a["name"] == "mcp__echo__echo")
     assert action["integration"] == "mcp:echo"
-    assert action["label"] == "Echo"
+    # The server declares a `title`, which beats humanizing the function name…
+    assert action["label"] == "Echo text"
+    # …and its output schema travels with the action, for the builder's `{{step.output}}`.
+    assert action["outputSchema"]["type"] == "object"
+    add_action = next(a for a in server["actions"] if a["name"] == "mcp__echo__add")
+    assert add_action["label"] == "Add"  # no title → humanized function name
     assert action["description"] == "Echo the given text back."
     assert action["inputSchema"]["properties"]["text"]["type"] == "string"
 
@@ -284,7 +270,7 @@ async def test_get_tools_lists_the_mcp_server_and_its_actions(client) -> None:
 async def test_tool_schemas_include_the_mcp_tools(client, session) -> None:
     await _register(client)
 
-    schemas = await _released(session, list_available_tool_schemas(session))
+    schemas = await list_available_tool_schemas(session)
 
     names = {s["function"]["name"] for s in schemas}
     assert {"mcp__echo__echo", "mcp__echo__add", "mcp__echo__fail"} <= names
@@ -302,14 +288,14 @@ async def test_disabling_a_server_removes_its_tools_everywhere(client, session) 
     assert catalog["mcpServers"][0]["actions"] == []
 
     session.expire_all()
-    schemas = await _released(session, list_available_tool_schemas(session))
+    schemas = await list_available_tool_schemas(session)
     assert not [s for s in schemas if s["function"]["name"].startswith("mcp__")]
 
     # And re-enabling brings them back (with a fresh sync).
     response = await client.patch(f"/mcp/servers/{created['id']}", json={"enabled": True})
     assert response.json()["connected"] is True
     session.expire_all()
-    schemas = await _released(session, list_available_tool_schemas(session))
+    schemas = await list_available_tool_schemas(session)
     assert any(s["function"]["name"] == "mcp__echo__echo" for s in schemas)
 
 
@@ -317,8 +303,8 @@ async def test_execute_tool_routes_through_the_registry(client, session) -> None
     await _register(client)
     session.expire_all()
 
-    result = await _released(
-        session, execute_tool("mcp__echo__echo", '{"text": "through the registry"}', session)
+    result = await execute_tool(
+        "mcp__echo__echo", '{"text": "through the registry"}', session
     )
 
     assert result.ok is True
@@ -329,9 +315,7 @@ async def test_execute_tool_returns_structured_data(client, session) -> None:
     await _register(client)
     session.expire_all()
 
-    result = await _released(
-        session, execute_tool("mcp__echo__add", '{"a": 4, "b": 5}', session)
-    )
+    result = await execute_tool("mcp__echo__add", '{"a": 4, "b": 5}', session)
 
     assert result.ok is True
     assert result.data == {"sum": 9}
@@ -349,7 +333,7 @@ async def test_execute_tool_rejects_a_tool_the_server_does_not_have(client, sess
     await _register(client)
     session.expire_all()
 
-    result = await _released(session, execute_tool("mcp__echo__nope", "{}", session))
+    result = await execute_tool("mcp__echo__nope", "{}", session)
 
     assert result.ok is False
     assert result.retryable is False
@@ -360,11 +344,91 @@ async def test_execute_tool_rejects_a_disabled_server(client, session) -> None:
     await client.patch(f"/mcp/servers/{created['id']}", json={"enabled": False})
     session.expire_all()
 
-    result = await _released(session, execute_tool("mcp__echo__echo", '{"text": "hi"}', session))
+    result = await execute_tool("mcp__echo__echo", '{"text": "hi"}', session)
 
     assert result.ok is False
     assert result.retryable is False
     assert "disabled" in result.content
+
+
+# ─── MCP_ALLOW_STDIO gate ────────────────────────────────────────────────────────────
+
+
+async def test_stdio_registration_is_refused_when_disabled(client, monkeypatch) -> None:
+    """A stdio server is a command the container runs; the gate is the only thing
+    between an unauthenticated API and arbitrary code execution."""
+    monkeypatch.setattr(mcp_manager, "stdio_allowed", lambda: False)
+
+    response = await client.post("/mcp/servers", json=ECHO_BODY)
+
+    assert response.status_code == 403
+    assert (await client.get("/mcp/servers")).json()["servers"] == []
+
+
+async def test_testing_a_stdio_config_is_refused_when_disabled(client, monkeypatch) -> None:
+    monkeypatch.setattr(mcp_manager, "stdio_allowed", lambda: False)
+
+    response = await client.post(
+        "/mcp/servers/test",
+        json={"transport": "stdio", "config": {"command": sys.executable}},
+    )
+
+    assert response.status_code == 403
+
+
+async def test_http_registration_is_unaffected_by_the_stdio_gate(client, monkeypatch) -> None:
+    monkeypatch.setattr(mcp_manager, "stdio_allowed", lambda: False)
+
+    response = await client.post(
+        "/mcp/servers",
+        json={"name": "remote", "transport": "http", "config": {"url": "https://example.com/mcp"}},
+    )
+
+    assert response.status_code == 201
+
+
+# ─── secrets in what we hand back ────────────────────────────────────────────────────
+
+
+async def test_secret_looking_args_are_masked(client) -> None:
+    response = await client.post(
+        "/mcp/servers",
+        json={
+            "name": "masked",
+            "transport": "stdio",
+            "config": {
+                "command": sys.executable,
+                "args": [ECHO_SERVER, "--api-key=sk-live-12345", "--token", "tok-98765"],
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    assert "sk-live-12345" not in response.text
+    assert "tok-98765" not in response.text
+    assert response.json()["args"][1:] == [
+        "--api-key=***",
+        "--token",
+        "***",
+    ]
+
+
+async def test_url_query_strings_are_masked_in_the_view_and_in_errors(client) -> None:
+    response = await client.post(
+        "/mcp/servers",
+        json={
+            "name": "querytoken",
+            "transport": "http",
+            "config": {"url": "http://localhost:9999/mcp?access_token=super-secret"},
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert "super-secret" not in response.text
+    assert payload["url"] == "http://localhost:9999/mcp?access_token=***"
+    # The SSRF rejection quotes the URL it refused — that copy is masked too.
+    assert "super-secret" not in (payload["lastError"] or "")
 
 
 # ─── documents + the executor ────────────────────────────────────────────────────────
@@ -387,7 +451,7 @@ async def test_a_document_using_an_mcp_action_validates(client, session, make_do
     await _register(client)
     session.expire_all()
 
-    catalog = await _released(session, build_catalog(session))
+    catalog = await build_catalog(session)
     assert catalog.find_action("mcp__echo__echo") is not None
     assert catalog.is_connected("mcp:echo") is True
 
@@ -403,7 +467,7 @@ async def test_the_assistant_prompt_lists_the_mcp_actions(client, session) -> No
     await _register(client)
     session.expire_all()
 
-    catalog = await _released(session, build_catalog(session))
+    catalog = await build_catalog(session)
     rendered = format_catalog(catalog)
 
     assert "mcp:echo (MCP server) — connected:" in rendered
@@ -417,7 +481,7 @@ async def test_an_mcp_action_on_a_disabled_server_does_not_validate(
     await client.patch(f"/mcp/servers/{created['id']}", json={"enabled": False})
     session.expire_all()
 
-    catalog = await _released(session, build_catalog(session))
+    catalog = await build_catalog(session)
     document = AutomationDocument.model_validate(make_document("MCP", [_mcp_action_step()]))
     _, issues = validate_document(document, catalog)
 
@@ -481,7 +545,7 @@ async def test_a_failed_sync_keeps_the_previous_listing(client, session) -> None
     await session.commit()
 
     assert server.last_error
-    assert len(server.cached_tools) == 3  # not wiped by the failure
+    assert len(server.cached_tools) == len(ECHO_TOOLS)  # not wiped by the failure
     assert mcp_service.is_connected(server) is False
 
 
@@ -498,7 +562,7 @@ async def test_unreadable_config_does_not_break_the_catalog(session) -> None:
     )
     await session.commit()
 
-    catalog = await _released(session, build_catalog(session))
+    catalog = await build_catalog(session)
 
     assert [s.name for s in catalog.mcp_servers] == ["broken"]
     assert catalog.is_connected("mcp:broken") is False

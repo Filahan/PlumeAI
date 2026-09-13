@@ -24,6 +24,7 @@ from app.mcp import (
     is_mcp_tool_id,
     parse_tool_id,
     to_openai_schema,
+    tool_id,
 )
 from app.services import mcp_servers as mcp_service
 from app.tools.base import ToolResult, safe_json_args
@@ -43,9 +44,18 @@ async def mcp_tool_schemas(session: AsyncSession) -> list[dict[str, Any]]:
     Read from `mcp_servers.cached_tools`, never from the servers themselves: this runs
     before every agent turn and every automation step, and a slow (or dead) MCP server
     must not slow down (or break) the ones that work.
+
+    A server whose last sync failed advertises nothing, which is the same answer
+    `app.services.mcp_servers.is_connected` gives the catalog and the builder: offering
+    the model a tool we already know we cannot reach buys a failed step instead of a
+    "that integration is not connected" it can act on. The *catalog* still lists those
+    actions (documents that already use them must keep validating, with a warning) — the
+    live tool list does not.
     """
     schemas: list[dict[str, Any]] = []
     for server in await mcp_service.list_servers(session, enabled_only=True):
+        if not mcp_service.is_connected(server):
+            continue
         for tool in mcp_service.cached_tools(server):
             schemas.append(to_openai_schema(server.name, tool))
     return schemas
@@ -88,12 +98,13 @@ async def execute_mcp_tool(
     changes on a second attempt, and the automation executor should surface it to the
     author rather than spend its retry budget on it.
     """
-    parsed = parse_tool_id(name)
+    servers = await mcp_service.list_servers(session)
+    parsed = parse_tool_id(name, known_servers=[s.name for s in servers])
     if parsed is None:
         return ToolResult(ok=False, content=f"Unknown tool: {name}", retryable=False)
     server_name, tool_name = parsed
 
-    server = await mcp_service.get_server_by_name(session, server_name)
+    server = next((s for s in servers if s.name == server_name), None)
     if server is None:
         return ToolResult(
             ok=False, content=f"Unknown MCP server: {server_name}", retryable=False
@@ -104,7 +115,16 @@ async def execute_mcp_tool(
             content=f"MCP server '{server_name}' is disabled.",
             retryable=False,
         )
-    if tool_name not in {t.name for t in mcp_service.cached_tools(server)}:
+
+    # The id may be a sanitized or truncated spelling of the real tool name (and the
+    # reverse map only knows the ids *this* process minted), so the authoritative match
+    # is the one that re-derives the id from each cached tool.
+    tools = mcp_service.cached_tools(server)
+    tool = next(
+        (t for t in tools if t.name == tool_name or tool_id(server.name, t.name) == name),
+        None,
+    )
+    if tool is None:
         return ToolResult(
             ok=False,
             content=f"MCP server '{server_name}' has no tool named '{tool_name}'.",
@@ -112,7 +132,7 @@ async def execute_mcp_tool(
         )
 
     return await get_manager().call_tool(
-        mcp_service.server_config(server), tool_name, args, timeout=DEFAULT_CALL_TIMEOUT
+        mcp_service.server_config(server), tool.name, args, timeout=DEFAULT_CALL_TIMEOUT
     )
 
 

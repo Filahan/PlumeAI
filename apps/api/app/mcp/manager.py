@@ -17,29 +17,39 @@ operator-configured (PlumeAI is single-tenant and single-user — see `app.auth`
   anything else the container can see but the internet cannot. `allow_private_network=True`
   skips that check, which is what makes a `http://host.docker.internal:3000/mcp` server on
   the operator's own machine usable — and is exactly why it is opt-in per server.
-- `stdio`: the command runs **as a subprocess of the API container**, with the container's
-  environment plus whatever `env` the server carries. There is no sandbox: registering a
-  stdio server is equivalent to running that command on the server. The image ships `uv`
-  and `uvx` but no node/npx, so `uvx mcp-server-time` works out of the box while
-  `npx -y @foo/mcp-server` does not.
+- `stdio`: the command runs **as a subprocess of the API container**. There is no sandbox:
+  registering a stdio server is equivalent to running that command on the server, which is
+  why it is gated behind `MCP_ALLOW_STDIO` (see `app.config`) and refused by default
+  outside development. The child's environment is *not* the API's: the SDK passes only the
+  allowlist in `mcp.client.stdio.get_default_environment()` — `HOME`, `LOGNAME`, `PATH`,
+  `SHELL`, `TERM`, `USER` — plus the server's own `env`, so `ENCRYPTION_KEY`,
+  `DATABASE_URL` and the provider keys never reach it. The image ships `uv` and `uvx` but
+  no node/npx, so `uvx mcp-server-time` works out of the box while `npx -y @foo/mcp-server`
+  does not.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
 import structlog
 from mcp.client import Client
-from mcp.client.stdio import StdioServerParameters
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
-from mcp_types import CallToolResult, PaginatedRequestParams
+from mcp.shared.exceptions import MCPError
+from mcp_types import CONNECTION_CLOSED, CallToolResult, PaginatedRequestParams
 
-from app.errors import AppError, ToolError
+from app.config import get_settings
+from app.errors import AppError, Forbidden, ToolError
 from app.mcp.schemas import McpServerConfig, McpToolInfo
 from app.tools.base import ToolResult, assert_public_url, cap
 from app.utils import LoopLocal
@@ -58,28 +68,97 @@ TEST_TIMEOUT = 20
 CONNECT_TIMEOUT = 30
 # How long a graceful worker shutdown gets before the task is cancelled outright.
 CLOSE_TIMEOUT = 10
-# Slack on top of a job's own timeout, covering the queue wait behind a slow call.
+# How long `close_all` spends on the whole pool, however many servers are in it.
+CLOSE_ALL_TIMEOUT = 20
+# Slack on top of a job's own timeout, covering the hand-off through the queue.
 QUEUE_GRACE = 5
+# In-flight calls per server. One `ClientSession` multiplexes requests by JSON-RPC id, so
+# calls to one server run concurrently; the cap is what keeps a fan-out step from opening
+# a hundred simultaneous requests against somebody's small MCP server.
+MAX_CONCURRENT_CALLS = 8
 # Guard against a server that paginates forever.
 MAX_TOOL_PAGES = 20
+# Stderr kept per stdio server, for the log line that explains a crash.
+MAX_STDERR_CHARS = 4_000
 
 _NO_CONTENT = "(the tool returned no content)"
 
 
 class _ConnectionLost(Exception):
-    """The worker serving this connection is gone — the job never ran, so a retry on a
-    fresh connection is safe (and is what `_run_job` does, once)."""
+    """This connection is gone — the job did not get an answer out of it, so a retry on a
+    fresh connection is worth one attempt (and is what `_run_job` does, once)."""
 
 
-# ───────────────────── transports ─────────────────────
+# Everything a broken pipe, a dead subprocess or a dropped HTTP session can surface as.
+# `MCPError(CONNECTION_CLOSED)` is the one the SDK raises for *every* pending and
+# subsequent request once the transport dies — including the request that killed it — so
+# it is the signal a connection is done for, not a per-call failure.
+_TRANSPORT_EXCEPTIONS = (
+    anyio.BrokenResourceError,
+    anyio.ClosedResourceError,
+    anyio.EndOfStream,
+    ConnectionError,
+    EOFError,
+    BrokenPipeError,
+)
+
+
+def _is_transport_failure(exc: BaseException) -> bool:
+    """Whether `exc` means the connection itself is unusable from now on."""
+    seen = 0
+    current: BaseException | None = exc
+    while current is not None and seen < 5:
+        if isinstance(current, MCPError) and current.code == CONNECTION_CLOSED:
+            return True
+        if isinstance(current, _TRANSPORT_EXCEPTIONS):
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return False
+
+
+class _StderrCapture:
+    """A file-backed sink for a stdio server's stderr, logged (capped) when it closes.
+
+    The SDK hands `errlog` straight to `anyio.open_process(stderr=...)`, so it has to be
+    something with a real file descriptor — hence a temporary file rather than an
+    in-memory buffer. The default is `sys.stderr`, which in a container means an MCP
+    server's diagnostics land in the API's own log with nothing saying which server wrote
+    them; this keeps the tail instead, so `mcp_server_stderr` can name it and a crash has
+    an explanation attached.
+    """
+
+    def __init__(self, server: str) -> None:
+        self.server = server
+        self.file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+
+    def tail(self) -> str:
+        """The last `MAX_STDERR_CHARS` characters written, or "" if unreadable."""
+        try:
+            size = self.file.seek(0, os.SEEK_END)
+            self.file.seek(max(0, size - MAX_STDERR_CHARS))
+            return self.file.read()
+        except (ValueError, OSError):  # already closed, or not seekable
+            return ""
+
+    def log(self, reason: str) -> None:
+        text = self.tail().strip()
+        if text:
+            log.debug("mcp_server_stderr", server=self.server, reason=reason, stderr=text)
+
+    def close(self, reason: str) -> None:
+        self.log(reason)
+        with contextlib.suppress(Exception):
+            self.file.close()
 
 
 @asynccontextmanager
 async def _http_transport(url: str, headers: dict[str, str]) -> AsyncIterator[Any]:
     """Streamable HTTP streams, with our own httpx client so headers can be set.
 
-    `streamable_http_client` only manages the lifetime of a client it created itself, so
-    the one passed in is closed here.
+    `Client(url)` would build its own client and there would be nowhere to put the bearer
+    token; `streamable_http_client` only manages the lifetime of a client it created
+    itself, so the one passed in is closed here.
     """
     http_client = create_mcp_http_client(headers=headers or None)
     async with http_client:
@@ -93,8 +172,13 @@ def _str_map(raw: Any) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items() if v is not None}
 
 
-def _build_client(cfg: McpServerConfig) -> Client:
-    """An un-entered `Client` for `cfg`. Raises `ToolError` on a malformed config."""
+def _build_client(cfg: McpServerConfig) -> tuple[Client, _StderrCapture | None]:
+    """An un-entered `Client` for `cfg` (plus its stderr sink, for stdio).
+
+    Raises `ToolError` on a malformed config. Both transports are handed to `Client` as a
+    ready-made transport rather than as a URL/`StdioServerParameters`, which is how the
+    stdio `errlog` and the HTTP headers get in — `Client` builds its own otherwise.
+    """
     config = cfg.config if isinstance(cfg.config, dict) else {}
     if cfg.transport == "stdio":
         command = str(config.get("command") or "").strip()
@@ -105,23 +189,57 @@ def _build_client(cfg: McpServerConfig) -> Client:
             )
         raw_args = config.get("args")
         args = [str(a) for a in raw_args] if isinstance(raw_args, list) else []
-        return Client(
-            StdioServerParameters(command=command, args=args, env=_str_map(config.get("env"))),
-            read_timeout_seconds=float(DEFAULT_CALL_TIMEOUT),
+        params = StdioServerParameters(
+            command=command, args=args, env=_str_map(config.get("env"))
+        )
+        errlog = _StderrCapture(cfg.name)
+        return (
+            Client(
+                stdio_client(params, errlog=errlog.file),
+                read_timeout_seconds=float(DEFAULT_CALL_TIMEOUT),
+            ),
+            errlog,
         )
     url = str(config.get("url") or "").strip()
     if not url:
         raise ToolError(
             f"MCP server '{cfg.name}' has no URL.", extra={"retryable": False}
         )
-    return Client(
-        _http_transport(url, _str_map(config.get("headers"))),
-        read_timeout_seconds=float(DEFAULT_CALL_TIMEOUT),
+    return (
+        Client(
+            _http_transport(url, _str_map(config.get("headers"))),
+            read_timeout_seconds=float(DEFAULT_CALL_TIMEOUT),
+        ),
+        None,
     )
+
+
+STDIO_DISABLED_MESSAGE = (
+    "stdio MCP servers are disabled: the command would run inside the API container, "
+    "which has no login in front of it. Set MCP_ALLOW_STDIO=true to allow them, or "
+    "register the server over http instead."
+)
+
+
+def stdio_allowed() -> bool:
+    """Whether `stdio` MCP servers may be registered or connected on this deployment."""
+    return get_settings().mcp_allow_stdio
+
+
+def assert_stdio_allowed(transport: str) -> None:
+    """Gate for the write paths (`app.services.mcp_servers`, `POST /mcp/servers/test`)."""
+    if transport == "stdio" and not stdio_allowed():
+        raise Forbidden(STDIO_DISABLED_MESSAGE)
 
 
 async def _validate_config(cfg: McpServerConfig) -> None:
     """Pre-connect checks. Raises `ToolError` (permanent) when the config is refused."""
+    if cfg.transport == "stdio":
+        # Defense in depth: a row registered while stdio was allowed must stop working
+        # if the deployment turns it off, not keep spawning processes.
+        if not stdio_allowed():
+            raise ToolError(STDIO_DISABLED_MESSAGE, extra={"retryable": False})
+        return
     if cfg.transport != "http":
         return
     config = cfg.config if isinstance(cfg.config, dict) else {}
@@ -153,6 +271,10 @@ async def _list_tools(client: Client) -> list[McpToolInfo]:
                     input_schema=tool.input_schema
                     if isinstance(tool.input_schema, dict)
                     else {},
+                    title=tool.title or "",
+                    output_schema=tool.output_schema
+                    if isinstance(tool.output_schema, dict)
+                    else None,
                 )
             )
         cursor = result.next_cursor
@@ -202,11 +324,28 @@ def _error_text(exc: BaseException) -> str:
 
 # ───────────────────── one connection ─────────────────────
 
-_Job = tuple["Callable[[Client], Awaitable[Any]]", float, "asyncio.Future[Any]"]
+
+@dataclass
+class _Job:
+    """One call queued for a connection's worker."""
+
+    fn: Callable[[Client], Awaitable[Any]]
+    timeout: float
+    future: asyncio.Future[Any]
+    # Set the moment the worker starts the call, which is what tells a caller whose wait
+    # ran out whether it was still queued or the server never answered.
+    started: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class _Connection:
-    """A live client session plus the task that owns it."""
+    """A live client session plus the task that owns it.
+
+    The worker task opens the client, then spawns one task per job (up to
+    `MAX_CONCURRENT_CALLS`) rather than awaiting them in turn: a `ClientSession`
+    multiplexes requests by JSON-RPC id, so two calls to the same server overlap instead
+    of queueing behind each other — and a cancelled caller cancels its own call without
+    touching anyone else's.
+    """
 
     def __init__(self, cfg: McpServerConfig) -> None:
         self.cfg = cfg
@@ -214,10 +353,23 @@ class _Connection:
         self._jobs: asyncio.Queue[_Job | None] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
         self._alive = False
+        self._fatal = False
+        self._inflight: set[asyncio.Task[None]] = set()
+        self._slots = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
+        # Queued + running, so `call` can size its wait to the work ahead of it.
+        self._pending = 0
+        self._errlog: _StderrCapture | None = None
 
     @property
     def alive(self) -> bool:
-        return self._alive and self._task is not None and not self._task.done()
+        return (
+            self._alive
+            and not self._fatal
+            and self._task is not None
+            and not self._task.done()
+        )
+
+    # --- lifecycle -------------------------------------------------------------------
 
     async def start(self) -> None:
         """Open the connection, or raise whatever stopped it from opening."""
@@ -242,28 +394,17 @@ class _Connection:
     async def _serve(self, ready: asyncio.Future[None]) -> None:
         """Own the client for its whole lifetime: open, serve jobs, close."""
         try:
-            async with _build_client(self.cfg) as client:
+            client, self._errlog = _build_client(self.cfg)
+            async with client:
                 if not ready.done():
                     ready.set_result(None)
-                while True:
-                    job = await self._jobs.get()
-                    if job is None:
-                        return
-                    fn, timeout, future = job
-                    if future.done():  # the caller gave up before we got here
-                        continue
-                    try:
-                        value = await asyncio.wait_for(fn(client), timeout)
-                    except asyncio.CancelledError:
-                        if not future.done():
-                            future.set_exception(_ConnectionLost("connection closed"))
-                        raise
-                    except BaseException as exc:  # noqa: BLE001 — relayed to the caller
-                        if not future.done():
-                            future.set_exception(exc)
-                    else:
-                        if not future.done():
-                            future.set_result(value)
+                try:
+                    await self._loop(client)
+                finally:
+                    # Exiting the client's context tears the transport down under any
+                    # call still in flight; cancel them first so each caller gets a
+                    # `_ConnectionLost` instead of an error from inside the SDK.
+                    await self._cancel_inflight()
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001
@@ -276,6 +417,86 @@ class _Connection:
         finally:
             self._alive = False
             self._fail_pending()
+            if self._errlog is not None:
+                self._errlog.close("connection closed")
+
+    async def _loop(self, client: Client) -> None:
+        """Pull jobs until a sentinel or a fatal transport failure."""
+        while not self._fatal:
+            job = await self._jobs.get()
+            if job is None or self._fatal:
+                return
+            if job.future.done():  # the caller gave up before we got here
+                self._pending -= 1
+                continue
+            await self._slots.acquire()
+            task = asyncio.create_task(
+                self._run_one(client, job), name=f"mcp-{self.cfg.name}-call"
+            )
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
+
+    async def _run_one(self, client: Client, job: _Job) -> None:
+        """Run one job, resolving its future. Never raises into the worker."""
+        job.started.set()
+        inner: asyncio.Task[Any] = asyncio.create_task(
+            asyncio.wait_for(job.fn(client), job.timeout)
+        )
+
+        def _propagate_cancel(future: asyncio.Future[Any]) -> None:
+            # `call` cancels the future when its caller is cancelled or gives up; the
+            # request in flight has to go with it, or a cancelled run would leave the
+            # server working (and the slot held) for the rest of the timeout.
+            if future.cancelled():
+                inner.cancel()
+
+        job.future.add_done_callback(_propagate_cancel)
+        try:
+            value = await inner
+        except asyncio.CancelledError:
+            if not job.future.done():
+                job.future.set_exception(_ConnectionLost("call cancelled"))
+        except BaseException as exc:  # noqa: BLE001 — relayed to the caller
+            if _is_transport_failure(exc):
+                self._mark_fatal(exc)
+                if not job.future.done():
+                    job.future.set_exception(_ConnectionLost(_error_text(exc)))
+            elif not job.future.done():
+                job.future.set_exception(exc)
+        else:
+            if not job.future.done():
+                job.future.set_result(value)
+        finally:
+            job.future.remove_done_callback(_propagate_cancel)
+            self._pending -= 1
+            self._slots.release()
+
+    def _mark_fatal(self, exc: BaseException) -> None:
+        """The transport is gone: stop serving and let `_serve` close the client.
+
+        Without this the SDK would keep answering every later call with the same
+        `Connection closed` error forever — the pool would hold a connection that can
+        never work again, and (for stdio) never reap the subprocess.
+        """
+        if self._fatal:
+            return
+        self._fatal = True
+        self._alive = False
+        log.info("mcp_connection_lost", server=self.cfg.name, error=_error_text(exc))
+        if self._errlog is not None:
+            self._errlog.log("connection lost")
+        # Wake the worker if it is blocked on the queue.
+        self._jobs.put_nowait(None)
+
+    async def _cancel_inflight(self) -> None:
+        tasks = list(self._inflight)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), CLOSE_TIMEOUT
+                )
 
     def _fail_pending(self) -> None:
         """Nobody is going to serve the queue any more — say so instead of hanging."""
@@ -286,23 +507,51 @@ class _Connection:
                 return
             if job is None:
                 continue
-            _, _, future = job
-            if not future.done():
-                future.set_exception(_ConnectionLost("connection closed"))
+            if not job.future.done():
+                job.future.set_exception(_ConnectionLost("connection closed"))
+
+    # --- calling ---------------------------------------------------------------------
+
+    def _wait_budget(self, timeout: float, ahead: int) -> float:
+        """How long a caller waits: its own timeout plus the queue ahead of it.
+
+        `MAX_CONCURRENT_CALLS` jobs run at a time, so a caller `ahead` jobs back may have
+        to sit through that many *waves* of other people's timeouts before its own starts.
+        Charging it only its own timeout would turn a busy server into a stream of
+        spurious "did not answer" errors.
+        """
+        waves = max(0, ahead) // MAX_CONCURRENT_CALLS
+        return timeout * (1 + waves) + QUEUE_GRACE
 
     async def call(self, fn: Callable[[Client], Awaitable[Any]], timeout: float) -> Any:
         """Run `fn` against the live session, from the worker task."""
         if not self.alive:
             raise _ConnectionLost("connection closed")
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        self._jobs.put_nowait((fn, timeout, future))
+        job = _Job(fn=fn, timeout=timeout, future=future)
+        ahead = self._pending
+        self._pending += 1
+        self._jobs.put_nowait(job)
         try:
-            return await asyncio.wait_for(asyncio.shield(future), timeout + QUEUE_GRACE)
+            return await asyncio.wait_for(
+                asyncio.shield(future), self._wait_budget(timeout, ahead)
+            )
         except asyncio.TimeoutError as exc:
             future.cancel()
+            if not job.started.is_set():
+                raise ToolError(
+                    f"MCP server '{self.cfg.name}' is busy: the call was still queued "
+                    f"behind {ahead} other call(s) when the wait ran out."
+                ) from exc
             raise ToolError(
                 f"MCP server '{self.cfg.name}' did not answer within {timeout:.0f}s."
             ) from exc
+        except BaseException:
+            # The caller was cancelled (a cancelled run, a step timeout): cancel the
+            # future so the job is skipped if it is still queued, and so `_run_one`
+            # cancels the request if it is already in flight.
+            future.cancel()
+            raise
 
     async def close(self) -> None:
         """Stop the worker, which closes the session and reaps the subprocess."""
@@ -433,10 +682,21 @@ class McpManager:
             log.info("mcp_disconnected", server=name)
 
     async def close_all(self) -> None:
-        """Close every connection — called from the app's lifespan shutdown."""
-        for name in list(self._connections):
-            with contextlib.suppress(Exception):
-                await self.disconnect(name)
+        """Close every connection — called from the app's lifespan shutdown.
+
+        All at once and under one budget: shutdown is not the moment to spend
+        `CLOSE_TIMEOUT` per server in turn while the process is trying to exit.
+        """
+        names = list(self._connections)
+        if not names:
+            return
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(self.disconnect(name) for name in names), return_exceptions=True
+                ),
+                CLOSE_ALL_TIMEOUT,
+            )
 
 
 _MANAGER: LoopLocal[McpManager] = LoopLocal(McpManager)
@@ -464,8 +724,13 @@ async def test_server(cfg: McpServerConfig, *, timeout: float = TEST_TIMEOUT) ->
     """
 
     async def probe() -> list[McpToolInfo]:
-        async with _build_client(cfg) as client:
-            return await _list_tools(client)
+        client, errlog = _build_client(cfg)
+        try:
+            async with client:
+                return await _list_tools(client)
+        finally:
+            if errlog is not None:
+                errlog.close("probe finished")
 
     try:
         await _validate_config(cfg)

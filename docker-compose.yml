@@ -42,6 +42,8 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       APP_ENV: ${APP_ENV:-dev}
+      # Empty = follow APP_ENV (on in dev, off otherwise). See docs/security.md.
+      MCP_ALLOW_STDIO: ${MCP_ALLOW_STDIO:-}
     depends_on:
       db:
         condition: service_healthy

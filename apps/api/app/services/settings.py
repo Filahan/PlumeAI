@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crypto import decrypt, encrypt
@@ -18,23 +19,41 @@ from app.schemas.settings import (
     ToolConnection,
 )
 
+SETTINGS_ROW_DEFAULTS: dict[str, Any] = {
+    "id": 1,
+    "providers": [],
+    "tools": {},
+    "tool_credentials": {},
+}
+
 
 async def _get_or_create_row(session: AsyncSession) -> SettingsRow:
-    """Load the single settings row (id=1), creating it with defaults if missing."""
+    """Load the single settings row (id=1), creating it with defaults if missing.
+
+    The insert is `ON CONFLICT DO NOTHING` followed by a re-select rather than a plain
+    `INSERT`, because two sessions can reach this at the same time — a request and the
+    background executor, or a test's own session and the one behind an API call. The
+    loser of that race used to block on the row lock until the winner committed (and in a
+    test, where the winner is a session held open for the whole test, that is a hang);
+    now it inserts nothing and reads what the winner wrote.
+    """
     row = (
         await session.execute(select(SettingsRow).where(SettingsRow.id == 1))
     ).scalar_one_or_none()
-    if row is None:
-        row = SettingsRow(
-            id=1,
-            providers=[],
+    if row is not None:
+        return row
+    await session.execute(
+        pg_insert(SettingsRow)
+        .values(
+            **SETTINGS_ROW_DEFAULTS,
             default_model=DEFAULT_SETTINGS.default_model.model_dump(by_alias=True),
-            tools={},
-            tool_credentials={},
         )
-        session.add(row)
-        await session.flush()
-    return row
+        .on_conflict_do_nothing(index_elements=["id"])
+    )
+    await session.flush()
+    return (
+        await session.execute(select(SettingsRow).where(SettingsRow.id == 1))
+    ).scalar_one()
 
 
 async def get_settings_for_client(session: AsyncSession) -> SettingsPayload:
