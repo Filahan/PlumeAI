@@ -78,6 +78,10 @@ interface AutomationsState {
   /** Set while `open(id)` is in flight — `current` is null until the detail lands. */
   currentLoading: boolean;
   currentError: string | null;
+
+  /** The canvas step picker. `index` is where the chosen step will be inserted; it is
+   *  set by whichever "+" was clicked (an edge, the trailing card, the empty state). */
+  stepPicker: { open: boolean; index: number | null };
 }
 
 interface AutomationsActions {
@@ -110,6 +114,9 @@ interface AutomationsActions {
   cancelRun(): Promise<void>;
   selectRun(runId: string): Promise<void>;
   refreshRuns(): Promise<void>;
+
+  openStepPicker(index: number): void;
+  closeStepPicker(): void;
 }
 
 type Store = AutomationsState & AutomationsActions;
@@ -188,6 +195,7 @@ export const useAutomationsStore = create<Store>((set, get) => {
     current: null,
     currentLoading: false,
     currentError: null,
+    stepPicker: { open: false, index: null },
 
     // ── list ──────────────────────────────────────────────────────────────────────
 
@@ -558,6 +566,16 @@ export const useAutomationsStore = create<Store>((set, get) => {
       } catch {
         // keep the runs we have
       }
+    },
+
+    // ── step picker ───────────────────────────────────────────────────────────────
+
+    openStepPicker(index) {
+      set({ stepPicker: { open: true, index } });
+    },
+
+    closeStepPicker() {
+      set({ stepPicker: { open: false, index: null } });
     },
   };
 });
