@@ -188,10 +188,101 @@ def _trigger_settings(document: Any) -> dict[str, Any] | None:
     return settings if isinstance(settings, dict) else None
 
 
+# Standard cron numbers the weekdays from Sunday (0 or 7 = Sunday, 1 = Monday), and that
+# is the convention the whole product speaks: `croniter` validates with it, the trigger
+# form writes it, and `describe_trigger` reads `1-5` back as "weekdays". APScheduler
+# numbers them from Monday instead, so handing it a raw crontab shifts every
+# day-constrained schedule one day late — `0 8 * * 1-5` would fire Tuesday to Saturday.
+# `_cron_days_to_apscheduler` translates the field into APScheduler's day *names*, which
+# mean the same thing under either numbering.
+_CRON_DAY_NAMES = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+_CRON_DAY_NUMBERS = {name: index for index, name in enumerate(_CRON_DAY_NAMES)}
+# APScheduler orders its week Monday-first; emitting the field in that order keeps the
+# expression readable in a job listing.
+_APSCHEDULER_DAY_ORDER = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _cron_day_number(token: str) -> int:
+    """One day of the week, as a standard-cron number (0 = Sunday), from a number or name."""
+    token = token.strip().lower()
+    if token in _CRON_DAY_NUMBERS:
+        return _CRON_DAY_NUMBERS[token]
+    number = int(token)
+    if not 0 <= number <= 7:
+        raise ValueError(f"day of week out of range: {token!r}")
+    # Both 0 and 7 mean Sunday in standard cron.
+    return 0 if number == 7 else number
+
+
+def _cron_days_to_apscheduler(field: str) -> str:
+    """Rewrite a standard-cron day-of-week field as a list of APScheduler day names.
+
+    Raises `ValueError` on anything it cannot read, which `_build_trigger` turns back into
+    the original crontab so a schedule it doesn't understand still reaches APScheduler.
+    """
+    field = field.strip()
+    if field in ("*", "?", ""):
+        return "*"
+
+    days: set[int] = set()
+    for part in field.split(","):
+        part = part.strip()
+        step = 1
+        if "/" in part:
+            part, _, step_text = part.partition("/")
+            step = int(step_text)
+            if step < 1:
+                raise ValueError(f"step must be positive: {field!r}")
+            part = part.strip()
+
+        if part in ("*", "?", ""):
+            first, last = 0, 6
+        elif "-" in part[1:]:
+            # `part[1:]` so a leading '-' is a malformed token, not a range separator.
+            first_text, _, last_text = part.partition("-")
+            first, last = _cron_day_number(first_text), _cron_day_number(last_text)
+            if first > last:
+                # Standard cron wraps `5-1` around the weekend; APScheduler's ranges do
+                # not, and guessing would be worse than declining.
+                raise ValueError(f"wrapping day range is not supported: {part!r}")
+        else:
+            first = last = _cron_day_number(part)
+
+        days.update(range(first, last + 1, step))
+
+    if not days:
+        raise ValueError(f"day of week matches nothing: {field!r}")
+    if len(days) == 7:
+        return "*"
+    names = {_CRON_DAY_NAMES[day] for day in days}
+    return ",".join(name for name in _APSCHEDULER_DAY_ORDER if name in names)
+
+
+def _cron_trigger(expression: str, tz: str) -> CronTrigger:
+    """A `CronTrigger` reading `expression` the way standard cron does."""
+    fields = expression.split()
+    if len(fields) != 5:
+        return CronTrigger.from_crontab(expression, timezone=tz)
+    minute, hour, day, month, day_of_week = fields
+    try:
+        day_of_week = _cron_days_to_apscheduler(day_of_week)
+    except ValueError:
+        # An unreadable day field is APScheduler's to reject, with its own message.
+        return CronTrigger.from_crontab(expression, timezone=tz)
+    return CronTrigger(
+        minute=minute,
+        hour=hour,
+        day=day,
+        month=month,
+        day_of_week=day_of_week,
+        timezone=tz,
+    )
+
+
 def _build_trigger(settings: dict[str, Any], timezone: str) -> CronTrigger | IntervalTrigger:
     tz = settings.get("timezone") or timezone or "UTC"
     if settings.get("mode") == "cron":
-        return CronTrigger.from_crontab(settings["cron"], timezone=tz)
+        return _cron_trigger(settings["cron"], tz)
     return IntervalTrigger(minutes=int(settings["every_minutes"]), timezone=tz)
 
 

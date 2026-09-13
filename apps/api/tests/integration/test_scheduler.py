@@ -101,11 +101,13 @@ async def test_a_cron_trigger_becomes_a_cron_job_in_its_own_timezone(
     assert list(job.args) == [automation.id]
     assert job.name == automation.name
     assert str(job.trigger.timezone) == "Europe/Paris"
-    # The crontab fields survived the translation.
+    # The crontab fields survived the translation. The day field is rewritten from cron's
+    # numbering (Sunday first) into APScheduler's day names, which mean Monday to Friday
+    # under either convention; `tests/test_cron_days.py` covers the translation itself.
     fields = {f.name: str(f) for f in job.trigger.fields}
     assert fields["hour"] == "8"
     assert fields["minute"] == "0"
-    assert fields["day_of_week"] == "1-5"
+    assert fields["day_of_week"] == "mon,tue,wed,thu,fri"
 
 
 async def test_an_interval_trigger_becomes_an_interval_job(
