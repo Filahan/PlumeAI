@@ -37,7 +37,7 @@ from app.mcp.schemas import (
 )
 
 ECHO_SERVER = str(Path(__file__).parent / "fixtures" / "echo_mcp_server.py")
-ECHO_TOOLS = {"echo", "add", "fail", "crash", "slow"}
+ECHO_TOOLS = {"echo", "add", "fail", "crash", "crash_after", "slow"}
 
 
 def echo_config(name: str = "echo") -> McpServerConfig:
@@ -458,25 +458,65 @@ async def test_list_tools_recovers_from_a_dead_server(manager: mcp_manager.McpMa
 # ─── cancellation and concurrency ────────────────────────────────────────────────────
 
 
+async def test_an_uncancelled_call_writes_its_marker(
+    manager: mcp_manager.McpManager, tmp_path: Path
+) -> None:
+    """The control for the cancellation test below: this is the tool *finishing*.
+
+    Without it, `test_cancelling_a_caller_cancels_the_call` would still pass if `slow`
+    silently stopped writing the marker at all.
+    """
+    marker = tmp_path / "slow.marker"
+    result = await manager.call_tool(
+        echo_config(), "slow", {"seconds": 1, "marker": str(marker)}
+    )
+
+    assert result.ok is True
+    assert marker.exists()
+
+
 async def test_cancelling_a_caller_cancels_the_call(
     manager: mcp_manager.McpManager, tmp_path: Path
 ) -> None:
-    """A cancelled run (or a step timeout) must not leave the tool running."""
+    """A cancelled run (or a step timeout) must not leave the tool running.
+
+    The timings matter: the tool takes 1s, the caller is cancelled at 0.3s (so the call
+    is in flight, not still queued), and the marker is checked at 1.8s — comfortably
+    *after* the moment an uncancelled call would have written it.
+    """
     cfg = echo_config()
     marker = tmp_path / "slow.marker"
     task = asyncio.create_task(
-        manager.call_tool(cfg, "slow", {"seconds": 3, "marker": str(marker)})
+        manager.call_tool(cfg, "slow", {"seconds": 1, "marker": str(marker)})
     )
-    await asyncio.sleep(0.7)  # long enough to be in flight, far short of 3s
+    await asyncio.sleep(0.3)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(1.5)
     assert not marker.exists(), "the tool kept running after its caller was cancelled"
 
     # …and the connection is still usable.
     assert (await manager.call_tool(cfg, "echo", {"text": "still here"})).ok is True
+
+
+async def test_a_call_lost_in_flight_is_not_repeated(
+    manager: mcp_manager.McpManager, tmp_path: Path
+) -> None:
+    """The reconnect must not re-run a call that already reached the server.
+
+    `crash_after` records that it ran and *then* kills the process, which looks exactly
+    like a call whose side effect landed before the transport died. Retrying it silently
+    would send the message (create the issue, charge the card) a second time.
+    """
+    marker = tmp_path / "ran.marker"
+
+    with pytest.raises(ToolError) as excinfo:
+        await manager.call_tool(echo_config(), "crash_after", {"marker": str(marker)})
+
+    assert "in flight" in str(excinfo.value.detail)
+    assert marker.read_text().count("ran") == 1
 
 
 async def test_concurrent_calls_to_one_server_overlap(
@@ -494,6 +534,44 @@ async def test_concurrent_calls_to_one_server_overlap(
 
     assert all(r.ok for r in results)
     assert elapsed < 2.0, f"calls serialized ({elapsed:.1f}s for 3 x 1s)"
+
+
+async def test_the_concurrency_cap_queues_the_rest(
+    manager: mcp_manager.McpManager, monkeypatch
+) -> None:
+    """With the cap at 1 the same three calls serialize — the cap is what holds them."""
+    monkeypatch.setattr(mcp_manager, "MAX_CONCURRENT_CALLS", 1)
+    cfg = echo_config()
+    await manager.list_tools(cfg)  # connect (and size the semaphore) before timing
+
+    started = time.monotonic()
+    results = await asyncio.gather(
+        *(manager.call_tool(cfg, "slow", {"seconds": 0.5}) for _ in range(3))
+    )
+    elapsed = time.monotonic() - started
+
+    assert all(r.ok for r in results)
+    assert elapsed >= 1.4, f"calls overlapped despite the cap ({elapsed:.1f}s)"
+
+
+async def test_a_call_that_never_leaves_the_queue_says_so(
+    manager: mcp_manager.McpManager, monkeypatch
+) -> None:
+    """"Still queued" and "the server did not answer" are different problems."""
+    monkeypatch.setattr(mcp_manager, "MAX_CONCURRENT_CALLS", 1)
+    monkeypatch.setattr(mcp_manager, "QUEUE_GRACE", 0.2)
+    cfg = echo_config()
+    await manager.list_tools(cfg)
+
+    blocking = asyncio.create_task(manager.call_tool(cfg, "slow", {"seconds": 2}))
+    await asyncio.sleep(0.3)  # let it take the only slot
+
+    with pytest.raises(ToolError) as excinfo:
+        await manager.call_tool(cfg, "echo", {"text": "queued"}, timeout=0.5)
+
+    detail = str(excinfo.value.detail)
+    assert "is busy" in detail and "still queued behind 1 other call(s)" in detail
+    assert (await blocking).ok is True
 
 
 # ─── test_server ─────────────────────────────────────────────────────────────────────

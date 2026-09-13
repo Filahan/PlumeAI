@@ -32,7 +32,7 @@ from app.tools.registry import execute_tool, list_available_tool_schemas
 
 ECHO_SERVER = str(Path(__file__).parents[1] / "fixtures" / "echo_mcp_server.py")
 SECRET_VALUE = "s3cr3t-token-value"
-ECHO_TOOLS = {"echo", "add", "fail", "crash", "slow"}
+ECHO_TOOLS = {"echo", "add", "fail", "crash", "crash_after", "slow"}
 
 ECHO_BODY: dict[str, Any] = {
     "name": "echo",

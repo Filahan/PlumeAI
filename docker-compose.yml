@@ -42,7 +42,12 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       APP_ENV: ${APP_ENV:-dev}
-      # Empty = follow APP_ENV (on in dev, off otherwise). See docs/security.md.
+      # Whether stdio MCP servers may be registered — i.e. whether the API may run a
+      # command inside this container on request. Empty means "follow APP_ENV": with the
+      # default APP_ENV=dev it is ON, so the feature works out of the box locally. A
+      # production deployment (any other APP_ENV) gets it OFF and must opt in explicitly
+      # with MCP_ALLOW_STDIO=true — the API has no login in front of it, so that is
+      # arbitrary code execution. See docs/security.md (finding 11).
       MCP_ALLOW_STDIO: ${MCP_ALLOW_STDIO:-}
     depends_on:
       db:

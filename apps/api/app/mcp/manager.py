@@ -85,8 +85,17 @@ _NO_CONTENT = "(the tool returned no content)"
 
 
 class _ConnectionLost(Exception):
-    """This connection is gone — the job did not get an answer out of it, so a retry on a
-    fresh connection is worth one attempt (and is what `_run_job` does, once)."""
+    """This connection is gone before the job could produce an answer.
+
+    `started` is the difference between "the call never reached the server" — safe to run
+    again on a fresh connection, which is what `_run_job` does — and "the call was in
+    flight when the transport died", where the server may well have done the work
+    (created the issue, sent the message) and a silent retry would do it twice.
+    """
+
+    def __init__(self, message: str, *, started: bool = False) -> None:
+        super().__init__(message)
+        self.started = started
 
 
 # Everything a broken pipe, a dead subprocess or a dropped HTTP session can surface as.
@@ -454,13 +463,19 @@ class _Connection:
         try:
             value = await inner
         except asyncio.CancelledError:
+            # Either the caller gave up (its future is already done) or the connection is
+            # being torn down under us. The call did reach the server, so it is reported,
+            # never silently repeated.
             if not job.future.done():
-                job.future.set_exception(_ConnectionLost("call cancelled"))
+                job.future.set_exception(_ConnectionLost("call cancelled", started=True))
+            raise
         except BaseException as exc:  # noqa: BLE001 — relayed to the caller
             if _is_transport_failure(exc):
                 self._mark_fatal(exc)
                 if not job.future.done():
-                    job.future.set_exception(_ConnectionLost(_error_text(exc)))
+                    job.future.set_exception(
+                        _ConnectionLost(_error_text(exc), started=True)
+                    )
             elif not job.future.done():
                 job.future.set_exception(exc)
         else:
@@ -625,17 +640,28 @@ class McpManager:
 
         A stdio server's process can exit (and an HTTP session can be dropped) between
         two calls; the first attempt is how we find out, so one silent reconnect is worth
-        more than an error the user has to react to.
+        more than an error the user has to react to — but only for a job that never
+        started (see `_ConnectionLost.started`).
         """
         for attempt in (0, 1):
             conn = await self._connection(cfg, reconnect=attempt == 1)
             try:
                 return await conn.call(fn, timeout)
-            except _ConnectionLost:
+            except _ConnectionLost as exc:
+                if exc.started:
+                    # The request was already on the wire. Whether the server finished
+                    # the work before it died is unknowable from here, so the failure
+                    # goes back to the caller and the automation executor's retry policy
+                    # — which the author can see and configure — decides, rather than
+                    # this layer quietly running a side effect a second time.
+                    raise ToolError(
+                        f"The connection to MCP server '{cfg.name}' was lost while the "
+                        f"call was in flight; it may or may not have run."
+                    ) from exc
                 if attempt:
                     raise ToolError(
                         f"Lost the connection to MCP server '{cfg.name}'."
-                    ) from None
+                    ) from exc
                 log.info("mcp_reconnecting", server=cfg.name)
         raise AssertionError("unreachable")  # pragma: no cover
 

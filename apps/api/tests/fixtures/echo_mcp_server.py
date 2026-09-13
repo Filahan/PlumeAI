@@ -13,6 +13,8 @@ Five tools, one per behavior the client has to handle:
   - `add`    → structured content (`{"sum": n}`)
   - `fail`   → an exception, which the server turns into `isError`
   - `crash`  → kills the process mid-request, so the client sees the transport die
+  - `crash_after` → records a side effect *then* kills the process, which is how a test
+               can tell whether a lost call was silently run twice
   - `slow`   → sleeps, so a caller can cancel or time out mid-call (and `slow_marks`
                says afterwards whether the sleep ever finished)
 """
@@ -46,6 +48,14 @@ def fail() -> str:
 
 @server.tool(description="Kill the server process without answering.")
 def crash() -> str:
+    os._exit(1)
+
+
+@server.tool(description="Append a line to `marker`, then kill the process.")
+def crash_after(marker: str) -> str:
+    with open(marker, "a", encoding="utf-8") as handle:
+        handle.write("ran\n")
+        handle.flush()
     os._exit(1)
 
 
