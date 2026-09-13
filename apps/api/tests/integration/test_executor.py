@@ -34,7 +34,7 @@ from app.services import runs as runs_svc
 from app.services.executor import start_run_in_background
 from app.services.refs import RefError
 from app.tools.base import ToolResult
-from app.utils import LoopLocal
+from app.utils import LoopLocal, to_ms
 
 # --- fixtures ----------------------------------------------------------------------------
 
@@ -355,11 +355,13 @@ async def test_a_failing_tool_is_retried_with_backoff_then_succeeds(
     assert step.status == "succeeded"
     assert step.attempt == 3
     assert step.output == {"status": 200}
-    attempts = [e for e in step.trace if e["kind"] == "attempt"]
-    assert [e["n"] for e in attempts] == [1, 2]
-    # Exponential: 10s then 20s.
-    assert [e["retryInSeconds"] for e in attempts] == [10, 20]
-    assert all("502 Bad Gateway" in e["error"] for e in attempts)
+    attempts = _attempts(step)
+    # Every attempt is traced, the winning one included.
+    assert [e["n"] for e in attempts] == [1, 2, 3]
+    # Exponential: 10s then 20s, and nothing on the attempt that succeeded.
+    assert [e.get("retryInSeconds") for e in attempts] == [10, 20, None]
+    assert all("502 Bad Gateway" in e["error"] for e in attempts[:2])
+    assert attempts[2]["error"] is None
 
 
 async def test_backoff_is_capped(registry, run_automation) -> None:
@@ -380,8 +382,129 @@ async def test_backoff_is_capped(registry, run_automation) -> None:
         ]
     )
 
-    attempts = [e for e in steps[0].trace if e["kind"] == "attempt"]
+    attempts = _attempts(steps[0])
     assert attempts[0]["retryInSeconds"] == executor.MAX_BACKOFF_SECONDS
+
+
+# --- the attempt trace -------------------------------------------------------------------
+
+
+def _attempts(step) -> list[dict[str, Any]]:
+    """Just the `attempt` entries of a step's trace, in the order they were recorded."""
+    return [e for e in step.trace if e["kind"] == "attempt"]
+
+
+def _assert_bounded(step) -> None:
+    """Each attempt is a real interval, inside the step's own span and after the last one."""
+    attempts = _attempts(step)
+    assert attempts, "the step recorded no attempt at all"
+    step_started, step_ended = to_ms(step.started_at), to_ms(step.ended_at)
+    previous = step_started
+    for entry in attempts:
+        assert entry["startedAt"] <= entry["endedAt"]
+        assert step_started <= entry["startedAt"]
+        assert entry["endedAt"] <= step_ended
+        assert previous <= entry["startedAt"]
+        previous = entry["endedAt"]
+
+
+async def test_a_step_that_succeeds_first_try_still_records_its_attempt(
+    registry, run_automation
+) -> None:
+    """Without an entry for the winning attempt the UI cannot time it at all."""
+    registry.script("http", ToolResult(ok=True, content="{}", data={"status": 200}))
+
+    _, steps = await run_automation(
+        [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})]
+    )
+
+    step = steps[0]
+    assert step.status == "succeeded"
+    attempts = _attempts(step)
+    assert len(attempts) == 1
+    assert attempts[0]["n"] == 1
+    assert attempts[0]["error"] is None
+    assert "retryInSeconds" not in attempts[0]
+    _assert_bounded(step)
+
+
+async def test_every_step_kind_records_one_attempt_when_it_succeeds(
+    registry, provider, run_automation
+) -> None:
+    """action, ai and filter all retry through the same loop, so all three trace alike."""
+    registry.script("http", ToolResult(ok=True, content="{}", data={"count": 3}))
+    provider.scripts = [[{"type": "text", "delta": "hi"}, _usage(2, 1)]]
+
+    run, steps = await run_automation(
+        [
+            action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}}),
+            filter_rules_step("step_bbbbb", "{{step_aaaaa.output.count}}", "gt", 0),
+            ai_text_step("step_ccccc"),
+        ]
+    )
+
+    assert run.status == "succeeded"
+    for step in steps:
+        attempts = _attempts(step)
+        assert [e["n"] for e in attempts] == [1], step.step_id
+        assert attempts[0]["error"] is None
+        _assert_bounded(step)
+
+
+async def test_two_failures_then_a_success_trace_three_bounded_attempts(
+    registry, run_automation
+) -> None:
+    """The default action policy: 3 attempts, 10s backoff — so 10s then 20s, then clean."""
+    registry.script(
+        "http",
+        ToolResult(ok=False, content="502 Bad Gateway"),
+        ToolResult(ok=False, content="502 Bad Gateway"),
+        ToolResult(ok=True, content="{}", data={"status": 200}),
+    )
+
+    run, steps = await run_automation(
+        [action_step("step_aaaaa", "http", {"url": {"kind": "literal", "value": "u"}})]
+    )
+
+    assert run.status == "succeeded"
+    step = steps[0]
+    assert step.attempt == 3
+    attempts = _attempts(step)
+    assert [e["n"] for e in attempts] == [1, 2, 3]
+    assert [e.get("retryInSeconds") for e in attempts] == [10, 20, None]
+    assert all("502 Bad Gateway" in e["error"] for e in attempts[:2])
+    assert attempts[2]["error"] is None
+    assert "retryInSeconds" not in attempts[2]
+    _assert_bounded(step)
+
+
+async def test_a_permanently_failing_step_traces_one_attempt_per_try(
+    registry, run_automation
+) -> None:
+    registry.script("http", ToolResult(ok=False, content="permanently down"))
+
+    run, steps = await run_automation(
+        [
+            action_step(
+                "step_aaaaa",
+                "http",
+                {"url": {"kind": "literal", "value": "u"}},
+                retry={"max_attempts": 3, "backoff_seconds": 10},
+            )
+        ]
+    )
+
+    assert run.status == "failed"
+    step = steps[0]
+    assert step.status == "failed"
+    assert step.attempt == 3
+    attempts = _attempts(step)
+    assert [e["n"] for e in attempts] == [1, 2, 3]
+    assert all("permanently down" in e["error"] for e in attempts)
+    # The last one has nowhere to retry to.
+    assert [e.get("retryInSeconds") for e in attempts] == [10, 20, None]
+    assert "retryInSeconds" not in attempts[2]
+    _assert_bounded(step)
 
 
 async def test_a_step_that_never_succeeds_fails_the_run_and_skips_the_rest(
@@ -407,7 +530,7 @@ async def test_a_step_that_never_succeeds_fails_the_run_and_skips_the_rest(
     assert steps[0].attempt == 2
     assert "permanently down" in (steps[0].error or "")
     # The last attempt carries no retry, so no `retryInSeconds` on it.
-    attempts = [e for e in steps[0].trace if e["kind"] == "attempt"]
+    attempts = _attempts(steps[0])
     assert [e["n"] for e in attempts] == [1, 2]
     assert "retryInSeconds" not in attempts[1]
 
@@ -432,7 +555,7 @@ async def test_a_dangling_reference_fails_the_step_without_retrying(
     assert steps[0].status == "failed"
     assert steps[0].attempt == 1
     assert registry.calls == []
-    attempts = [e for e in steps[0].trace if e["kind"] == "attempt"]
+    attempts = _attempts(steps[0])
     assert len(attempts) == 1
     assert "retryInSeconds" not in attempts[0]
 
@@ -609,7 +732,8 @@ async def test_ai_step_tool_activity_lands_in_the_trace(
     )
 
     kinds = [e["kind"] for e in steps[0].trace]
-    assert kinds == ["tool_call", "tool_result"]
+    # The tool activity in the order it happened, then the attempt that produced it.
+    assert kinds == ["tool_call", "tool_result", "attempt"]
     assert steps[0].trace[0]["tool"] == "http"
     assert steps[0].trace[1]["ok"] is True
     assert steps[0].trace[1]["result"] == "fetched"
@@ -1130,7 +1254,8 @@ async def test_a_step_that_overruns_its_own_timeout_is_retried(
     assert reloaded.status == "succeeded"
     assert steps[0].attempt == 2
     assert steps[0].output == {"n": 2}
-    assert [e["error"] for e in steps[0].trace if e["kind"] == "attempt"] == ["Timed out"]
+    # The attempt that timed out, then the one that made it.
+    assert [e["error"] for e in _attempts(steps[0])] == ["Timed out", None]
 
 
 # --- trigger context ---------------------------------------------------------------------
@@ -1417,7 +1542,7 @@ async def test_a_tool_that_rejected_the_request_is_not_retried(
     assert run.status == "failed"
     assert steps[0].attempt == 1
     assert len(registry.calls) == 1
-    attempts = [e for e in steps[0].trace if e["kind"] == "attempt"]
+    attempts = _attempts(steps[0])
     assert len(attempts) == 1
     assert "retryInSeconds" not in attempts[0]
 

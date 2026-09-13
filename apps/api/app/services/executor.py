@@ -44,7 +44,7 @@ from app.services.refs import RefError
 from app.services.settings import get_timezone
 from app.services.step_runner import PermanentStepFailure, StepContext, StepFailure, Usage
 from app.services.usage import record_usage
-from app.utils import LoopLocal
+from app.utils import LoopLocal, to_ms
 
 log = structlog.get_logger("app.executor")
 
@@ -107,6 +107,25 @@ def _now() -> datetime:
 
 def _ms_since(start: datetime | None, end: datetime) -> int | None:
     return None if start is None else int((end - start).total_seconds() * 1000)
+
+
+def _attempt_entry(n: int, started_at: datetime, *, error: str | None) -> dict[str, Any]:
+    """One `attempt` trace entry, bounded by the wall clock.
+
+    `startedAt`/`endedAt` are Unix milliseconds — the same unit the run payload renders
+    every other timestamp in — so the run detail view can draw an attempt exactly where it
+    happened instead of inferring it from the step's span and the backoffs. `error` is
+    `None` on the attempt that succeeded; a failed one adds `retryInSeconds` when another
+    attempt follows. Runs recorded before this carry entries without the two timestamps,
+    which is why every reader has to treat them as optional.
+    """
+    return {
+        "kind": "attempt",
+        "n": n,
+        "startedAt": to_ms(started_at),
+        "endedAt": to_ms(_now()),
+        "error": error,
+    }
 
 
 def _describe(exc: BaseException) -> str:
@@ -481,6 +500,7 @@ class _Execution:
             row.attempt = attempt
             await self.session.commit()
             sctx.publish("step_started", attempt=attempt)
+            started_at = _now()
             try:
                 result = await asyncio.wait_for(
                     self._attempt(sctx, row), timeout=timeout
@@ -493,7 +513,7 @@ class _Execution:
                     if retrying
                     else None
                 )
-                entry: dict[str, Any] = {"kind": "attempt", "n": attempt, "error": message}
+                entry = _attempt_entry(attempt, started_at, error=message)
                 if delay is not None:
                     entry["retryInSeconds"] = delay
                 sctx.trace.append(entry)
@@ -516,6 +536,11 @@ class _Execution:
                 await _sleep(delay)
                 continue
 
+            # The winning attempt is recorded too, so the trace is a complete list of
+            # the attempts this step made — one entry each, in order — rather than only
+            # the failures. It goes in after whatever the attempt itself appended (tool
+            # calls, text), so each attempt's own activity still precedes its summary.
+            sctx.trace.append(_attempt_entry(attempt, started_at, error=None))
             return await self._succeed_step(row, sctx, step, result)
 
         raise _RunFailed("Step exhausted its attempts.")  # pragma: no cover — loop returns
