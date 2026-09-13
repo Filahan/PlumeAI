@@ -11,10 +11,14 @@ rollback because the API commits inside request handlers (`POST /runs` does, so 
 background executor could see the row) — a wrapping transaction would be closed out from
 under the test.
 
-The schema is dropped and recreated rather than `create_all`-ed onto whatever is there:
-`create_all` skips tables that already exist, so a column added to a model after a
-previous run (`automations.valid`) would never appear and the suite would fail against a
-database it had itself left stale.
+The whole `public` schema is dropped and recreated rather than `create_all`-ed onto
+whatever is there: `create_all` skips tables that already exist, so a column added to a
+model after a previous run (`automations.valid`) would never appear and the suite would
+fail against a database it had itself left stale. Dropping the schema rather than calling
+`Base.metadata.drop_all` also clears tables whose *model* has since been deleted
+(`conversations`/`messages`) — `drop_all` only knows about the models that still exist, so
+it would leave those behind forever and a test asserting they are absent would pass in CI
+and fail on a developer machine.
 
 Two pieces of the app are deliberately inert here. The executor is replaced by a
 recorder (see `no_background_runs`) so `POST /runs` leaves a `queued` run with `pending`
@@ -80,7 +84,10 @@ async def _create_schema() -> None:
     engine = create_async_engine(_test_database_url(), poolclass=NullPool)
     try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+            # Safe because this database exists only for the suite (see the module
+            # docstring) — nothing here is ever anyone's data.
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
             await conn.run_sync(Base.metadata.create_all)
     finally:
         await engine.dispose()

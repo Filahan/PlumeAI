@@ -137,4 +137,4 @@ def test_downgrade_is_a_documented_noop() -> None:
 
 
 def test_the_migration_history_has_a_single_head() -> None:
-    assert _script_directory().get_heads() == ("0006_drop_chat_tables",)
+    assert list(_script_directory().get_heads()) == ["0006_drop_chat_tables"]

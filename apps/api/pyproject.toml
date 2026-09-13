@@ -1,7 +1,7 @@
 [project]
 name = "plumeai-api"
 version = "0.1.0"
-description = "FastAPI backend for PlumeAI — chat, automations, tool-calling agent."
+description = "FastAPI backend for PlumeAI — the automation builder, its assistant and the tool-calling agent."
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",
