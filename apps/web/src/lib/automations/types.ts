@@ -335,6 +335,66 @@ export interface RunDetail extends RunSummary {
   steps: RunStep[];
 }
 
+/** One row of the cross-automation run feed (`GET /runs`).
+ *
+ *  The list is drawn per automation but fetched in one pass, so every row carries the
+ *  name it belongs under — the Activity grid never has to join against `/automations`
+ *  to label a square. */
+export interface RunListItem extends RunSummary {
+  automationName: string;
+}
+
+/** `GET /runs` — newest first. `nextCursor` is the `startedAt` (epoch ms) to pass back
+ *  as `before`, or `null` once the feed is exhausted. */
+export interface RunsPage {
+  runs: RunListItem[];
+  nextCursor: number | null;
+}
+
+/** `GET /runs/{runId}` — a run detail that knows which automation it belongs to.
+ *  `automationId` already rides along on `RunSummary`; only the name is new. */
+export interface RunWithAutomation extends RunDetail {
+  automationName: string;
+}
+
+/** The last terminal run of a schedule, as `GET /schedules` reports it — richer than
+ *  `LastRunPayload` because the Schedules tab links to the run and shows how long it took. */
+export interface ScheduleLastRun {
+  id: string;
+  status: RunStatus;
+  endedAt: number | null;
+  durationMs: number | null;
+}
+
+/** One scheduled automation. `mode`/`cron`/`everyMinutes` mirror `ScheduleSettings` so
+ *  the Schedules tab can edit the trigger without loading each document. */
+export interface ScheduleItem {
+  automationId: string;
+  name: string;
+  enabled: boolean;
+  /** Same phrase as `AutomationSummary.triggerSummary`. */
+  triggerSummary: string;
+  mode: 'cron' | 'interval';
+  cron: string | null;
+  everyMinutes: number | null;
+  timezone: string | null;
+  nextRunAt: number | null;
+  lastRun: ScheduleLastRun | null;
+}
+
+/** `GET /schedules`. `timezone` is the account default — the one times are shown in when
+ *  a schedule carries no timezone of its own. */
+export interface SchedulesResponse {
+  timezone: string;
+  schedules: ScheduleItem[];
+}
+
+/** `POST /schedules/pause` / `/resume` — how many automations actually flipped. */
+export interface SchedulesToggleResult {
+  changed: number;
+  automationIds: string[];
+}
+
 /** Events from `GET /automations/{id}/runs/{runId}/events` (data-only SSE, camelCase).
  *  Every step event carries `stepId` + `index`; the stream always opens with `snapshot`
  *  and ends after `run_finished`. */

@@ -22,6 +22,10 @@ import type {
   Operation,
   RunDetail,
   RunSummary,
+  RunWithAutomation,
+  RunsPage,
+  SchedulesResponse,
+  SchedulesToggleResult,
   ValidateResult,
   VersionDetail,
   VersionSummary,
@@ -169,6 +173,48 @@ export const automations = {
       `/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/events`,
       signal
     ),
+};
+
+// ─── Activity (cross-automation runs + schedules) ───────────────────────────────────
+
+/** Filters for the run feed. `before` is a cursor, not a window start: pass the previous
+ *  page's `nextCursor` to walk backwards through history. */
+export interface RunsQuery {
+  limit?: number;
+  before?: number;
+  automationId?: string;
+  status?: string;
+}
+
+function runsQuery(opts: RunsQuery | undefined): string {
+  const qs = new URLSearchParams();
+  if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+  if (opts?.before !== undefined) qs.set('before', String(opts.before));
+  if (opts?.automationId) qs.set('automationId', opts.automationId);
+  if (opts?.status) qs.set('status', opts.status);
+  return qs.size > 0 ? `?${qs.toString()}` : '';
+}
+
+/** The Activity section: every automation's runs in one feed, and the schedule board.
+ *
+ *  Distinct from `automations.listRuns`, which is scoped to one automation and drives
+ *  the editor's run panel — these are the cross-automation views. */
+export const activity = {
+  /** Newest first, across every automation. Each row carries its `automationName`. */
+  runs: (opts?: RunsQuery) => api.get<RunsPage>(`/runs${runsQuery(opts)}`),
+
+  /** One run by id alone — no automation id needed, and the response names it. */
+  run: (runId: string) => api.get<RunWithAutomation>(`/runs/${encodeURIComponent(runId)}`),
+
+  /** Every scheduled automation plus the account timezone times are shown in. */
+  schedules: () => api.get<SchedulesResponse>('/schedules'),
+
+  /** `null` means "every schedule" — that is what the Pause everything button sends. */
+  pauseSchedules: (automationIds: string[] | null = null) =>
+    api.post<SchedulesToggleResult>('/schedules/pause', { automationIds }),
+
+  resumeSchedules: (automationIds: string[] | null = null) =>
+    api.post<SchedulesToggleResult>('/schedules/resume', { automationIds }),
 };
 
 // ─── Usage ──────────────────────────────────────────────────────────────────────────

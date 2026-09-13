@@ -81,7 +81,12 @@ export function NavRail({
             onClick={() => router.push('/')}
           />
           <RailIcon icon={Plug} label="Tools" active={pathname === '/tools'} onClick={() => router.push('/tools')} />
-          <RailIcon icon={Activity} label="Usage" active={pathname === '/usage'} onClick={() => router.push('/usage')} />
+          <RailIcon
+            icon={Activity}
+            label="Activity"
+            active={pathname.startsWith('/activity') || pathname === '/usage'}
+            onClick={() => router.push('/activity')}
+          />
         </div>
 
         <div className="flex-1" />

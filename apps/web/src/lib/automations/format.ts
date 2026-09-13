@@ -33,9 +33,11 @@ export function relativePast(ms: number): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-/** "in 12 min" / "in 3 h" / "in 2 d" for a future timestamp; "due now" once it passes. */
-export function relativeFuture(ms: number): string {
-  const diff = ms - Date.now();
+/** "in 12 min" / "in 3 h" / "in 2 d" for a future timestamp; "due now" once it passes.
+ *  `now` is injectable so a caller that has already read the clock (and branches on it)
+ *  cannot disagree with this answer by a few milliseconds. */
+export function relativeFuture(ms: number, now = Date.now()): string {
+  const diff = ms - now;
   if (diff <= 0) return 'due now';
   if (diff < 60_000) return 'in <1 min';
   if (diff < 3_600_000) return `in ${Math.round(diff / 60_000)} min`;
@@ -51,4 +53,65 @@ export function prettyJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+// ─── Activity ───────────────────────────────────────────────────────────────────────
+
+const DAY_MS = 86_400_000;
+
+/** "08:00" in the viewer's own timezone. */
+export function timeOfDay(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/** Midnight (local) of the day `ms` falls in. */
+export function startOfDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** When the next run is due, read the way a person would say it:
+ *  under a day it stays relative ("in 13 min"), past that it becomes a clock time on a
+ *  named day ("tomorrow 08:00", "Monday 09:00", "12 Mar 08:00"). */
+export function nextRunLabel(ms: number | null | undefined, now = Date.now()): string {
+  if (ms == null) return '—';
+  if (ms - now < DAY_MS) return relativeFuture(ms, now);
+
+  const days = Math.round((startOfDay(ms) - startOfDay(now)) / DAY_MS);
+  const clock = timeOfDay(ms);
+  if (days === 1) return `tomorrow ${clock}`;
+  if (days < 7) {
+    return `${new Date(ms).toLocaleDateString(undefined, { weekday: 'long' })} ${clock}`;
+  }
+  return `${new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${clock}`;
+}
+
+/** "14 Sep 2026, 16:02", or "not started" — the date half of a run's tooltip. */
+export function runMoment(ms: number | null | undefined): string {
+  if (ms == null) return 'not started';
+  return new Date(ms).toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/** One run in a sentence — the title and `aria-label` of every Activity square and mark:
+ *  "14 Sep 2026, 16:02 · failed · 1.2s". */
+export function runSummaryLine(run: {
+  status: string;
+  startedAt: number | null;
+  durationMs: number | null;
+}): string {
+  const parts = [runMoment(run.startedAt), run.status];
+  if (run.durationMs != null) parts.push(formatDuration(run.durationMs));
+  return parts.join(' · ');
 }
