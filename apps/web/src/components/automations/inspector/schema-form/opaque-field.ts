@@ -102,14 +102,24 @@ function leafName(path: string): string {
   return tokens && tokens.length > 0 ? tokens[tokens.length - 1] : '';
 }
 
+/** A leaf that is itself a Slack-style timestamp — only ever a match for a `_ts` field;
+ *  a `channel_id` is not served by somebody else's `ts`. */
+const TS_LEAF = /^ts$|_ts$|[a-z0-9]Ts$/;
+
 /** Could this output row be the identifier we're after? Loose by design: the answer only
  *  ever decides whether to *keep* "Ask AI" available, so a near-miss costs nothing and a
- *  false "impossible" would take away a mode that works. */
-function rowSupplies(path: string, label: string, stem: string): boolean {
+ *  false "impossible" would take away a mode that works.
+ *
+ *  Three ways to match: the row is plainly an id (`id`, `channel_id`, `message_id`), the
+ *  row is a timestamp and the field wants one, or the row is named after the thing the id
+ *  identifies — `channel_id` and a `channels` array, which is how `slack_list_channels`
+ *  feeds `slack_send_message`. */
+function rowSupplies(path: string, label: string, stem: string, wantsTs: boolean): boolean {
   const leaf = leafName(path);
   // The whole-result row (`path: ''`) names nothing; it is the object, not a value.
   if (leaf.length === 0) return false;
   if (leaf.toLowerCase().includes('id')) return true;
+  if (wantsTs && TS_LEAF.test(leaf)) return true;
   if (stem.length === 0) return false;
   return `${path} ${label}`.toLowerCase().includes(stem.toLowerCase());
 }
@@ -136,10 +146,11 @@ export function canEarlierStepSupply(
   run: RunDetail | null | undefined
 ): boolean {
   const stem = identifierStem(name);
+  const wantsTs = TS_NAME.test(name) || TS_SUFFIX.test(name) || TS_CAMEL.test(name);
   return earlier.some((step) => {
     const shape = stepOutputShape(step, catalog, stepOutput(run, step.id), '');
     if (shape.source === 'none') return true;
-    return shape.rows.some((row) => rowSupplies(row.path, row.label, stem));
+    return shape.rows.some((row) => rowSupplies(row.path, row.label, stem, wantsTs));
   });
 }
 
