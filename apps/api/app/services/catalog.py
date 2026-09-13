@@ -7,31 +7,16 @@ Backs `GET /tools` so the frontend stops hardcoding the integration catalog (see
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+import copy
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.base import Integration
 from app.integrations.registry import INTEGRATIONS
+from app.tools.base import BUILTIN_INTEGRATION, CatalogAction
 from app.tools.builtin import describe_builtin_actions
-
-
-@dataclass
-class CatalogAction:
-    """Protocol-compatible action descriptor.
-
-    Mirrors the shape of the `ActionMeta` dataclass another (parallel) task defines in
-    `app.services.documents` — `(name, integration, label, description, input_schema)`
-    — so a `Catalog` satisfies that module's `find_action`/`is_connected` protocol by
-    duck typing, without either module importing the other.
-    """
-
-    name: str
-    integration: str
-    label: str
-    description: str
-    input_schema: dict[str, Any]
 
 
 @dataclass
@@ -40,40 +25,35 @@ class CatalogIntegration:
     label: str
     description: str
     logo_url: str
-    connect_mode: str
+    connect_mode: Literal["oauth", "config"]
     setup_url: str
     credentials_namespace: str | None
     credentials_fields: list[dict[str, Any]]
     setup: dict[str, Any]
     connected: bool
-    actions: list[dict[str, Any]]
+    actions: list[CatalogAction]
 
 
 @dataclass
 class Catalog:
     integrations: list[CatalogIntegration]
-    builtin_actions: list[dict[str, Any]]
+    builtin_actions: list[CatalogAction]
+    _index: dict[str, CatalogAction] = field(init=False, repr=False, compare=False)
 
-    def _all_actions(self) -> list[dict[str, Any]]:
-        actions = list(self.builtin_actions)
+    def __post_init__(self) -> None:
+        # Builtins first, then integration actions — a name collision (unlikely, but
+        # cheap to guard against) resolves in favor of the integration action.
+        index: dict[str, CatalogAction] = {a.name: a for a in self.builtin_actions}
         for integ in self.integrations:
-            actions.extend(integ.actions)
-        return actions
+            for action in integ.actions:
+                index[action.name] = action
+        self._index = index
 
     def find_action(self, name: str) -> CatalogAction | None:
-        for action in self._all_actions():
-            if action["name"] == name:
-                return CatalogAction(
-                    name=action["name"],
-                    integration=action["integration"],
-                    label=action["label"],
-                    description=action["description"],
-                    input_schema=action["input_schema"],
-                )
-        return None
+        return self._index.get(name)
 
     def is_connected(self, integration: str) -> bool:
-        if integration == "builtin":
+        if integration == BUILTIN_INTEGRATION:
             return True
         return any(i.name == integration and i.connected for i in self.integrations)
 
@@ -91,7 +71,7 @@ async def _build_integration(integ: Integration, session: AsyncSession) -> Catal
             {"name": f.name, "label": f.label, "secret": f.secret, "placeholder": f.placeholder}
             for f in integ.credentials_fields
         ],
-        setup=dict(integ.setup),
+        setup=copy.deepcopy(integ.setup),
         connected=await integ.is_configured(session),
         actions=integ.describe_actions(),
     )

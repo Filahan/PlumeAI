@@ -14,9 +14,9 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ToolNotConfigured
-from app.integrations.base import ActionMeta, CredentialField, Integration
+from app.integrations.base import CredentialField, Integration
 from app.services.tool_credentials import get_credentials
-from app.tools.base import TIMEOUT_SECONDS, ToolResult, cap
+from app.tools.base import TIMEOUT_SECONDS, ActionDisplayMeta, ToolResult, cap
 
 DISCORD_BASE = "https://discord.com/api/v10"
 
@@ -57,20 +57,20 @@ DISCORD_SETUP: dict[str, Any] = {
     ),
 }
 
-DISCORD_ACTION_META: dict[str, ActionMeta] = {
-    "discord_list_guilds": ActionMeta(
+DISCORD_ACTION_META: dict[str, ActionDisplayMeta] = {
+    "discord_list_guilds": ActionDisplayMeta(
         label="List servers",
         output_description="Servers (guilds) the bot has been invited to, with id and name.",
     ),
-    "discord_list_channels": ActionMeta(
+    "discord_list_channels": ActionDisplayMeta(
         label="List channels",
         output_description="Channels in the server with id, name, and type.",
     ),
-    "discord_list_messages": ActionMeta(
+    "discord_list_messages": ActionDisplayMeta(
         label="Read messages",
         output_description="Recent messages with author, content, and timestamp.",
     ),
-    "discord_send_message": ActionMeta(
+    "discord_send_message": ActionDisplayMeta(
         label="Send a message",
         output_description="Confirmation with the sent message id.",
     ),

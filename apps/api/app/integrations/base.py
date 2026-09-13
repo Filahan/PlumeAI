@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.tools.base import ToolResult
+from app.tools.base import ActionDisplayMeta, CatalogAction, ToolResult, describe_action
 
 
 @dataclass(frozen=True)
@@ -20,44 +20,6 @@ class CredentialField:
     label: str
     secret: bool = False
     placeholder: str = ""
-
-
-@dataclass(frozen=True)
-class ActionMeta:
-    """Hand-written, human-facing metadata for one action (tool function) exposed by an
-    integration. Keyed by function name in `Integration.action_meta`. Falls back to a
-    humanized function name when an action has no entry."""
-
-    label: str
-    output_description: str = ""
-    output_schema: dict[str, Any] | None = None
-
-
-def _humanize(name: str) -> str:
-    """Fallback label for an action with no `ActionMeta` entry, e.g. `gmail_search` →
-    `Gmail search`."""
-    return name.replace("_", " ").capitalize()
-
-
-def describe_action(
-    schema: dict[str, Any], integration: str, action_meta: dict[str, "ActionMeta"]
-) -> dict[str, Any]:
-    """Turn one OpenAI function-calling schema into a catalog-ready action descriptor.
-    Shared by `Integration.describe_actions` and the builtin tools' equivalent so the
-    two produce dicts with the exact same shape."""
-
-    fn = schema["function"]
-    name = fn["name"]
-    meta = action_meta.get(name)
-    return {
-        "name": name,
-        "integration": integration,
-        "label": meta.label if meta else _humanize(name),
-        "description": fn.get("description", ""),
-        "input_schema": fn["parameters"],
-        "output_description": meta.output_description if meta else "",
-        "output_schema": meta.output_schema if meta else None,
-    }
 
 
 class Integration(ABC):
@@ -85,9 +47,9 @@ class Integration(ABC):
     logo_url: ClassVar[str] = ""
     connect_mode: ClassVar[Literal["oauth", "config"]] = "oauth"
     setup: ClassVar[dict[str, Any]] = {}
-    action_meta: ClassVar[dict[str, ActionMeta]] = {}
+    action_meta: ClassVar[dict[str, ActionDisplayMeta]] = {}
 
-    def describe_actions(self) -> list[dict[str, Any]]:
+    def describe_actions(self) -> list[CatalogAction]:
         """One catalog-ready descriptor per schema in `self.schemas`."""
         return [describe_action(s, self.name, self.action_meta) for s in self.schemas]
 

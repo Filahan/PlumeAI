@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -24,7 +24,7 @@ class CatalogIntegrationSchema(APISchema):
     label: str
     description: str
     logo_url: str = ""
-    connect_mode: str = "oauth"
+    connect_mode: Literal["oauth", "config"] = "oauth"
     setup_url: str = ""
     credentials_namespace: str | None = None
     credentials_fields: list[dict[str, Any]] = Field(default_factory=list)

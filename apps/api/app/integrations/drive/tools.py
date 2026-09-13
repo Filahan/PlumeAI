@@ -8,10 +8,9 @@ from typing import Any
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.integrations.base import ActionMeta
 from app.integrations.google.base import GoogleOAuthIntegration
 from app.integrations.google.oauth import get_valid_access_token
-from app.tools.base import TIMEOUT_SECONDS, ToolResult, cap
+from app.tools.base import TIMEOUT_SECONDS, ActionDisplayMeta, ToolResult, cap
 
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 GOOGLE_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
@@ -19,62 +18,28 @@ GOOGLE_SLIDE_MIME = "application/vnd.google-apps.presentation"
 
 UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
 
-# ─── Setup guide + catalog metadata (ported from apps/web/src/lib/tools/registry-client.ts) ──
+# ─── Catalog metadata (labels ported from apps/web/src/lib/tools/registry-client.ts) ──────
+# The setup guide (`GOOGLE_SETUP`) is shared by all Google integrations and lives on
+# `GoogleOAuthIntegration` — this class inherits it.
 
-GOOGLE_SETUP: dict[str, Any] = {
-    "intro": (
-        "Uses Google OAuth — set up the OAuth client once, share it across every "
-        "Google integration."
-    ),
-    "steps": [
-        {
-            "title": "Create an OAuth client in Google Cloud Console",
-            "description": (
-                'Pick "Web application" as the type. Reuse an existing client if you have one.'
-            ),
-            "link": {
-                "label": "Open Credentials",
-                "url": "https://console.cloud.google.com/apis/credentials",
-            },
-        },
-        {
-            "title": 'Add this URL to your OAuth client\'s "Authorized redirect URIs"',
-            "copy": {
-                "label": "Authorized redirect URI",
-                "value": "__ORIGIN__/api/tools/google/oauth/callback",
-            },
-        },
-        {
-            "title": (
-                "Paste the generated Client ID and Client Secret into the Credentials "
-                "section above"
-            ),
-            "description": (
-                "One credential pair unlocks Gmail, Drive, Calendar, and every future "
-                "Google integration."
-            ),
-        },
-    ],
-}
-
-DRIVE_ACTION_META: dict[str, ActionMeta] = {
-    "drive_search": ActionMeta(
+DRIVE_ACTION_META: dict[str, ActionDisplayMeta] = {
+    "drive_search": ActionDisplayMeta(
         label="Search files",
         output_description="Matching files with id, name, mimeType, and modified time.",
     ),
-    "drive_get": ActionMeta(
+    "drive_get": ActionDisplayMeta(
         label="Get a file",
         output_description="File metadata plus its plain-text content.",
     ),
-    "drive_list": ActionMeta(
+    "drive_list": ActionDisplayMeta(
         label="List folder contents",
         output_description="Immediate children with id, name, mimeType, and modified time.",
     ),
-    "drive_create_doc": ActionMeta(
+    "drive_create_doc": ActionDisplayMeta(
         label="Create a document",
         output_description="Confirmation with the new Google Doc's id and name.",
     ),
-    "drive_trash": ActionMeta(
+    "drive_trash": ActionDisplayMeta(
         label="Trash a file",
         output_description="Confirmation the file was moved to trash.",
     ),
@@ -349,7 +314,6 @@ class DriveIntegration(GoogleOAuthIntegration):
 
     logo_url = "https://cdn.simpleicons.org/googledrive"
     connect_mode = "oauth"
-    setup = GOOGLE_SETUP
     action_meta = DRIVE_ACTION_META
 
     tool_key = "drive"

@@ -8,66 +8,31 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.integrations.base import ActionMeta
 from app.integrations.google.base import GoogleOAuthIntegration
-from app.tools.base import ToolResult, cap
+from app.tools.base import ActionDisplayMeta, ToolResult, cap
 
-# ─── Setup guide + catalog metadata (ported from apps/web/src/lib/tools/registry-client.ts) ──
+# ─── Catalog metadata (labels ported from apps/web/src/lib/tools/registry-client.ts) ──────
+# The setup guide (`GOOGLE_SETUP`) is shared by all Google integrations and lives on
+# `GoogleOAuthIntegration` — this class inherits it.
 
-GOOGLE_SETUP: dict[str, Any] = {
-    "intro": (
-        "Uses Google OAuth — set up the OAuth client once, share it across every "
-        "Google integration."
-    ),
-    "steps": [
-        {
-            "title": "Create an OAuth client in Google Cloud Console",
-            "description": (
-                'Pick "Web application" as the type. Reuse an existing client if you have one.'
-            ),
-            "link": {
-                "label": "Open Credentials",
-                "url": "https://console.cloud.google.com/apis/credentials",
-            },
-        },
-        {
-            "title": 'Add this URL to your OAuth client\'s "Authorized redirect URIs"',
-            "copy": {
-                "label": "Authorized redirect URI",
-                "value": "__ORIGIN__/api/tools/google/oauth/callback",
-            },
-        },
-        {
-            "title": (
-                "Paste the generated Client ID and Client Secret into the Credentials "
-                "section above"
-            ),
-            "description": (
-                "One credential pair unlocks Gmail, Drive, Calendar, and every future "
-                "Google integration."
-            ),
-        },
-    ],
-}
-
-CALENDAR_ACTION_META: dict[str, ActionMeta] = {
-    "calendar_list_events": ActionMeta(
+CALENDAR_ACTION_META: dict[str, ActionDisplayMeta] = {
+    "calendar_list_events": ActionDisplayMeta(
         label="List events",
         output_description="Events in the window with id, summary, start/end, and location.",
     ),
-    "calendar_get_event": ActionMeta(
+    "calendar_get_event": ActionDisplayMeta(
         label="Get an event",
         output_description="Full event details: summary, time, attendees, and description.",
     ),
-    "calendar_create_event": ActionMeta(
+    "calendar_create_event": ActionDisplayMeta(
         label="Create an event",
         output_description="Confirmation with the new event's id and link.",
     ),
-    "calendar_update_event": ActionMeta(
+    "calendar_update_event": ActionDisplayMeta(
         label="Update an event",
         output_description="Confirmation the event was updated.",
     ),
-    "calendar_delete_event": ActionMeta(
+    "calendar_delete_event": ActionDisplayMeta(
         label="Delete an event",
         output_description="Confirmation the event was deleted.",
     ),
@@ -435,7 +400,6 @@ class CalendarIntegration(GoogleOAuthIntegration):
 
     logo_url = "https://cdn.simpleicons.org/googlecalendar"
     connect_mode = "oauth"
-    setup = GOOGLE_SETUP
     action_meta = CALENDAR_ACTION_META
 
     tool_key = "calendar"

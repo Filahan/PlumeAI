@@ -27,6 +27,45 @@ from app.tools.base import TIMEOUT_SECONDS, ToolResult
 
 ToolFn = Callable[["GoogleOAuthIntegration", dict[str, Any], AsyncSession], Awaitable[ToolResult]]
 
+# Setup guide shared by every Google integration (ported from the frontend's formerly
+# hardcoded apps/web/src/lib/tools/registry-client.ts). One OAuth client, registered
+# once, unlocks Gmail, Drive, Calendar, and any future Google API.
+GOOGLE_SETUP: dict[str, Any] = {
+    "intro": (
+        "Uses Google OAuth — set up the OAuth client once, share it across every "
+        "Google integration."
+    ),
+    "steps": [
+        {
+            "title": "Create an OAuth client in Google Cloud Console",
+            "description": (
+                'Pick "Web application" as the type. Reuse an existing client if you have one.'
+            ),
+            "link": {
+                "label": "Open Credentials",
+                "url": "https://console.cloud.google.com/apis/credentials",
+            },
+        },
+        {
+            "title": 'Add this URL to your OAuth client\'s "Authorized redirect URIs"',
+            "copy": {
+                "label": "Authorized redirect URI",
+                "value": "__ORIGIN__/api/tools/google/oauth/callback",
+            },
+        },
+        {
+            "title": (
+                "Paste the generated Client ID and Client Secret into the Credentials "
+                "section above"
+            ),
+            "description": (
+                "One credential pair unlocks Gmail, Drive, Calendar, and every future "
+                "Google integration."
+            ),
+        },
+    ],
+}
+
 
 class GoogleOAuthIntegration(Integration):
     """Concrete base: handles the Google OAuth handshake + authed fetch + dispatch."""
@@ -36,6 +75,10 @@ class GoogleOAuthIntegration(Integration):
     # (Calendar, Sheets, …) plugs in for free. The integration name travels through the
     # OAuth `state` param so the callback knows which integration is being authorized.
     callback_path: ClassVar[str] = "/api/tools/google/oauth/callback"
+
+    # Setup guide shared by every Google integration; subclasses only add their own
+    # `logo_url` and `action_meta`.
+    setup: ClassVar[dict[str, Any]] = GOOGLE_SETUP
 
     # App-level credentials (set once by the operator via the Tools UI), shared by all
     # Google integrations.

@@ -43,7 +43,7 @@ STATE_TTL_SECONDS = 600
 # ─── Catalog ──────────────────────────────────────────────────────────────────────────
 
 
-@router.get("", response_model=CatalogResponse, response_model_by_alias=True)
+@router.get("", response_model=CatalogResponse)
 async def get_tools_catalog(user: CurrentUser, session: DBSession) -> CatalogResponse:
     """Every registered integration (with live connection status) + the builtin tools.
     Single source of truth for the frontend's tool/integration catalog."""

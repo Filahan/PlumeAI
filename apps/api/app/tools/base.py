@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import ipaddress
 import socket
 from collections.abc import Callable, Coroutine
@@ -36,6 +37,78 @@ class ToolFn(Protocol):
     """Async signature shared by all tool implementations."""
 
     async def __call__(self, args: dict[str, Any]) -> ToolResult: ...
+
+
+# ───────────────────── catalog / display metadata ─────────────────────
+#
+# Lives here (the lower layer) rather than in `app.integrations.base` so that
+# `app.tools.builtin` — which sits below `app.integrations` in the dependency graph —
+# can describe its own actions without importing from `app.integrations`.
+
+BUILTIN_INTEGRATION = "builtin"
+
+
+@dataclass(frozen=True)
+class CatalogAction:
+    """Catalog-ready descriptor for one action (tool function), whether it comes from
+    a first-party integration or a builtin tool. Returned by `describe_action`,
+    `Integration.describe_actions`, and `describe_builtin_actions`.
+
+    Structurally compatible (by duck typing) with the `ActionMeta` dataclass
+    `app.services.documents` expects from its `ActionCatalog` protocol: same
+    `name, integration, label, description, input_schema` fields, plus two extra
+    display-only fields that module never reads.
+    """
+
+    name: str
+    integration: str
+    label: str
+    description: str
+    input_schema: dict[str, Any]
+    output_description: str = ""
+    output_schema: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ActionDisplayMeta:
+    """Hand-written, human-facing metadata for one action. Keyed by function name in
+    `Integration.action_meta` / `BUILTIN_ACTION_META`. Falls back to a humanized
+    function name when an action has no entry (see `_humanize`)."""
+
+    label: str
+    output_description: str = ""
+    output_schema: dict[str, Any] | None = None
+
+
+def _humanize(name: str) -> str:
+    """Fallback label for an action with no `ActionDisplayMeta` entry, e.g.
+    `gmail_search` → `Gmail search`."""
+    return name.replace("_", " ").capitalize()
+
+
+def describe_action(
+    schema: dict[str, Any], integration: str, action_meta: dict[str, ActionDisplayMeta]
+) -> CatalogAction:
+    """Turn one OpenAI function-calling schema into a `CatalogAction`. Shared by
+    `Integration.describe_actions` and `describe_builtin_actions` so both produce the
+    exact same shape.
+
+    `input_schema` is deep-copied so the returned catalog entry never shares a mutable
+    reference with the live schema handed to the LLM.
+    """
+
+    fn = schema["function"]
+    name = fn["name"]
+    meta = action_meta.get(name)
+    return CatalogAction(
+        name=name,
+        integration=integration,
+        label=meta.label if meta else _humanize(name),
+        description=fn.get("description", ""),
+        input_schema=copy.deepcopy(fn.get("parameters", {})),
+        output_description=meta.output_description if meta else "",
+        output_schema=meta.output_schema if meta else None,
+    )
 
 
 def cap(text: str) -> str:
