@@ -1,8 +1,7 @@
 /** Typed fetch client for the FastAPI backend.
  *
- *  All endpoints sit behind the nginx reverse proxy at `/api/*`. Same-origin cookies are
- *  forwarded automatically (the JWT session cookie set by `POST /api/auth/login`), so
- *  there's nothing to wire — just call these functions.
+ *  All endpoints sit behind the nginx reverse proxy at `/api/*`. There is no login —
+ *  the app is single-user and trusts whoever can reach it — so just call these functions.
  */
 
 const BASE = '/api';

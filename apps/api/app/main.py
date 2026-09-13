@@ -14,7 +14,6 @@ from app.db.base import get_engine
 from app.errors import register_handlers
 from app.logging import configure_logging, get_logger
 from app.middleware import RequestLoggingMiddleware
-from app.routers import auth as auth_router
 from app.routers import automations as automations_router
 from app.routers import chat as chat_router
 from app.routers import conversations as conversations_router
@@ -79,7 +78,6 @@ async def healthcheck() -> dict[str, str]:
 
 
 app.include_router(health)
-app.include_router(auth_router.router)
 app.include_router(settings_router.router)
 app.include_router(chat_router.router)
 app.include_router(tools_router.router)

@@ -16,7 +16,6 @@ dependencies = [
   "alembic>=1.14",
   "httpx>=0.27",
   "cryptography>=43",
-  "pyjwt>=2.9",
   "openai>=1.55",
   "anthropic>=0.40",
 ]

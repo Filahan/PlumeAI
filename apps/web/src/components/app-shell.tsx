@@ -1,17 +1,10 @@
 'use client';
 
 import { ReactNode, useState, useEffect, useCallback } from 'react';
-import { LogOut } from 'lucide-react';
 import { useConversationsStore, useSettingsStore } from '@/lib/store-provider';
 import { NavRail, ConversationListPanel } from '@/components/sidebar';
 
 const SIDEBAR_OPEN_KEY = 'webui-sidebar-open';
-
-async function signOut() {
-  await fetch('/api/auth/logout', { method: 'POST' });
-  // Cookie cleared → middleware will redirect to /login on the next request.
-  window.location.replace('/');
-}
 
 interface AppShellProps {
   /** The currently-active conversation id, or null when not on a conversation route. */
@@ -64,15 +57,6 @@ export default function AppShell({ currentId, onSelect, onNewChat, onDelete, lef
         />
       ))}
       <main className="relative flex-1 flex flex-col min-w-0 overflow-hidden">
-        <button
-          type="button"
-          onClick={signOut}
-          aria-label="Sign out"
-          className="absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-[12px] font-medium text-[color:var(--muted-foreground)] hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)] transition-colors"
-        >
-          <LogOut size={14} strokeWidth={1.75} />
-          Sign out
-        </button>
         {children}
       </main>
     </div>

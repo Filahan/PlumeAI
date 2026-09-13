@@ -28,12 +28,12 @@ PlumeAI is a self-hosted alternative to ChatGPT/Claude. Bring your own keys (Ope
 
 ```bash
 docker compose up -d
-open http://localhost:3000   # default password: admin
+open http://localhost:3000
 ```
 
 That's it. Add your provider key in Settings, configure integrations on the Tools page, start chatting.
 
-For production, copy `.env.example` → `.env` and rotate `AUTH_SECRET`, `ENCRYPTION_KEY`, `ADMIN_PASSWORD_HASH`.
+For production, copy `.env.example` → `.env` and rotate `ENCRYPTION_KEY`. There is no login page: PlumeAI trusts whoever can reach it, so keep it on a private network or behind your own reverse-proxy auth.
 
 ## Features
 

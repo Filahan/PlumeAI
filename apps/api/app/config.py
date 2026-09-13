@@ -16,18 +16,12 @@ class Settings(BaseSettings):
     # Postgres
     database_url: str = Field(..., alias="DATABASE_URL")
 
-    # JWT + cookie session
-    auth_secret: str = Field(..., alias="AUTH_SECRET")
-    admin_password_hash: str = Field(..., alias="ADMIN_PASSWORD_HASH")
-    session_cookie_name: str = "plumeai_session"
-    session_lifetime_seconds: int = 30 * 24 * 60 * 60  # 30 days
-
     # Crypto
     encryption_key_b64: str = Field(..., alias="ENCRYPTION_KEY")
 
     # Public frontend URL. OAuth callback URIs are anchored on this so the user always
-    # comes back through the nginx proxy (which sets the session cookie), regardless of
-    # how `gmail_oauth_start` was reached internally.
+    # comes back through the nginx proxy, regardless of how `gmail_oauth_start` was
+    # reached internally.
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
 
     # App

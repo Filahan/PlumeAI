@@ -41,7 +41,7 @@ PlumeAI is a **single-tenant, self-hosted** assistant. It is not designed for mu
 SaaS hosting. Its threat model focuses on:
 
 - Operator credentials at rest (provider keys, OAuth tokens, bot tokens) — encrypted AES-GCM with `ENCRYPTION_KEY`.
-- Session cookies — JWT HS256, `HttpOnly`, `SameSite=Lax`, `Secure` in non-dev.
+- No built-in login. The app is single-user and trusts the network: expose it only on a private network or behind reverse-proxy authentication.
 - SSRF — `app/tools/base.py:assert_public_url` blocks private/loopback/link-local before any user-controlled fetch.
 - OAuth CSRF — random `state` cookie verified on callback (Google integrations).
 
@@ -49,10 +49,10 @@ SaaS hosting. Its threat model focuses on:
 
 | # | Severity | Area | Finding | Status |
 | --- | --- | --- | --- | --- |
-| 1 | **High** | Auth | Admin password hashed with raw SHA-256 (no salt, no work factor). GPU brute-force is feasible on short passwords. | Open — recommend migration to argon2/bcrypt. Mitigated in practice by `AUTH_SECRET` rotation + admin-only access. |
-| 2 | Low | Docker compose | `docker-compose.yml` provides dev-safe fallbacks for `AUTH_SECRET`, `ENCRYPTION_KEY`, `ADMIN_PASSWORD_HASH`. | Acceptable — documented in `.env.example`. Production deployments must override via `.env`. |
+| 1 | — | Auth | Admin password hashed with raw SHA-256 (no salt, no work factor). | Closed — the password login was removed entirely (2026-09-13). Access control is delegated to the network / reverse proxy. |
+| 2 | Low | Docker compose | `docker-compose.yml` provides a dev-safe fallback for `ENCRYPTION_KEY`. | Acceptable — documented in `.env.example`. Production deployments must override via `.env`. |
 | 3 | Info | Error handling | Unhandled errors log full stack traces server-side but expose only a generic message + `request_id` to the client. | OK |
-| 4 | Info | Cookies | Session cookie uses `HttpOnly=True`, `SameSite=Lax`, `Secure` when `APP_ENV != "dev"`. | OK |
+| 4 | — | Cookies | Session cookie hardening. | N/A — no session cookie since the login removal. |
 | 5 | Info | SSRF | All user-controlled URLs (`web_fetch`, `http`) pass through `assert_public_url`. | OK |
 | 6 | Info | XSS | Markdown rendered with `react-markdown` defaults — raw HTML disabled, no `dangerouslySetInnerHTML`. | OK |
 | 7 | Info | CORS | No `CORSMiddleware` configured — frontend served behind the same nginx, same-origin requests only. | OK for the current architecture. Add strict CORS if exposing the API cross-origin. |
@@ -62,7 +62,7 @@ SaaS hosting. Its threat model focuses on:
 
 ## Recommended next steps (out of scope of this PR)
 
-- Migrate admin password hashing from SHA-256 to **argon2id** via `passlib[argon2]`. Single function swap in `app/auth.py:check_admin_password`. Existing hashes become invalid → user re-sets password on first login.
+- If the deployment must be reachable from an untrusted network, put an authenticating reverse proxy (e.g. Authelia, oauth2-proxy, Cloudflare Access) in front of nginx. `app/auth.py:get_current_user` is the single hook point if an in-app auth layer is ever reintroduced.
 
 ## Reporting a vulnerability
 
