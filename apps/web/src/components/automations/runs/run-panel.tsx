@@ -1,21 +1,26 @@
 'use client';
 
 import { AlertCircle, ChevronDown, X } from 'lucide-react';
-import { useAutomationsStore, useCurrentAutomation } from '@/lib/automations/store';
+import { useAutomationsStore, useEditorRuns } from '@/lib/automations/store';
 import { formatDuration, relativePast, statusDot } from '@/lib/automations/format';
 import ExecutionsOverview from '@/components/executions-overview';
 import RunStepRow from '@/components/automations/runs/run-step-row';
 
 /** Bottom drawer of the editor: run history on the left, the selected run's steps on
  *  the right. Everything comes from the store, including the live updates of whichever
- *  run is streaming. */
+ *  run is streaming.
+ *
+ *  This is the one container that *should* re-render on every `step_text` delta, so it
+ *  selects `activeRun` deliberately — and nothing else from `current`, so the rest of
+ *  the editor stays still. */
 export default function RunPanel() {
-  const current = useCurrentAutomation();
+  const open = useAutomationsStore((s) => s.current?.runPanelOpen ?? false);
+  const runs = useEditorRuns();
+  const activeRunId = useAutomationsStore((s) => s.current?.activeRunId ?? null);
+  const activeRun = useAutomationsStore((s) => s.current?.activeRun ?? null);
   const selectRun = useAutomationsStore((s) => s.selectRun);
   const setRunPanelOpen = useAutomationsStore((s) => s.setRunPanelOpen);
-  if (!current || !current.runPanelOpen) return null;
-
-  const { runs, activeRunId, activeRun } = current;
+  if (!open) return null;
 
   return (
     <section className="h-[280px] shrink-0 border-t border-[color:var(--border)] bg-[color:var(--surface-muted)]/40 flex flex-col">

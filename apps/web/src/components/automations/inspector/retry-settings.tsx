@@ -8,20 +8,29 @@ import { useStepPatch } from './use-step-patch';
 /** Mirrors the backend defaults (`app.schemas.documents.RetryPolicy`). */
 const DEFAULT_RETRY: RetryPolicy = { max_attempts: 3, backoff_seconds: 10 };
 
-function clamp(text: string, min: number, max: number, fallback: number): number {
-  const parsed = Number(text.trim());
+/** Read a number the user has finished typing.
+ *
+ *  Blank (or nonsense) keeps `fallback` — the value already on the step — rather than
+ *  snapping to `min`, which is what the old per-keystroke version did: clearing the box
+ *  to retype "5" committed `Number('') === 0` first and the field jumped to 1. */
+function commitNumber(text: string, min: number, max: number, fallback: number): number {
+  const trimmed = text.trim();
+  if (trimmed === '') return fallback;
+  const parsed = Number(trimmed);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.round(parsed)));
 }
 
-/** Retry and timeout, folded away because most automations never touch them. */
+/** Retry and timeout, folded away because most automations never touch them.
+ *
+ *  Every field here commits on blur/Enter only: these are three small numbers, and a
+ *  round trip per keystroke buys nothing but a fight with the caret. */
 export default function RetrySettings({ step }: { step: AutomationStep }) {
-  const { patchStepDebounced, flushStep } = useStepPatch();
+  const { patchStep } = useStepPatch();
   const retry = step.retry ?? DEFAULT_RETRY;
   const timeout = step.timeout_seconds ?? null;
 
-  const setRetry = (next: RetryPolicy) =>
-    patchStepDebounced(step.id, 'retry', { retry: next });
+  const setRetry = (next: RetryPolicy) => patchStep(step.id, { retry: next });
 
   return (
     <details className="group rounded-xl border border-[color:var(--border)] px-3 py-2">
@@ -35,10 +44,10 @@ export default function RetrySettings({ step }: { step: AutomationStep }) {
           label="Tries before giving up"
           hint="Counting the first attempt."
           value={String(retry.max_attempts)}
-          onChange={(text) =>
-            setRetry({ ...retry, max_attempts: clamp(text, 1, 10, DEFAULT_RETRY.max_attempts) })
-          }
-          onFlush={() => flushStep(step.id, 'retry')}
+          onCommit={(text) => {
+            const next = commitNumber(text, 1, 10, retry.max_attempts);
+            if (next !== retry.max_attempts) setRetry({ ...retry, max_attempts: next });
+          }}
           min={1}
           max={10}
         />
@@ -46,13 +55,10 @@ export default function RetrySettings({ step }: { step: AutomationStep }) {
           label="Wait between tries"
           hint="Seconds. Doubles after each failure."
           value={String(retry.backoff_seconds)}
-          onChange={(text) =>
-            setRetry({
-              ...retry,
-              backoff_seconds: clamp(text, 0, 300, DEFAULT_RETRY.backoff_seconds),
-            })
-          }
-          onFlush={() => flushStep(step.id, 'retry')}
+          onCommit={(text) => {
+            const next = commitNumber(text, 0, 300, retry.backoff_seconds);
+            if (next !== retry.backoff_seconds) setRetry({ ...retry, backoff_seconds: next });
+          }}
           min={0}
           max={300}
         />
@@ -60,12 +66,12 @@ export default function RetrySettings({ step }: { step: AutomationStep }) {
           label="Give up after"
           hint="Seconds for one attempt. Empty means no limit."
           value={timeout === null ? '' : String(timeout)}
-          onChange={(text) =>
-            patchStepDebounced(step.id, 'timeout_seconds', {
-              timeout_seconds: text.trim() === '' ? null : clamp(text, 1, 3600, 60),
-            })
-          }
-          onFlush={() => flushStep(step.id, 'timeout_seconds')}
+          onCommit={(text) => {
+            // The one field where blank is a real answer, so it clears the timeout
+            // instead of keeping what was there.
+            const next = text.trim() === '' ? null : commitNumber(text, 1, 3600, timeout ?? 60);
+            if (next !== timeout) patchStep(step.id, { timeout_seconds: next });
+          }}
           min={1}
           max={3600}
         />
@@ -78,16 +84,15 @@ function Row({
   label,
   hint,
   value,
-  onChange,
-  onFlush,
+  onCommit,
   min,
   max,
 }: {
   label: string;
   hint: string;
   value: string;
-  onChange(text: string): void;
-  onFlush(): void;
+  /** Blur or Enter, with whatever text the box holds. */
+  onCommit(text: string): void;
   min: number;
   max: number;
 }) {
@@ -104,8 +109,8 @@ function Row({
           max={max}
           value={value}
           aria-label={label}
-          onChange={onChange}
-          onFlush={() => onFlush()}
+          onChange={() => {}}
+          onFlush={onCommit}
         />
       </div>
     </div>

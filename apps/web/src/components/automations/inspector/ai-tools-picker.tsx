@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, type ReactNode } from 'react';
 import { Check, ChevronRight } from 'lucide-react';
 import { useCatalog } from '@/lib/automations/store';
 import { BUILTIN_INTEGRATION, type CatalogAction } from '@/lib/automations/types';
@@ -56,26 +57,26 @@ export default function AiToolsPicker({
       {groups.map((group) => {
         const count = group.actions.filter((a) => selected.includes(a.name)).length;
         return (
-          <details
+          <GroupDetails
             key={group.name}
-            open={count > 0}
-            className="group rounded-xl border border-[color:var(--border)] px-2.5 py-1.5"
+            defaultOpen={count > 0}
+            summary={
+              <>
+                <ChevronRight
+                  size={11}
+                  strokeWidth={2}
+                  className="shrink-0 text-[color:var(--muted-foreground)] transition-transform group-open:rotate-90"
+                />
+                <span className="font-medium truncate">{group.label}</span>
+                {!group.connected && (
+                  <span className="text-[10px] text-[#b45309] shrink-0">not connected</span>
+                )}
+                <span className="ml-auto shrink-0 text-[10px] tabular-nums text-[color:var(--muted-foreground)]">
+                  {count > 0 ? `${count} on` : `${group.actions.length}`}
+                </span>
+              </>
+            }
           >
-            <summary className="flex items-center gap-1.5 cursor-pointer list-none text-[12px]">
-              <ChevronRight
-                size={11}
-                strokeWidth={2}
-                className="shrink-0 text-[color:var(--muted-foreground)] transition-transform group-open:rotate-90"
-              />
-              <span className="font-medium truncate">{group.label}</span>
-              {!group.connected && (
-                <span className="text-[10px] text-[#b45309] shrink-0">not connected</span>
-              )}
-              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-[color:var(--muted-foreground)]">
-                {count > 0 ? `${count} on` : `${group.actions.length}`}
-              </span>
-            </summary>
-
             <div className="mt-1 space-y-0.5">
               {group.actions.map((action) => {
                 const on = selected.includes(action.name);
@@ -110,9 +111,37 @@ export default function AiToolsPicker({
                 );
               })}
             </div>
-          </details>
+          </GroupDetails>
         );
       })}
     </div>
+  );
+}
+
+/** `open` on a `<details>` is a *controlled* attribute: driving it from the selection
+ *  count meant the group sprang back open the moment the user collapsed it (and the last
+ *  tool they unticked slammed it shut). The count only decides the initial state now. */
+function GroupDetails({
+  defaultOpen,
+  summary,
+  children,
+}: {
+  defaultOpen: boolean;
+  summary: ReactNode;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="group rounded-xl border border-[color:var(--border)] px-2.5 py-1.5"
+    >
+      <summary className="flex items-center gap-1.5 cursor-pointer list-none text-[12px]">
+        {summary}
+      </summary>
+      {children}
+    </details>
   );
 }

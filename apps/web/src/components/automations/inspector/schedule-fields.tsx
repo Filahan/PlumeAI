@@ -10,12 +10,16 @@ import {
 } from '@/components/ui/select';
 import LabeledField from './labeled-field';
 import { TextField } from './text-field';
+import TimezonePicker from './timezone-picker';
 import { browserTimezone, parseCronPreset } from './next-runs';
 
 export type Preset = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'custom';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const HOURS = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+const HOURS = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+/** Quarter hours. `parseCronPreset` reads any minute, so a hand-written `07 9 * * *`
+ *  still displays correctly — it just isn't one of the offered choices. */
+const MINUTES = [0, 15, 30, 45];
 
 const PRESET_LABELS: Record<Preset, string> = {
   hourly: 'Every hour',
@@ -34,17 +38,24 @@ export function presetOf(cron: string): Preset {
   return shape.dows.length === 5 ? 'weekdays' : 'weekly';
 }
 
-export function buildCron(preset: Preset, hour: number, day: number): string {
+/** The minute is threaded through rather than pinned to 0: `parseCronPreset` accepts any
+ *  minute, so hardcoding it here made the form show 09:00 for `30 9 * * *` and then
+ *  silently rewrite the schedule on the next unrelated change. */
+export function buildCron(preset: Preset, hour: number, minute: number, day: number): string {
   switch (preset) {
     case 'hourly':
-      return '0 * * * *';
+      return `${minute} * * * *`;
     case 'weekdays':
-      return `0 ${hour} * * 1-5`;
+      return `${minute} ${hour} * * 1-5`;
     case 'weekly':
-      return `0 ${hour} * * ${day}`;
+      return `${minute} ${hour} * * ${day}`;
     default:
-      return `0 ${hour} * * *`;
+      return `${minute} ${hour} * * *`;
   }
+}
+
+function timeLabel(hour: number, minute: number): string {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
 /** The cron half of the trigger form: a preset, its time, and the timezone it means. */
@@ -69,7 +80,19 @@ export default function ScheduleFields({
   const preset = presetOf(cron);
   const shape = parseCronPreset(cron);
   const hour = shape?.hour ?? 9;
+  const minute = shape?.minute ?? 0;
   const day = shape?.dows?.[0] ?? 1;
+
+  const rewrite = (next: Partial<{ preset: Preset; hour: number; minute: number; day: number }>) =>
+    onChange(
+      buildCron(
+        next.preset ?? preset,
+        next.hour ?? hour,
+        next.minute ?? minute,
+        next.day ?? day
+      ),
+      timezone
+    );
 
   return (
     <div className="space-y-2.5">
@@ -78,10 +101,10 @@ export default function ScheduleFields({
           value={preset}
           onValueChange={(next) => {
             if (typeof next !== 'string' || next === 'custom') return;
-            onChange(buildCron(next as Preset, hour, day), timezone);
+            rewrite({ preset: next as Preset });
           }}
         >
-          <Trigger label="How often">{PRESET_LABELS[preset]}</Trigger>
+          <PresetTrigger label="How often">{PRESET_LABELS[preset]}</PresetTrigger>
           <SelectContent className="rounded-xl">
             {(Object.keys(PRESET_LABELS) as Preset[]).map((p) => (
               <SelectItem key={p} value={p} className="text-[13px]" disabled={p === 'custom'}>
@@ -97,10 +120,10 @@ export default function ScheduleFields({
           <Select
             value={String(day)}
             onValueChange={(next) => {
-              if (typeof next === 'string') onChange(buildCron('weekly', hour, Number(next)), timezone);
+              if (typeof next === 'string') rewrite({ preset: 'weekly', day: Number(next) });
             }}
           >
-            <Trigger label="Day of the week">{DAYS[day] ?? DAYS[1]}</Trigger>
+            <PresetTrigger label="Day of the week">{DAYS[day] ?? DAYS[1]}</PresetTrigger>
             <SelectContent className="rounded-xl">
               {DAYS.map((name, index) => (
                 <SelectItem key={name} value={String(index)} className="text-[13px]">
@@ -112,19 +135,24 @@ export default function ScheduleFields({
         </LabeledField>
       )}
 
-      {preset !== 'hourly' && preset !== 'custom' && (
-        <LabeledField label="Time">
+      {preset === 'hourly' && (
+        <LabeledField
+          label="At minute"
+          hint={`Every hour, ${minute} ${minute === 1 ? 'minute' : 'minutes'} past the hour.`}
+        >
           <Select
-            value={String(hour)}
+            value={String(minute)}
             onValueChange={(next) => {
-              if (typeof next === 'string') onChange(buildCron(preset, Number(next), day), timezone);
+              if (typeof next === 'string') rewrite({ minute: Number(next) });
             }}
           >
-            <Trigger label="Time of day">{HOURS[hour] ?? '09:00'}</Trigger>
-            <SelectContent className="rounded-xl max-h-[240px]">
-              {HOURS.map((text, index) => (
-                <SelectItem key={text} value={String(index)} className="text-[13px]">
-                  {text}
+            <PresetTrigger label="Minutes past the hour">
+              {String(minute).padStart(2, '0')}
+            </PresetTrigger>
+            <SelectContent className="rounded-xl">
+              {MINUTES.map((m) => (
+                <SelectItem key={m} value={String(m)} className="text-[13px]">
+                  {String(m).padStart(2, '0')}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -132,44 +160,81 @@ export default function ScheduleFields({
         </LabeledField>
       )}
 
+      {preset !== 'hourly' && preset !== 'custom' && (
+        <LabeledField label="Time" hint={`Runs at ${timeLabel(hour, minute)}.`}>
+          <div className="flex items-center gap-1.5">
+            <Select
+              value={String(hour)}
+              onValueChange={(next) => {
+                if (typeof next === 'string') rewrite({ hour: Number(next) });
+              }}
+            >
+              <PresetTrigger label="Hour of the day">
+                {HOURS[hour] ?? HOURS[9]}
+              </PresetTrigger>
+              <SelectContent className="rounded-xl max-h-[240px]">
+                {HOURS.map((text, index) => (
+                  <SelectItem key={text} value={String(index)} className="text-[13px]">
+                    {text}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="shrink-0 text-[13px] text-[color:var(--muted-foreground)]">:</span>
+            <Select
+              value={String(minute)}
+              onValueChange={(next) => {
+                if (typeof next === 'string') rewrite({ minute: Number(next) });
+              }}
+            >
+              <PresetTrigger label="Minutes past the hour">
+                {String(minute).padStart(2, '0')}
+              </PresetTrigger>
+              <SelectContent className="rounded-xl">
+                {MINUTES.map((m) => (
+                  <SelectItem key={m} value={String(m)} className="text-[13px]">
+                    {String(m).padStart(2, '0')}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </LabeledField>
+      )}
+
       <LabeledField
         label="Cron expression"
         hint="Five fields: minute, hour, day of month, month, weekday."
       >
-        <TextField
-          value={cron}
-          aria-label="Cron expression"
-          className="font-mono text-[12px] md:text-[12px]"
-          onChange={() => {}}
-          onFlush={(text) => {
-            const trimmed = text.trim();
-            if (trimmed.length > 0 && trimmed !== cron) onChange(trimmed, timezone);
-          }}
-        />
+        {(controlId) => (
+          <TextField
+            id={controlId}
+            value={cron}
+            className="font-mono text-[12px] md:text-[12px]"
+            onChange={() => {}}
+            onFlush={(text) => {
+              const trimmed = text.trim();
+              if (trimmed.length > 0 && trimmed !== cron) onChange(trimmed, timezone);
+            }}
+          />
+        )}
       </LabeledField>
 
       <LabeledField label="Timezone">
-        <Select
-          value={timezone}
-          onValueChange={(next) => {
-            if (typeof next === 'string') onChange(cron, next);
-          }}
-        >
-          <Trigger label="Timezone">{timezone}</Trigger>
-          <SelectContent className="rounded-xl max-h-[240px]">
-            {timezones.map((zone) => (
-              <SelectItem key={zone} value={zone} className="text-[13px]">
-                {zone}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {(controlId) => (
+          <TimezonePicker
+            id={controlId}
+            value={timezone}
+            zones={timezones}
+            onChange={(next) => onChange(cron, next)}
+          />
+        )}
       </LabeledField>
     </div>
   );
 }
 
-function Trigger({ label, children }: { label: string; children: ReactNode }) {
+function PresetTrigger({ label, children }: { label: string; children: ReactNode }) {
   return (
     <SelectTrigger
       aria-label={label}

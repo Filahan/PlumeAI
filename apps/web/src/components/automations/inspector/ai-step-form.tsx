@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { AiOutput, AiStep } from '@/lib/automations/types';
 import AiToolsPicker from './ai-tools-picker';
 import JsonSchemaBuilder from './json-schema-builder';
@@ -21,11 +21,17 @@ export default function AiStepForm({ step }: { step: AiStep }) {
   const { patchStep, patchStepDebounced, flushStep } = useStepPatch();
   const settings = step.settings;
   const instructionsRef = useRef<HTMLTextAreaElement | null>(null);
+  const [emptyInstructions, setEmptyInstructions] = useState(false);
 
   const setInstructions = (text: string, debounced: boolean) => {
     // The schema demands a non-empty instruction: an emptied box stays local until the
-    // user types something the API will accept.
-    if (text.trim().length === 0) return;
+    // user types something the API will accept — and says so, because "typed nothing,
+    // nothing saved, no explanation" reads as a broken field.
+    if (text.trim().length === 0) {
+      setEmptyInstructions(true);
+      return;
+    }
+    setEmptyInstructions(false);
     const patch = { settings: { instructions: text } };
     if (debounced) patchStepDebounced(step.id, 'instructions', patch);
     else patchStep(step.id, patch);
@@ -47,16 +53,23 @@ export default function AiStepForm({ step }: { step: AiStep }) {
         label="What should the AI do?"
         hint="Write it as an instruction. Add values from earlier steps with the button below."
       >
-        <TextAreaField
-          rows={6}
-          inputRef={instructionsRef}
-          value={settings.instructions}
-          placeholder="e.g. Summarise the emails above in three bullet points."
-          aria-label="AI instructions"
-          onChange={(next) => setInstructions(next, true)}
-          onFlush={() => flushStep(step.id, 'instructions')}
-        />
+        {(controlId) => (
+          <TextAreaField
+            id={controlId}
+            rows={6}
+            inputRef={instructionsRef}
+            value={settings.instructions}
+            placeholder="e.g. Summarise the emails above in three bullet points."
+            onChange={(next) => setInstructions(next, true)}
+            onFlush={() => flushStep(step.id, 'instructions')}
+          />
+        )}
       </LabeledField>
+      {emptyInstructions && (
+        <p className="text-[11px] text-[#D4183D]">
+          Instructions can&apos;t be empty — the last saved version is still in use.
+        </p>
+      )}
       <ReferencePicker
         beforeStepId={step.id}
         label="Insert a value from an earlier step"

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { ChevronRight, X } from 'lucide-react';
 import type { ActionStep, FieldValue } from '@/lib/automations/types';
+import { useAutomationsStore } from '@/lib/automations/store';
 import { useStepPatch } from '../use-step-patch';
 import FieldValueInput from './field-value-input';
 import { humanizeKey, literalKind, schemaFields, type JsonSchema, type SchemaField } from './schema';
@@ -23,13 +24,23 @@ export default function SchemaForm({
 }) {
   const { patchStep, patchStepDebounced, flushStep } = useStepPatch();
   const input = useMemo(() => step.settings.input ?? {}, [step.settings.input]);
+  const versionNumber = useAutomationsStore((s) => s.current?.versionNumber ?? 0);
 
   // The input map as this panel believes it to be, including edits whose round trip
   // hasn't come back yet — so a second edit builds on the first instead of erasing it.
+  //
+  // Reseeded only when the document actually moved forward (a *newer* version echoed
+  // back) or when the panel switched steps. Adopting every `input` identity would let
+  // an out-of-order echo — or a re-render carrying the pre-edit map — overwrite the
+  // draft that is waiting on its debounce.
   const latest = useRef(input);
+  const seen = useRef({ stepId: step.id, version: versionNumber });
   useEffect(() => {
-    latest.current = input;
-  }, [input]);
+    if (step.id !== seen.current.stepId || versionNumber > seen.current.version) {
+      seen.current = { stepId: step.id, version: versionNumber };
+      latest.current = input;
+    }
+  }, [input, step.id, versionNumber]);
 
   const commit = (name: string, next: FieldValue | undefined, debounced: boolean) => {
     const nextInput = { ...latest.current };
@@ -131,14 +142,17 @@ function FieldRow({
   return (
     <div className="space-y-1">
       <div className="flex items-baseline gap-1.5">
-        <label className="text-[12px] font-medium">
+        {/* A `<span>`, not a `<label>`: the row below is a mode toggle plus whichever
+            editor that mode needs, so there is no single control to point at. Each of
+            those carries `aria-label={field.label}` instead. */}
+        <span className="text-[12px] font-medium">
           {field.label}
           {field.required && (
             <span className="ml-0.5 text-[#D4183D]" title="Required">
               *
             </span>
           )}
-        </label>
+        </span>
         {onRemove && (
           <button
             type="button"

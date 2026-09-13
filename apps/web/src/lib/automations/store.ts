@@ -54,10 +54,16 @@ export interface CurrentAutomation {
 
   dirty: boolean;
   saving: boolean;
+  /** One short sentence for the banner. */
   saveError: string | null;
+  /** The server's own wording behind the banner's "Details" disclosure. */
+  saveErrorDetail: string | null;
 
   selection: Selection;
   mode: EditorMode;
+  /** Set when `setMode` would have to throw away an unsaved JSON draft: the header asks
+   *  first and the switch only happens through `confirmModeSwitch`. */
+  pendingModeSwitch: EditorMode | null;
   inspectorOpen: boolean;
   runPanelOpen: boolean;
   assistantOpen: boolean;
@@ -103,6 +109,8 @@ interface AutomationsActions {
 
   select(selection: Selection): void;
   setMode(mode: EditorMode): void;
+  confirmModeSwitch(): void;
+  cancelModeSwitch(): void;
   setInspectorOpen(open: boolean): void;
   toggleInspector(): void;
   setRunPanelOpen(open: boolean): void;
@@ -127,6 +135,23 @@ let validateTimer: ReturnType<typeof setTimeout> | null = null;
 let catalogPromise: Promise<void> | null = null;
 /** Guards against a stale `open()`/`selectRun()` response overwriting a newer one. */
 let openToken = 0;
+/** Document writes are serialized: two overlapping `POST /operations` calls would each
+ *  echo a whole document back, and whichever answered last would win — which is not
+ *  necessarily the newest edit. Everything chains here instead. */
+let writeQueue: Promise<unknown> = Promise.resolve();
+/** Stamp handed to each write as it is *issued*. A response is adopted only while its
+ *  stamp is still the newest, so a late echo can never revert a newer edit. */
+let writeStamp = 0;
+
+function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
+  // `then(task, task)` so one rejected write does not poison the queue behind it.
+  const run = writeQueue.then(task, task);
+  writeQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
 
 function stopRunStream(): void {
   if (runUnsubscribe) {
@@ -148,11 +173,19 @@ function errorMessage(e: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Issues attached to a 422 from `PUT /automations/{id}`. */
+/** Per-field problems the API attached to a rejected write. `ApiError` already
+ *  normalized the three possible envelopes (see `lib/api/client.ts`). */
 function issuesFromError(e: unknown): ValidationIssue[] | null {
   if (!(e instanceof ApiError)) return null;
-  const extra = e.problem?.extra as { issues?: ValidationIssue[] } | undefined;
-  return extra?.issues ?? null;
+  return e.issues.length > 0 ? e.issues : null;
+}
+
+/** The server's raw wording, kept out of the banner itself — a Pydantic `detail` is
+ *  often several lines long. */
+function errorDetail(e: unknown): string | null {
+  if (e instanceof ApiError) return e.detail || e.message || null;
+  if (e instanceof Error) return e.message || null;
+  return null;
 }
 
 export const useAutomationsStore = create<Store>((set, get) => {
@@ -254,8 +287,10 @@ export const useAutomationsStore = create<Store>((set, get) => {
             dirty: false,
             saving: false,
             saveError: null,
+            saveErrorDetail: null,
             selection: null,
             mode: 'design',
+            pendingModeSwitch: null,
             inspectorOpen: true,
             runPanelOpen: false,
             assistantOpen: false,
@@ -364,6 +399,7 @@ export const useAutomationsStore = create<Store>((set, get) => {
           document: doc,
           dirty: !documentsEqual(doc, cur.savedDocument),
           saveError: null,
+          saveErrorDetail: null,
         },
       });
       get().validateDraft();
@@ -393,59 +429,81 @@ export const useAutomationsStore = create<Store>((set, get) => {
     async applyOperations(ops) {
       const cur = get().current;
       if (!cur || ops.length === 0) return;
-      const id = cur.id;
-      patchCurrent(id, { saving: true, saveError: null });
-      try {
-        const res = await api.operations(id, ops);
-        cancelValidate();
-        patchCurrent(id, {
-          document: res.document,
-          savedDocument: res.document,
-          issues: res.issues,
-          versionNumber: res.versionNumber,
-          dirty: false,
-          saving: false,
-          saveError: null,
-        });
-        void get().loadList();
-      } catch (e) {
-        const issues = issuesFromError(e);
-        patchCurrent(id, {
-          saving: false,
-          saveError: errorMessage(e, 'The change was rejected'),
-          ...(issues ? { issues } : {}),
-        });
-        throw e;
+      if (cur.dirty) {
+        // A design-mode operation is computed against `savedDocument`; applying it on
+        // top of an unsaved JSON draft would silently throw that draft away.
+        console.warn('applyOperations ignored: the JSON draft has unsaved changes');
+        return;
       }
+      const id = cur.id;
+      const stamp = ++writeStamp;
+      patchCurrent(id, { saving: true, saveError: null, saveErrorDetail: null });
+      return enqueueWrite(async () => {
+        try {
+          const res = await api.operations(id, ops);
+          // A newer write was issued while this one was in flight — let its echo land.
+          if (stamp !== writeStamp) return;
+          cancelValidate();
+          patchCurrent(id, {
+            document: res.document,
+            savedDocument: res.document,
+            issues: res.issues,
+            versionNumber: res.versionNumber,
+            dirty: false,
+            saving: false,
+            saveError: null,
+            saveErrorDetail: null,
+          });
+          void get().loadList();
+        } catch (e) {
+          if (stamp === writeStamp) {
+            const issues = issuesFromError(e);
+            patchCurrent(id, {
+              saving: false,
+              saveError: "That change wasn't accepted.",
+              saveErrorDetail: errorDetail(e),
+              ...(issues ? { issues } : {}),
+            });
+          }
+          throw e;
+        }
+      });
     },
 
     async saveDocument() {
       const cur = get().current;
       if (!cur) return;
       const { id, document } = cur;
-      patchCurrent(id, { saving: true, saveError: null });
-      try {
-        const res = await api.put(id, document);
-        cancelValidate();
-        patchCurrent(id, {
-          document: res.document,
-          savedDocument: res.document,
-          issues: res.issues,
-          versionNumber: res.versionNumber,
-          dirty: false,
-          saving: false,
-          saveError: null,
-        });
-        void get().loadList();
-      } catch (e) {
-        // 422 → keep the draft (and its dirty flag) so the user can fix it in place.
-        const issues = issuesFromError(e);
-        patchCurrent(id, {
-          saving: false,
-          saveError: errorMessage(e, 'The document was rejected'),
-          ...(issues ? { issues } : {}),
-        });
-      }
+      const stamp = ++writeStamp;
+      patchCurrent(id, { saving: true, saveError: null, saveErrorDetail: null });
+      return enqueueWrite(async () => {
+        try {
+          const res = await api.put(id, document);
+          if (stamp !== writeStamp) return;
+          cancelValidate();
+          patchCurrent(id, {
+            document: res.document,
+            savedDocument: res.document,
+            issues: res.issues,
+            versionNumber: res.versionNumber,
+            dirty: false,
+            saving: false,
+            saveError: null,
+            saveErrorDetail: null,
+          });
+          void get().loadList();
+        } catch (e) {
+          if (stamp !== writeStamp) return;
+          // 422 → keep the draft (and its dirty flag) so the user can fix it in place.
+          const issues = issuesFromError(e);
+          patchCurrent(id, {
+            saving: false,
+            saveError: "That change wasn't accepted.",
+            saveErrorDetail: errorDetail(e),
+            ...(issues ? { issues } : {}),
+          });
+        }
+      });
     },
 
     // ── editor chrome ─────────────────────────────────────────────────────────────
@@ -459,7 +517,38 @@ export const useAutomationsStore = create<Store>((set, get) => {
     },
 
     setMode(mode) {
-      set((s) => (s.current ? { current: { ...s.current, mode } } : s));
+      const cur = get().current;
+      if (!cur || mode === cur.mode) return;
+      // Leaving JSON mode with an unsaved draft means losing it. Ask in the header
+      // rather than discarding it (or, worse, carrying it into design mode where the
+      // next operation would be computed against a document the server never saw).
+      if (mode === 'design' && cur.dirty) {
+        patchCurrent(cur.id, { pendingModeSwitch: mode });
+        return;
+      }
+      patchCurrent(cur.id, { mode, pendingModeSwitch: null });
+    },
+
+    confirmModeSwitch() {
+      const cur = get().current;
+      if (!cur?.pendingModeSwitch) return;
+      cancelValidate();
+      patchCurrent(cur.id, {
+        mode: cur.pendingModeSwitch,
+        document: cur.savedDocument,
+        dirty: false,
+        saveError: null,
+        saveErrorDetail: null,
+        pendingModeSwitch: null,
+      });
+      // The issues on screen were computed against the draft we just dropped.
+      get().validateDraft();
+    },
+
+    cancelModeSwitch() {
+      const cur = get().current;
+      if (!cur) return;
+      patchCurrent(cur.id, { pendingModeSwitch: null });
     },
 
     setInspectorOpen(open) {
@@ -512,25 +601,38 @@ export const useAutomationsStore = create<Store>((set, get) => {
         patchCurrent(
           id,
           e instanceof ApiError && e.status === 409
-            ? { saveError: 'A run is already in progress.' }
-            : { saveError: errorMessage(e, 'Failed to start run') }
+            ? { saveError: 'A run is already in progress.', saveErrorDetail: null }
+            : {
+                saveError: errorMessage(e, 'Failed to start run'),
+                saveErrorDetail: errorDetail(e),
+              }
         );
         throw e;
       }
     },
 
+    /** Cancels whichever run is actually live — not `activeRunId`, which is just the
+     *  row the run panel happens to be showing (the newest run on open, or whatever the
+     *  user last clicked). Those are the same run most of the time and confusingly
+     *  different exactly when it matters. */
     async cancelRun() {
       const cur = get().current;
-      if (!cur?.activeRunId) return;
-      const { id, activeRunId } = cur;
+      if (!cur) return;
+      const target = cur.runs.find((r) => isRunActive(r.status));
+      if (!target) return;
+      const { id } = cur;
+      const runId = target.id;
       try {
-        await api.cancelRun(id, activeRunId);
+        await api.cancelRun(id, runId);
       } catch (e) {
-        patchCurrent(id, { saveError: errorMessage(e, 'Failed to cancel run') });
+        patchCurrent(id, {
+          saveError: errorMessage(e, 'Failed to cancel run'),
+          saveErrorDetail: errorDetail(e),
+        });
         return;
       }
       await get().refreshRuns();
-      if (get().current?.activeRunId === activeRunId) await get().selectRun(activeRunId);
+      if (get().current?.activeRunId === runId) await get().selectRun(runId);
     },
 
     async selectRun(runId) {
@@ -582,9 +684,28 @@ export const useAutomationsStore = create<Store>((set, get) => {
 
 // ─── Selector hooks ─────────────────────────────────────────────────────────────────
 
-/** The automation currently open in the editor, or null. */
+/** Stable empties, so a field selector never hands zustand a fresh array (which would
+ *  re-render on every store write, and warn in development). */
+const NO_ISSUES: ValidationIssue[] = [];
+const NO_RUNS: RunSummary[] = [];
+
+/** The automation currently open in the editor, or null.
+ *
+ *  Subscribes to the *whole* slice, so every `step_text` delta of a live run re-renders
+ *  the caller. Fine for a leaf that reads several fields at once (a form, a picker); the
+ *  editor's big containers select single fields instead. */
 export function useCurrentAutomation(): CurrentAutomation | null {
   return useAutomationsStore((s) => s.current);
+}
+
+/** Document-level validation issues, or an empty list when nothing is open. */
+export function useEditorIssues(): ValidationIssue[] {
+  return useAutomationsStore((s) => s.current?.issues ?? NO_ISSUES);
+}
+
+/** The open automation's run history (summaries only — not the streaming detail). */
+export function useEditorRuns(): RunSummary[] {
+  return useAutomationsStore((s) => s.current?.runs ?? NO_RUNS);
 }
 
 /** The tool catalog, fetched on first use. Safe to call from several components at once

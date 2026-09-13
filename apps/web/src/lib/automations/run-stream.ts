@@ -52,15 +52,27 @@ export function subscribeRun(
   };
 
   void (async () => {
+    // A stream that ends without saying how the run finished tells us nothing — the
+    // proxy timed out, the worker was restarted, the connection dropped mid-run. The UI
+    // would sit on "running" for ever, so fall back to polling exactly as an error does.
+    let sawTerminal = false;
     try {
       const res = await api.runEvents(automationId, runId, controller.signal);
       for await (const evt of parseSSE<RunEvent>(res, controller.signal)) {
         if (stopped) return;
+        if (
+          evt.type === 'run_finished' ||
+          (evt.type === 'snapshot' && isTerminal(evt.run.status))
+        ) {
+          sawTerminal = true;
+        }
         onEvent(evt);
       }
     } catch {
       if (!stopped) startPolling();
+      return;
     }
+    if (!stopped && !sawTerminal) startPolling();
   })();
 
   return () => {

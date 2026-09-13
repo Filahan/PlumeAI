@@ -28,13 +28,23 @@ export function newActionStep(action: CatalogAction): ActionStep {
   };
 }
 
+const AI_STEP_PLACEHOLDER = 'Summarise what the previous step returned.';
+
+/** The instruction is seeded rather than left empty: the document schema demands at
+ *  least one character (`min_length=1`), so an empty string never reaches the canvas —
+ *  `POST /operations` answers 422 and the step is simply never created. A placeholder
+ *  the user overwrites in the inspector is the honest default. */
 export function newAiStep(): AiStep {
   return {
     id: newStepId(),
     name: 'AI step',
     type: 'ai',
     valid: true,
-    settings: { instructions: '', tools: [], output: { mode: 'text' } },
+    settings: {
+      instructions: AI_STEP_PLACEHOLDER,
+      tools: [],
+      output: { mode: 'text' },
+    },
   };
 }
 

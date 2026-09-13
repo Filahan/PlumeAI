@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import type { Condition, FilterStep, Rules } from '@/lib/automations/types';
 import ConditionRow from './condition-row';
@@ -8,9 +8,22 @@ import LabeledField from './labeled-field';
 import { TextAreaField } from './text-field';
 import { useStepPatch } from './use-step-patch';
 
-const NEW_CONDITION: Condition = { left: { kind: 'literal', value: '' }, op: 'is_not_empty' };
+/** Always true (`trigger.date` is filled on every run), exactly like the seed in
+ *  `new-step.ts`: a rule the user has not filled in yet should not stop the run, and an
+ *  empty literal against `is_not_empty` would do precisely that. */
+const NEW_CONDITION: Condition = {
+  left: { kind: 'ref', value: '{{trigger.date}}' },
+  op: 'is_not_empty',
+};
 const DEFAULT_RULES: Rules = { combinator: 'and', conditions: [NEW_CONDITION] };
 const DEFAULT_INSTRUCTION = 'Continue only if the result above is worth acting on.';
+
+/** Client-side row ids — never persisted, only React keys. */
+let rowSeq = 0;
+function nextRowId(): string {
+  rowSeq += 1;
+  return `row${rowSeq}`;
+}
 
 /** Settings for a `filter` step: keep going, or stop the run here.
  *
@@ -27,6 +40,21 @@ export default function FilterForm({ step }: { step: FilterStep }) {
   useEffect(() => {
     latest.current = rules;
   }, [rules]);
+
+  // Row identity. Keying on the array index made React reuse a removed row's DOM — and
+  // with it the local draft inside its inputs — for whatever slid up into its place.
+  // The ids move with the rows instead, so the row the user deleted is the row that
+  // unmounts.
+  const [rowIds, setRowIds] = useState<string[]>(() => rules.conditions.map(() => nextRowId()));
+  const conditionCount = rules.conditions.length;
+  if (rowIds.length !== conditionCount) {
+    // Add/remove keep the ids in step themselves; this only catches the document
+    // changing underneath us (a JSON save, another operation's echo). Adjusting state
+    // during render is React's own answer to "derived state that has to persist".
+    const fitted = rowIds.slice(0, conditionCount);
+    while (fitted.length < conditionCount) fitted.push(nextRowId());
+    setRowIds(fitted);
+  }
 
   const setRules = (next: Rules, debounceKey?: string) => {
     latest.current = next;
@@ -93,7 +121,7 @@ export default function FilterForm({ step }: { step: FilterStep }) {
 
           {rules.conditions.map((condition, index) => (
             <ConditionRow
-              key={index}
+              key={rowIds[index]}
               stepId={step.id}
               position={index}
               condition={condition}
@@ -101,23 +129,25 @@ export default function FilterForm({ step }: { step: FilterStep }) {
               onChange={(next) => replaceCondition(index, next)}
               onDraft={(next, key) => replaceCondition(index, next, key)}
               onFlush={(key) => flushStep(step.id, key)}
-              onRemove={() =>
+              onRemove={() => {
+                setRowIds((ids) => ids.filter((_, i) => i !== index));
                 setRules({
                   ...latest.current,
                   conditions: latest.current.conditions.filter((_, i) => i !== index),
-                })
-              }
+                });
+              }}
             />
           ))}
 
           <button
             type="button"
-            onClick={() =>
+            onClick={() => {
+              setRowIds((ids) => [...ids, nextRowId()]);
               setRules({
                 ...latest.current,
                 conditions: [...latest.current.conditions, NEW_CONDITION],
-              })
-            }
+              });
+            }}
             className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[color:var(--border)] bg-white text-[11px] font-medium hover:bg-[color:var(--surface-muted)] transition"
           >
             <Plus size={11} strokeWidth={2.25} />

@@ -10,6 +10,8 @@ export const FIELD_CLASS =
 
 interface Common {
   value: string;
+  /** Set by `LabeledField`'s render-prop form so its `<label htmlFor>` points here. */
+  id?: string;
   /** Every keystroke — the caller debounces (see `useStepPatch`). */
   onChange(next: string): void;
   /** Blur or Enter, with the field's current text — the caller flushes its pending
@@ -48,6 +50,7 @@ function useDraft(value: string) {
 
 /** One-line text / number input that commits through the caller's debounce. */
 export function TextField({
+  id,
   value,
   onChange,
   onFlush,
@@ -64,6 +67,7 @@ export function TextField({
 
   return (
     <Input
+      id={id}
       type={type}
       min={min}
       max={max}
@@ -95,6 +99,7 @@ export function TextField({
 /** Multi-line text. Commits on every keystroke (debounced by the caller) and flushes on
  *  blur — Enter inserts a newline here, so it is never a commit gesture. */
 export function TextAreaField({
+  id,
   value,
   onChange,
   onFlush,
@@ -110,6 +115,7 @@ export function TextAreaField({
 
   return (
     <textarea
+      id={id}
       ref={inputRef}
       rows={rows}
       value={draft}

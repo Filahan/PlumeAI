@@ -37,6 +37,14 @@ function asText(value: unknown): string {
   }
 }
 
+/** An emptied text box means "this field is unset", not "this field is the empty
+ *  string": removing the key is what makes a required field read as *missing* (with the
+ *  server's own "field required" issue) instead of *wrong*. The number and JSON editors
+ *  already did this; strings and text areas now agree. */
+function textOrUnset(next: string): string | undefined {
+  return next.trim() === '' ? undefined : next;
+}
+
 /** The "Value" side of a field: one editor per JSON-schema shape. */
 export default function LiteralInput(props: LiteralInputProps) {
   const { field } = props;
@@ -59,7 +67,7 @@ export default function LiteralInput(props: LiteralInputProps) {
           rows={4}
           placeholder={field.description || 'Type the text to use'}
           aria-label={field.label}
-          onChange={(next) => props.onDraft(next)}
+          onChange={(next) => props.onDraft(textOrUnset(next))}
           onFlush={() => props.onFlush()}
         />
       );
@@ -69,7 +77,7 @@ export default function LiteralInput(props: LiteralInputProps) {
           value={asText(props.value)}
           placeholder="Type a value"
           aria-label={field.label}
-          onChange={(next) => props.onDraft(next)}
+          onChange={(next) => props.onDraft(textOrUnset(next))}
           onFlush={() => props.onFlush()}
         />
       );

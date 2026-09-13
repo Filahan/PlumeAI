@@ -2,7 +2,14 @@
 
 import '@xyflow/react/dist/style.css';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import {
   Background,
   BackgroundVariant,
@@ -15,7 +22,7 @@ import {
   type EdgeTypes,
   type NodeTypes,
 } from '@xyflow/react';
-import { useAutomationsStore, useCurrentAutomation } from '@/lib/automations/store';
+import { useAutomationsStore } from '@/lib/automations/store';
 import StepPickerDialog from '@/components/automations/step-picker/step-picker-dialog';
 import AddNode from '@/components/automations/canvas/add-node';
 import AddStepEdge from '@/components/automations/canvas/add-step-edge';
@@ -47,16 +54,23 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function Canvas() {
-  const current = useCurrentAutomation();
+  // Field-level selectors on purpose: a live run pushes `step_text` deltas into
+  // `current` several times a second, and the canvas must not relayout on each one.
+  const doc = useAutomationsStore((s) => s.current?.document ?? null);
   const applyOperations = useAutomationsStore((s) => s.applyOperations);
+  const select = useAutomationsStore((s) => s.select);
   const closeStepPicker = useAutomationsStore((s) => s.closeStepPicker);
   const picker = useAutomationsStore((s) => s.stepPicker);
 
-  const doc = current?.document ?? null;
   const { nodes, edges } = useAutoLayout(doc);
   const stepCount = doc?.steps.length ?? 0;
 
   const { fitView } = useReactFlow();
+
+  /** Keyboard scope. The delete shortcut used to live on `window`, which meant a
+   *  Backspace in the inspector — or in any open dialog — could remove the selected
+   *  step. Now it only fires while this wrapper (or something inside it) has focus. */
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   /** Delete is destructive and un-undoable, so it arms first: the second press within
    *  two seconds removes the step (the same confirm-in-place the sidebar uses). */
@@ -91,8 +105,17 @@ function Canvas() {
     return () => window.clearTimeout(handle);
   }, [fitView, stepCount]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
+  /** Node cards are real buttons, so a click usually focuses one of them — already
+   *  inside the wrapper, so the shortcut works and the focus ring stays where the user
+   *  clicked. Some browsers don't focus buttons on click; take the wrapper then. */
+  const focusCanvas = useCallback(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    if (!wrapper.contains(document.activeElement)) wrapper.focus();
+  }, []);
+
+  const onKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (isTypingTarget(event.target)) return;
       const state = useAutomationsStore.getState();
       if (state.stepPicker.open) return;
@@ -118,20 +141,24 @@ function Canvas() {
         .catch(() => {
           // `current.saveError` carries the reason; the shell shows it.
         });
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [applyOperations, arm, disarm]);
+    },
+    [applyOperations, arm, disarm]
+  );
 
   const pendingName = useMemo(
     () => doc?.steps.find((s) => s.id === pendingDelete)?.name ?? null,
     [doc, pendingDelete]
   );
 
-  if (!current) return null;
+  if (!doc) return null;
 
   return (
-    <div className="h-full w-full bg-[color:var(--surface-muted)]/40">
+    <div
+      ref={wrapperRef}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      className="h-full w-full bg-[color:var(--surface-muted)]/40 outline-none"
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -140,7 +167,11 @@ function Canvas() {
         nodesDraggable={false}
         nodesConnectable={false}
         nodesFocusable={false}
-        elementsSelectable
+        onNodeClick={() => focusCanvas()}
+        onPaneClick={() => {
+          disarm();
+          select(null);
+        }}
         panOnScroll
         panOnDrag
         zoomOnScroll={false}

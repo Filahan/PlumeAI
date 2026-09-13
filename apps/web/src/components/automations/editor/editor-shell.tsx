@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { AlertCircle, Loader2 } from 'lucide-react';
-import { useAutomationsStore, useCurrentAutomation } from '@/lib/automations/store';
+import { useAutomationsStore, useEditorIssues } from '@/lib/automations/store';
 import EditorHeader from '@/components/automations/editor/editor-header';
 import AutomationCanvas from '@/components/automations/canvas/automation-canvas';
 import InspectorPanel from '@/components/automations/inspector/inspector-panel';
@@ -14,14 +14,24 @@ import IssuesList from '@/components/automations/issues-list';
  *
  *  Layout: header · body (canvas + inspector, or the JSON view) · run panel. The whole
  *  thing is driven by `store.current`, loaded here on mount and torn down on unmount —
- *  which also stops any live run stream. */
+ *  which also stops any live run stream.
+ *
+ *  Every read below is a single field rather than `current`: a streaming run pushes a
+ *  `step_text` delta into the slice several times a second, and subscribing to the whole
+ *  object would re-render the editor (canvas included) on each one. */
 export default function EditorShell({ id }: { id: string }) {
   const open = useAutomationsStore((s) => s.open);
   const close = useAutomationsStore((s) => s.close);
   const loadCatalog = useAutomationsStore((s) => s.loadCatalog);
   const loading = useAutomationsStore((s) => s.currentLoading);
   const error = useAutomationsStore((s) => s.currentError);
-  const current = useCurrentAutomation();
+
+  const ready = useAutomationsStore((s) => s.current !== null);
+  const mode = useAutomationsStore((s) => s.current?.mode ?? 'design');
+  const inspectorOpen = useAutomationsStore((s) => s.current?.inspectorOpen ?? false);
+  const saveError = useAutomationsStore((s) => s.current?.saveError ?? null);
+  const saveErrorDetail = useAutomationsStore((s) => s.current?.saveErrorDetail ?? null);
+  const issues = useEditorIssues();
 
   useEffect(() => {
     void open(id);
@@ -39,7 +49,7 @@ export default function EditorShell({ id }: { id: string }) {
     );
   }
 
-  if (!current) {
+  if (!ready) {
     return (
       <div className="flex-1 flex items-center justify-center p-8">
         {loading && (
@@ -53,30 +63,42 @@ export default function EditorShell({ id }: { id: string }) {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <EditorHeader current={current} />
+      <EditorHeader />
 
-      {current.saveError && (
+      {saveError && (
         <div className="shrink-0 px-4 py-2 border-b border-[color:var(--border)] bg-[#D4183D]/5">
           <p className="flex items-center gap-1.5 text-[12px] text-[#D4183D]">
-            <AlertCircle size={13} strokeWidth={2} /> {current.saveError}
+            <AlertCircle size={13} strokeWidth={2} className="shrink-0" /> {saveError}
           </p>
+          {/* The server's own wording is often a multi-line Pydantic report — useful,
+              but not at the top of the editor. */}
+          {saveErrorDetail && saveErrorDetail !== saveError && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[11px] text-[color:var(--muted-foreground)] hover:text-[color:var(--foreground)]">
+                Details
+              </summary>
+              <pre className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-[color:var(--muted-foreground)]">
+                {saveErrorDetail}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 
       <div className="flex-1 min-h-0 flex">
-        {current.mode === 'design' ? (
+        {mode === 'design' ? (
           <>
             <div className="flex-1 min-w-0 flex flex-col">
               <div className="flex-1 min-h-0">
                 <AutomationCanvas />
               </div>
-              {current.issues.length > 0 && (
+              {issues.length > 0 && (
                 <div className="shrink-0 max-h-[96px] overflow-y-auto border-t border-[color:var(--border)] bg-white px-4 py-2">
-                  <IssuesList issues={current.issues} />
+                  <IssuesList issues={issues} />
                 </div>
               )}
             </div>
-            {current.inspectorOpen && <InspectorPanel />}
+            {inspectorOpen && <InspectorPanel />}
           </>
         ) : (
           <div className="flex-1 min-w-0 min-h-0">

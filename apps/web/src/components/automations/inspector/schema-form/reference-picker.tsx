@@ -18,7 +18,13 @@ import {
   type Catalog,
 } from '@/lib/automations/types';
 import { cn } from '@/lib/utils';
-import { sampleFields, schemaFieldPaths, stepOutput, type SampleField } from './samples';
+import {
+  isCompleteRef,
+  sampleFields,
+  schemaFieldPaths,
+  stepOutput,
+  type SampleField,
+} from './samples';
 
 const TRIGGER_FIELDS: SampleField[] = [
   { path: 'now', label: 'now', preview: 'when the run started (ISO timestamp)' },
@@ -81,6 +87,12 @@ export default function ReferencePicker({
     setOpen(false);
     setCustom('');
   };
+
+  // A `kind: "ref"` value must be exactly one `{{ path }}` or the document is rejected
+  // outright, so check the path here rather than letting the API answer for us.
+  const typed = custom.trim();
+  const typedRef = `{{${typed}}}`;
+  const typedValid = typed.length > 0 && isCompleteRef(typedRef);
 
   return (
     <>
@@ -145,13 +157,19 @@ export default function ReferencePicker({
                 />
                 <button
                   type="button"
-                  disabled={custom.trim().length === 0}
-                  onClick={() => choose(`{{${custom.trim()}}}`)}
+                  disabled={!typedValid}
+                  onClick={() => choose(typedRef)}
                   className="shrink-0 h-8 px-3 rounded-lg bg-[color:var(--primary)] text-white text-[12px] font-medium disabled:opacity-40"
                 >
                   Use
                 </button>
               </div>
+              {typed.length > 0 && !typedValid && (
+                <p className="mt-1 text-[11px] text-[#D4183D]">
+                  Use one path made of names, dots and <code>[0]</code> indexes — no braces,
+                  spaces or extra text.
+                </p>
+              )}
             </div>
           </div>
         </DialogContent>

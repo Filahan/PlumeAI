@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Search } from 'lucide-react';
+import { AlertCircle, Search } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { ApiError } from '@/lib/api';
 import { useAutomationsStore, useCatalog } from '@/lib/automations/store';
 import type { AutomationStep, CatalogAction, CatalogIntegration } from '@/lib/automations/types';
 import NodeIcon from '@/components/automations/canvas/node-icon';
@@ -20,6 +21,17 @@ import {
   newAiStep,
   newFilterStep,
 } from '@/components/automations/step-picker/new-step';
+
+/** Why the insert was refused, in the dialog's own words. `ApiError.issues` is the
+ *  normalized per-field list; a 400 only carries a sentence. */
+function insertError(e: unknown): string {
+  if (e instanceof ApiError) {
+    const first = e.issues[0];
+    if (first) return first.path ? `${first.path}: ${first.message}` : first.message;
+    return e.detail || e.message || "That step wasn't accepted.";
+  }
+  return "That step couldn't be added. Try again.";
+}
 
 /** Every search term has to appear somewhere in the row's text. */
 function matches(query: string, ...fields: (string | undefined)[]): boolean {
@@ -65,26 +77,36 @@ export default function StepPickerDialog({
   const catalog = useCatalog();
   const applyOperations = useAutomationsStore((s) => s.applyOperations);
   const select = useAutomationsStore((s) => s.select);
+  const stepCount = useAutomationsStore((s) => s.current?.document.steps.length ?? 0);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   /** Closing is the only way out, so resetting the search here is enough to guarantee
    *  the dialog always opens empty — no effect needed. */
   const setOpen = (next: boolean) => {
-    if (!next) setQuery('');
+    if (!next) {
+      setQuery('');
+      setError(null);
+    }
     onOpenChange(next);
   };
 
   const insert = async (step: AutomationStep) => {
     if (busy || index === null) return;
     setBusy(true);
+    setError(null);
     try {
-      await applyOperations([{ op: 'add_step', step, index }]);
+      // The picker's index was captured when the "+" was clicked; steps may have been
+      // removed since. The backend answers 400 for anything past the end, so clamp.
+      const at = Math.max(0, Math.min(index, stepCount));
+      await applyOperations([{ op: 'add_step', step, index: at }]);
       select({ kind: 'step', stepId: step.id });
       setOpen(false);
-    } catch {
-      // `applyOperations` already put the reason in `current.saveError`, which the
-      // editor shell shows as a banner. Leave the dialog open so nothing is lost.
+    } catch (e) {
+      // Staying open with no explanation reads as "the click didn't register", so say
+      // what happened right here — the shell's banner is behind the dialog.
+      setError(insertError(e));
     } finally {
       setBusy(false);
     }
@@ -139,6 +161,13 @@ export default function StepPickerDialog({
             />
           </div>
         </DialogHeader>
+
+        {error && (
+          <p className="flex items-start gap-1.5 px-4 pb-3 text-[12px] text-[#D4183D]">
+            <AlertCircle size={13} strokeWidth={2} className="mt-px shrink-0" />
+            <span className="break-words">{error}</span>
+          </p>
+        )}
 
         <div className="max-h-[52vh] overflow-y-auto border-t border-[color:var(--border)] px-2 pb-3">
           {showAi && (
