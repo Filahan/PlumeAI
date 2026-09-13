@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Trash2, Plus, Pencil, Key, Bot, Sparkles } from 'lucide-react';
 import { ProviderLogo } from '@/components/provider-logo';
+import TimezoneSection from '@/components/settings/timezone-section';
 
 interface ProviderFormProps {
   provider: Provider;
@@ -289,6 +290,9 @@ export default function SettingsContent({ settings, setSettings, variant = 'dial
           </p>
         </section>
       )}
+
+      {/* Timezone */}
+      <TimezoneSection settings={settings} setSettings={setSettings} />
 
       <p className="text-[11px] text-[#a8a8a8] leading-relaxed pt-1 border-t border-black/[0.05]">
         <Sparkles size={11} className="inline mr-1 -mt-0.5" strokeWidth={2} />

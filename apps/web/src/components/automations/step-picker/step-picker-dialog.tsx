@@ -13,7 +13,12 @@ import {
 import { Input } from '@/components/ui/input';
 import { ApiError } from '@/lib/api';
 import { useAutomationsStore, useCatalog } from '@/lib/automations/store';
-import type { AutomationStep, CatalogAction, CatalogIntegration } from '@/lib/automations/types';
+import type {
+  AutomationStep,
+  CatalogAction,
+  CatalogIntegration,
+  CatalogMcpServer,
+} from '@/lib/automations/types';
 import NodeIcon from '@/components/automations/canvas/node-icon';
 import StepPickerItem from '@/components/automations/step-picker/step-picker-item';
 import {
@@ -44,9 +49,13 @@ function matches(query: string, ...fields: (string | undefined)[]): boolean {
     .every((term) => haystack.includes(term));
 }
 
-function actionsFor(integration: CatalogIntegration, query: string): CatalogAction[] {
+function actionsFor(
+  integration: CatalogIntegration | CatalogMcpServer,
+  query: string
+): CatalogAction[] {
   // A matching integration name shows the whole integration; otherwise match per action.
-  if (matches(query, integration.name, integration.label)) return integration.actions;
+  const label = 'label' in integration ? integration.label : integration.name;
+  if (matches(query, integration.name, label)) return integration.actions;
   return integration.actions.filter((a) => matches(query, a.label, a.name, a.description));
 }
 
@@ -123,6 +132,19 @@ export default function StepPickerDialog({
       .sort((a, b) => Number(b.integration.connected) - Number(a.integration.connected));
   }, [catalog, query]);
 
+  /** One group per MCP server. Connected first — a server in error is shown, greyed,
+   *  with its failure as the tooltip, because "my server is broken" is the answer the
+   *  user needs here far more than a silently shorter list. */
+  const mcpServers = useMemo(() => {
+    const rows = (catalog?.mcpServers ?? []).map((server) => ({
+      server,
+      actions: actionsFor(server, query),
+    }));
+    return rows
+      .filter((row) => row.actions.length > 0)
+      .sort((a, b) => Number(b.server.connected) - Number(a.server.connected));
+  }, [catalog, query]);
+
   const builtins = useMemo(
     () =>
       (catalog?.builtinActions ?? []).filter((a) =>
@@ -133,7 +155,12 @@ export default function StepPickerDialog({
 
   const showAi = matches(query, 'AI step', 'model', 'write', 'summarize', 'reason');
   const showFilter = matches(query, 'Filter', 'condition', 'stop', 'only if');
-  const empty = !showAi && !showFilter && integrations.length === 0 && builtins.length === 0;
+  const empty =
+    !showAi &&
+    !showFilter &&
+    integrations.length === 0 &&
+    mcpServers.length === 0 &&
+    builtins.length === 0;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -209,6 +236,27 @@ export default function StepPickerDialog({
                   disabled={!integration.connected}
                   onSelect={() => void insert(newActionStep(action))}
                   onConnect={() => router.push('/tools')}
+                />
+              ))}
+            </div>
+          ))}
+
+          {mcpServers.map(({ server, actions }) => (
+            <div key={server.name}>
+              <SectionLabel>
+                <span title={server.lastError ?? undefined}>
+                  MCP · {server.name}
+                  {!server.enabled ? ' · disabled' : server.lastError ? ' · not reachable' : ''}
+                </span>
+              </SectionLabel>
+              {actions.map((action) => (
+                <StepPickerItem
+                  key={action.name}
+                  icon={<NodeIcon kind="action" integration={action.integration} />}
+                  title={action.label}
+                  description={action.description}
+                  disabled={!server.connected}
+                  onSelect={() => void insert(newActionStep(action))}
                 />
               ))}
             </div>

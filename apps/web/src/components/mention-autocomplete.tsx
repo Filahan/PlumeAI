@@ -13,11 +13,13 @@ interface MentionItem {
   logoUrl?: string;
 }
 
-/** Mentionable names: one per integration (`@gmail`), plus each builtin action
- *  (`@web_search`) since builtins have no integration of their own. */
+/** Mentionable names: one per integration (`@gmail`), each builtin action
+ *  (`@web_search`) since builtins have no integration of their own, and one per usable
+ *  MCP server (`@notion`). A server whose name collides with an integration is dropped —
+ *  the integration owns that mention, and two rows named `@x` would be a coin toss. */
 function mentionItems(catalog: Catalog | null): MentionItem[] {
   if (!catalog) return [];
-  return [
+  const items: MentionItem[] = [
     ...catalog.integrations.map((i) => ({
       name: i.name,
       label: i.label,
@@ -30,6 +32,16 @@ function mentionItems(catalog: Catalog | null): MentionItem[] {
       description: a.description,
     })),
   ];
+  const taken = new Set(items.map((i) => i.name));
+  for (const server of catalog.mcpServers ?? []) {
+    if (!server.connected || taken.has(server.name)) continue;
+    items.push({
+      name: server.name,
+      label: `MCP · ${server.name}`,
+      description: `${server.actions.length} ${server.actions.length === 1 ? 'tool' : 'tools'}`,
+    });
+  }
+  return items;
 }
 
 export interface MentionAutocompleteHandle {

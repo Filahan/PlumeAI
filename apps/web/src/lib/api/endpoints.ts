@@ -17,6 +17,9 @@ import type {
   AutomationSummary,
   Catalog,
   DocumentWriteResult,
+  McpServerInput,
+  McpServerView,
+  McpTestResult,
   Operation,
   RunDetail,
   RunSummary,
@@ -90,9 +93,44 @@ export const conversations = {
 // ─── Tool catalog ───────────────────────────────────────────────────────────────────
 
 export const tools = {
-  /** Integrations (with live connection status) + builtin actions. Single source of
-   *  truth for the Tools page, the @-mention autocomplete and the step inspector. */
+  /** Integrations (with live connection status), builtin actions and the tools of every
+   *  registered MCP server. Single source of truth for the Tools page, the @-mention
+   *  autocomplete, the step picker and the step inspector. */
   catalog: () => api.get<Catalog>('/tools'),
+};
+
+// ─── MCP servers ────────────────────────────────────────────────────────────────────
+
+/** `{transport, config}` without a name — what `test` probes and what a `PUT` may carry. */
+type McpConfigProbe = Pick<McpServerInput, 'transport' | 'config' | 'allowPrivateNetwork'>;
+
+export const mcp = {
+  /** Every registered server, with its cached tool listing and last sync outcome.
+   *  Unwraps the `{servers}` envelope — nothing else in that response matters. */
+  list: async (): Promise<McpServerView[]> =>
+    (await api.get<{ servers: McpServerView[] }>('/mcp/servers')).servers ?? [],
+
+  /** 201 even when the first connection attempt fails — the row exists either way and
+   *  `lastError` says what went wrong, so nothing the user typed is lost. */
+  create: (body: McpServerInput) => api.post<McpServerView>('/mcp/servers', body),
+
+  /** Partial. `config` is REPLACED wholesale when present, so omit it entirely to keep
+   *  the stored secrets, and send every value you want kept when you do send it. */
+  update: (id: string, body: Partial<McpServerInput>) =>
+    api.put<McpServerView>(`/mcp/servers/${encodeURIComponent(id)}`, body),
+
+  setEnabled: (id: string, enabled: boolean) =>
+    api.patch<McpServerView>(`/mcp/servers/${encodeURIComponent(id)}`, { enabled }),
+
+  /** Re-read the server's tool list into the cached listing the catalog serves. */
+  refresh: (id: string) =>
+    api.post<McpServerView>(`/mcp/servers/${encodeURIComponent(id)}/refresh`),
+
+  remove: (id: string): Promise<void> =>
+    api.delete(`/mcp/servers/${encodeURIComponent(id)}`),
+
+  /** Try a config without saving it: `{ok, tools}` or `{ok: false, error}`. */
+  test: (body: McpConfigProbe) => api.post<McpTestResult>('/mcp/servers/test', body),
 };
 
 // ─── Automations ────────────────────────────────────────────────────────────────────

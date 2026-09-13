@@ -49,6 +49,10 @@ export interface Settings {
   tools: Record<string, ToolConnection>;
   /** App-level credential status per provider namespace (e.g. `toolCredentials.google = true`). */
   toolCredentials: Record<string, boolean>;
+  /** IANA zone the workspace lives in — schedule triggers that carry no zone of their own
+   *  fire in it, and it is what a date handed to the AI means. Absent on a payload written
+   *  before the field existed; the server defaults it to `"UTC"`. */
+  timezone?: string;
 }
 
 export function findApiKey(settings: Settings, provider: Provider): string {

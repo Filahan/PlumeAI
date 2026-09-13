@@ -3,7 +3,11 @@
 import { useState, type ReactNode } from 'react';
 import { Check, ChevronRight } from 'lucide-react';
 import { useCatalog } from '@/lib/automations/store';
-import { BUILTIN_INTEGRATION, type CatalogAction } from '@/lib/automations/types';
+import {
+  BUILTIN_INTEGRATION,
+  MCP_INTEGRATION_PREFIX,
+  type CatalogAction,
+} from '@/lib/automations/types';
 
 interface Group {
   name: string;
@@ -38,6 +42,14 @@ export default function AiToolsPicker({
           connected: true,
           actions: catalog.builtinActions,
         },
+        // MCP tools sit in their own groups, one per server, after the built-ins: their
+        // names (`mcp__<server>__<tool>`) are the least recognisable in the list.
+        ...(catalog.mcpServers ?? []).map((server) => ({
+          name: `${MCP_INTEGRATION_PREFIX}${server.name}`,
+          label: `MCP · ${server.name}`,
+          connected: server.connected,
+          actions: server.actions,
+        })),
       ].filter((g) => g.actions.length > 0)
     : [];
 

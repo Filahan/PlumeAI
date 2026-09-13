@@ -421,18 +421,58 @@ export interface CatalogIntegration {
   actions: CatalogAction[];
 }
 
+/** One registered MCP server as the *catalog* sees it (`GET /tools` → `mcpServers[]`).
+ *
+ *  Deliberately thin: how to reach the server (command, URL, which secrets are set)
+ *  belongs to `McpServerView` / `GET /mcp/servers`, which only the Tools page reads.
+ *  Here we just need to know which actions exist and whether they can run. */
+export interface CatalogMcpServer {
+  name: string;
+  transport: McpTransport;
+  enabled: boolean;
+  /** Enabled, synced and not in error — i.e. its actions can be picked right now. */
+  connected: boolean;
+  lastError: string | null;
+  /** Actions named `mcp__<server>__<tool>`, under the `mcp:<server>` integration. */
+  actions: CatalogAction[];
+}
+
 export interface Catalog {
   integrations: CatalogIntegration[];
   /** Always-available actions with `integration === "builtin"`. */
   builtinActions: CatalogAction[];
+  /** Every registered MCP server, disabled ones included — a disabled server still
+   *  explains why an existing step's action vanished from the tool list. */
+  mcpServers: CatalogMcpServer[];
 }
 
 export const BUILTIN_INTEGRATION = 'builtin';
 
-/** Every action in the catalog, integrations first then builtins. */
+/** Mirrors `app.mcp.schemas.mcp_integration`: every MCP action's `integration`. */
+export const MCP_INTEGRATION_PREFIX = 'mcp:';
+
+/** `"mcp:notion"` → `"notion"`; `null` for any other integration name. */
+export function mcpServerOf(integration: string): string | null {
+  return integration.startsWith(MCP_INTEGRATION_PREFIX)
+    ? integration.slice(MCP_INTEGRATION_PREFIX.length)
+    : null;
+}
+
+export function findCatalogMcpServer(
+  catalog: Catalog | null,
+  name: string
+): CatalogMcpServer | undefined {
+  return catalog?.mcpServers?.find((s) => s.name === name);
+}
+
+/** Every action in the catalog, integrations first, then builtins, then MCP tools. */
 export function catalogActions(catalog: Catalog | null): CatalogAction[] {
   if (!catalog) return [];
-  return [...catalog.integrations.flatMap((i) => i.actions), ...catalog.builtinActions];
+  return [
+    ...catalog.integrations.flatMap((i) => i.actions),
+    ...catalog.builtinActions,
+    ...(catalog.mcpServers ?? []).flatMap((s) => s.actions),
+  ];
 }
 
 export function findCatalogAction(
@@ -444,6 +484,10 @@ export function findCatalogAction(
   if (integration === BUILTIN_INTEGRATION) {
     return catalog.builtinActions.find((a) => a.name === action);
   }
+  const server = mcpServerOf(integration);
+  if (server !== null) {
+    return findCatalogMcpServer(catalog, server)?.actions.find((a) => a.name === action);
+  }
   return catalog.integrations
     .find((i) => i.name === integration)
     ?.actions.find((a) => a.name === action);
@@ -454,6 +498,69 @@ export function findCatalogIntegration(
   name: string
 ): CatalogIntegration | undefined {
   return catalog?.integrations.find((i) => i.name === name);
+}
+
+// ─── MCP servers (`/api/mcp/servers`) ───────────────────────────────────────────────
+
+export type McpTransport = 'stdio' | 'http';
+
+/** Mirrors `app.mcp.schemas.SERVER_NAME_RE`. The name becomes part of every tool id the
+ *  model sees (`mcp__<name>__<tool>`), so it has to stay a slug. */
+export const MCP_SERVER_NAME_RE = /^[a-z0-9][a-z0-9_-]{1,30}$/;
+
+/** One tool as the server advertises it. */
+export interface McpToolInfo {
+  name: string;
+  description: string;
+}
+
+/** A registered server as `GET /mcp/servers` returns it.
+ *
+ *  Secret *values* never come back: `envNames` / `headerNames` are the keys that are
+ *  set, which is all the UI needs to render a "set" badge. */
+export interface McpServerView {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  enabled: boolean;
+  allowPrivateNetwork: boolean;
+  connected: boolean;
+  toolCount: number;
+  tools: McpToolInfo[];
+  lastError: string | null;
+  /** Unix ms, or `null` when the server has never been synced. */
+  lastSyncedAt: number | null;
+  // stdio
+  command: string | null;
+  args: string[];
+  envNames: string[];
+  // http
+  url: string | null;
+  headerNames: string[];
+}
+
+/** The write side of a server: unlike `McpServerView` this one carries the secrets.
+ *
+ *  The server *replaces* the whole config on every write, so a partial `env` (or a
+ *  missing one) clears the values that are not in it — see `McpServerDialog`. */
+export type McpServerConfigInput =
+  | { command: string; args?: string[]; env?: Record<string, string> }
+  | { url: string; headers?: Record<string, string> };
+
+export interface McpServerInput {
+  name: string;
+  transport: McpTransport;
+  config: McpServerConfigInput;
+  allowPrivateNetwork?: boolean;
+  enabled?: boolean;
+}
+
+/** `POST /mcp/servers/test` — always a 200: "this config does not work, here is why"
+ *  is an answer, not a failure. */
+export interface McpTestResult {
+  ok: boolean;
+  tools: McpToolInfo[];
+  error: string | null;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────────
