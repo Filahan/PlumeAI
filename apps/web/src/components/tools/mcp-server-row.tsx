@@ -83,23 +83,23 @@ export default function McpServerRow({
 
   return (
     <div className="border-b border-[color:var(--border)] transition-colors hover:bg-[color:var(--surface-muted)]">
-      <div className={`${ROW_GRID} relative py-3`}>
-        <div className="flex items-center gap-3 min-w-0">
+      <div className={`${ROW_GRID} py-3`}>
+        <button
+          type="button"
+          onClick={onEdit}
+          aria-label={`Edit ${server.name}`}
+          className="flex items-center gap-3 min-w-0 self-stretch rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--muted-foreground)]"
+        >
           <ToolLogo fallback="mcp" />
-          <div className="min-w-0">
-            <button
-              type="button"
-              onClick={onEdit}
-              aria-label={`Edit ${server.name}`}
-              className="block max-w-full truncate rounded-sm text-left text-[13px] font-medium leading-[18px] outline-none after:absolute after:inset-0 after:content-[''] focus-visible:ring-2 focus-visible:ring-[color:var(--muted-foreground)]"
-            >
+          <span className="min-w-0">
+            <span className="block truncate text-[13px] font-medium leading-[18px]">
               {server.name}
-            </button>
-            <div className="truncate text-[12px] leading-4 text-[color:var(--muted-foreground)]">
+            </span>
+            <span className="block truncate text-[12px] leading-4 text-[color:var(--muted-foreground)]">
               MCP · {mcpEndpoint(server)}
-            </div>
-          </div>
-        </div>
+            </span>
+          </span>
+        </button>
 
         <div
           className="min-w-0 truncate text-[12px] text-[color:var(--muted-foreground)]"
@@ -120,7 +120,7 @@ export default function McpServerRow({
           )}
         </div>
 
-        <div className="relative flex items-center justify-end gap-1.5">
+        <div className="flex items-center justify-end gap-1.5">
           <RowAction
             variant="quiet"
             label="Manage"

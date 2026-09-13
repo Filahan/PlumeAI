@@ -15,9 +15,9 @@ import {
   summarizeActions,
 } from '@/components/tools/tool-meta';
 
-/** One first-party integration in the catalog table. The name is the row's real button
- *  and its `::after` stretches over the whole row, so clicking anywhere but the right
- *  cell opens the setup sheet without nesting one control inside another. */
+/** One first-party integration in the catalog table. The Tool cell *is* the button — no
+ *  stretched overlay across the row, which would swallow the `title` tooltips the Actions
+ *  and Status cells carry, and nothing interactive is nested inside it. */
 export default function IntegrationRow({
   tool,
   connected,
@@ -36,24 +36,24 @@ export default function IntegrationRow({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <div
-        className={`${ROW_GRID} relative py-3 border-b border-[color:var(--border)] transition-colors hover:bg-[color:var(--surface-muted)]`}
+        className={`${ROW_GRID} py-3 border-b border-[color:var(--border)] transition-colors hover:bg-[color:var(--surface-muted)]`}
       >
-        <div className="flex items-center gap-3 min-w-0">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label={`Open ${tool.label} settings`}
+          className="flex items-center gap-3 min-w-0 self-stretch rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--muted-foreground)]"
+        >
           <ToolLogo src={tool.logoUrl} fallback="integration" />
-          <div className="min-w-0">
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              aria-label={`Open ${tool.label} settings`}
-              className="block max-w-full truncate rounded-sm text-left text-[13px] font-medium leading-[18px] outline-none after:absolute after:inset-0 after:content-[''] focus-visible:ring-2 focus-visible:ring-[color:var(--muted-foreground)]"
-            >
+          <span className="min-w-0">
+            <span className="block truncate text-[13px] font-medium leading-[18px]">
               {tool.label}
-            </button>
-            <div className="truncate text-[12px] leading-4 text-[color:var(--muted-foreground)]">
+            </span>
+            <span className="block truncate text-[12px] leading-4 text-[color:var(--muted-foreground)]">
               {integrationGroup(tool.name)} · {integrationAuth(tool)}
-            </div>
-          </div>
-        </div>
+            </span>
+          </span>
+        </button>
 
         <div
           className="min-w-0 truncate text-[12px] text-[color:var(--muted-foreground)]"
@@ -70,7 +70,7 @@ export default function IntegrationRow({
           )}
         </div>
 
-        <div className="relative flex justify-end">
+        <div className="flex justify-end">
           <RowAction
             variant={connected ? 'quiet' : 'outline'}
             label={connected ? 'Manage' : 'Connect'}
