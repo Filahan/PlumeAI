@@ -547,12 +547,13 @@ export type McpServerConfigInput =
   | { command: string; args?: string[]; env?: Record<string, string> }
   | { url: string; headers?: Record<string, string> };
 
+/** A server as it is written. The API also accepts `enabled` on a create; this UI never
+ *  sends it — a server is registered on, and the card's switch is how it goes off. */
 export interface McpServerInput {
   name: string;
   transport: McpTransport;
   config: McpServerConfigInput;
   allowPrivateNetwork?: boolean;
-  enabled?: boolean;
 }
 
 /** `POST /mcp/servers/test` — always a 200: "this config does not work, here is why"

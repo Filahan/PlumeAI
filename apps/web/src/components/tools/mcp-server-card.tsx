@@ -12,6 +12,17 @@ const CHIP_LIMIT = 6;
 /** How long a Delete click stays armed before it forgets it was clicked. */
 const CONFIRM_MS = 2000;
 
+/** "when the tools listing was last read", short enough to sit next to the status. */
+function syncedLabel(at: number | null): string | null {
+  if (at === null) return null;
+  const minutes = Math.round((Date.now() - at) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 type Busy = 'refresh' | 'toggle' | 'delete' | null;
 
 function IconButton({
@@ -97,6 +108,7 @@ export default function McpServerCard({
 
   const chips = server.tools.slice(0, CHIP_LIMIT);
   const extra = server.tools.length - chips.length;
+  const synced = syncedLabel(server.lastSyncedAt);
 
   return (
     <div className="rounded-2xl border border-[color:var(--border)] bg-white px-4 py-3">
@@ -125,6 +137,14 @@ export default function McpServerCard({
             ) : (
               <span className="text-[color:var(--muted-foreground)]">
                 No tools yet — refresh to sync.
+              </span>
+            )}
+            {synced && (
+              <span
+                className="ml-1.5 text-[11px] text-[color:var(--muted-foreground)]"
+                title={new Date(server.lastSyncedAt as number).toLocaleString()}
+              >
+                · synced {synced}
               </span>
             )}
           </div>
@@ -175,23 +195,29 @@ export default function McpServerCard({
           <IconButton label="Edit server" disabled={busy !== null} onClick={onEdit}>
             <Pencil size={13} strokeWidth={2} />
           </IconButton>
-          {armed ? (
-            <button
-              type="button"
-              onClick={onDelete}
-              className="h-8 px-2.5 rounded-lg border border-[#D4183D]/30 bg-[#D4183D]/5 text-[11px] font-medium text-[#D4183D] hover:bg-[#D4183D]/10 transition"
-            >
-              Confirm
-            </button>
-          ) : (
-            <IconButton label="Delete server" danger disabled={busy !== null} onClick={onDelete}>
-              {busy === 'delete' ? (
-                <Loader2 size={13} className="animate-spin" />
-              ) : (
-                <Trash2 size={13} strokeWidth={2} />
-              )}
-            </IconButton>
-          )}
+          {/* One button throughout: arming swaps its label and what the click does, and
+              `aria-live` announces that swap instead of a new control appearing. */}
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy !== null}
+            aria-live="polite"
+            aria-label={armed ? `Confirm deleting ${server.name}` : `Delete ${server.name}`}
+            title={armed ? 'Click again to delete' : 'Delete server'}
+            className={`h-8 inline-flex items-center justify-center rounded-lg border transition disabled:opacity-40 disabled:cursor-not-allowed ${
+              armed
+                ? 'px-2.5 border-[#D4183D]/30 bg-[#D4183D]/5 text-[11px] font-medium text-[#D4183D] hover:bg-[#D4183D]/10'
+                : 'w-8 border-[color:var(--border)] bg-white text-[color:var(--muted-foreground)] hover:bg-[#D4183D]/5 hover:text-[#D4183D] hover:border-[#D4183D]/30'
+            }`}
+          >
+            {busy === 'delete' ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : armed ? (
+              'Confirm'
+            ) : (
+              <Trash2 size={13} strokeWidth={2} />
+            )}
+          </button>
         </div>
       </div>
 

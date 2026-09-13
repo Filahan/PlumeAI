@@ -1,21 +1,22 @@
 'use client';
 
-import { useMemo } from 'react';
-import { Globe } from 'lucide-react';
-import type { Settings } from '@/lib/types';
+import { useMemo, useState } from 'react';
+import { AlertCircle, Globe } from 'lucide-react';
+import type { SetSettings, Settings } from '@/lib/types';
 import TimezonePicker from '@/components/automations/inspector/timezone-picker';
 import { browserTimezone } from '@/components/automations/inspector/next-runs';
 
 /** The workspace's IANA zone.
  *
- *  Nothing here is workspace-specific state of its own: the value rides on `Settings`
- *  and is written through the same whole-object PUT as every other setting. */
+ *  Nothing here is state of its own: the value rides on `Settings` and is written through
+ *  the same whole-object PUT as every other setting. That PUT can fail (the API validates
+ *  the zone), so the result is awaited and shown rather than dropped. */
 export default function TimezoneSection({
   settings,
   setSettings,
 }: {
   settings: Settings;
-  setSettings: (s: Settings) => void;
+  setSettings: SetSettings;
 }) {
   const browser = useMemo(() => browserTimezone(), []);
   const zones = useMemo(() => {
@@ -27,9 +28,17 @@ export default function TimezoneSection({
     }
   }, [browser]);
 
-  // A workspace that has never chosen one shows the browser's zone rather than the
-  // server's `"UTC"` placeholder — it is almost always the answer the user wants.
+  const [error, setError] = useState<string | null>(null);
+
+  // `GET /settings` always answers with a zone, so this fallback only covers the moments
+  // it cannot: before the first load lands, or a payload stored before the field existed.
   const value = settings.timezone || browser;
+
+  const commit = async (next: string) => {
+    setError(null);
+    const result = await setSettings({ ...settings, timezone: next });
+    if (result && !result.ok) setError(result.error);
+  };
 
   return (
     <section className="space-y-2">
@@ -42,8 +51,15 @@ export default function TimezoneSection({
         id="workspace-timezone"
         value={value}
         zones={zones}
-        onChange={(next) => setSettings({ ...settings, timezone: next })}
+        onChange={(next) => void commit(next)}
       />
+
+      {error && (
+        <p role="alert" className="flex items-start gap-1.5 text-[11px] text-[#D4183D] leading-relaxed">
+          <AlertCircle size={12} strokeWidth={2.25} className="mt-px shrink-0" />
+          <span className="break-words">{error}</span>
+        </p>
+      )}
 
       <p className="text-[11px] text-[#a8a8a8] leading-relaxed">
         Used for schedules that don&apos;t set their own timezone, and for dates given to the AI.
@@ -53,7 +69,7 @@ export default function TimezoneSection({
             Your browser is in{' '}
             <button
               type="button"
-              onClick={() => setSettings({ ...settings, timezone: browser })}
+              onClick={() => void commit(browser)}
               className="underline underline-offset-2 hover:text-[#1c1c1c] transition"
             >
               {browser}

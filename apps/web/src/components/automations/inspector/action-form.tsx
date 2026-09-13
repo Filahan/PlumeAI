@@ -6,10 +6,13 @@ import {
   BUILTIN_INTEGRATION,
   findCatalogAction,
   findCatalogIntegration,
+  findCatalogMcpServer,
+  mcpServerOf,
   type ActionStep,
 } from '@/lib/automations/types';
 import { prettyJson } from '@/lib/automations/format';
 import ConnectionBanner from './connection-banner';
+import McpServerBanner from './mcp-server-banner';
 import RetrySettings from './retry-settings';
 import SchemaForm from './schema-form/schema-form';
 
@@ -21,11 +24,29 @@ export default function ActionForm({ step }: { step: ActionStep }) {
   const action = findCatalogAction(catalog, integrationName, actionName);
   const integration = findCatalogIntegration(catalog, integrationName);
 
+  // An MCP server that is off or broken publishes no actions at all, so it has to be
+  // recognised before the missing-action path — otherwise turning a server off turns
+  // every step that uses it into "this action no longer exists".
+  const mcpName = mcpServerOf(integrationName);
+  const mcpServer = mcpName === null ? undefined : findCatalogMcpServer(catalog, mcpName);
+  const mcpUnusable = mcpServer !== undefined && (!mcpServer.enabled || !!mcpServer.lastError);
+
   if (catalog === null) {
     return (
       <p className="flex items-center gap-1.5 text-[12px] text-[color:var(--muted-foreground)]">
         <Loader2 size={12} className="animate-spin" /> Loading this action…
       </p>
+    );
+  }
+
+  if (!action && mcpUnusable && mcpServer) {
+    return (
+      <div className="space-y-3">
+        <McpServerBanner server={mcpServer} />
+        <pre className="text-[11px] font-mono whitespace-pre-wrap break-words rounded-lg bg-[color:var(--surface-muted)] p-2.5">
+          {prettyJson(step.settings)}
+        </pre>
+      </div>
     );
   }
 
@@ -76,6 +97,8 @@ export default function ActionForm({ step }: { step: ActionStep }) {
           </p>
         )}
       </div>
+
+      {mcpUnusable && mcpServer && <McpServerBanner server={mcpServer} />}
 
       {disconnected && integration && <ConnectionBanner integration={integration} />}
 

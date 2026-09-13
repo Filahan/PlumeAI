@@ -34,7 +34,9 @@ export default function McpServersSection() {
     mcp
       .list()
       .then((list) => {
-        if (!cancelled) setServers(list);
+        if (cancelled) return;
+        setServers(list);
+        setError(null);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -46,17 +48,20 @@ export default function McpServersSection() {
     };
   }, []);
 
-  /** One server's row was rewritten by the API — take its answer as the new truth. */
+  /** One server's row was rewritten by the API — take its answer as the new truth. A
+   *  write that got through also clears whatever the last failure was saying. */
   const replace = (next: McpServerView) => {
     setServers((prev) => {
       const rest = (prev ?? []).filter((s) => s.id !== next.id);
       return [...rest, next].sort((a, b) => a.name.localeCompare(b.name));
     });
+    setError(null);
     void reloadCatalog();
   };
 
   const remove = (id: string) => {
     setServers((prev) => (prev ?? []).filter((s) => s.id !== id));
+    setError(null);
     void reloadCatalog();
   };
 

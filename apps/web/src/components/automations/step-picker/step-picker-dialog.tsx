@@ -132,16 +132,18 @@ export default function StepPickerDialog({
       .sort((a, b) => Number(b.integration.connected) - Number(a.integration.connected));
   }, [catalog, query]);
 
-  /** One group per MCP server. Connected first — a server in error is shown, greyed,
-   *  with its failure as the tooltip, because "my server is broken" is the answer the
-   *  user needs here far more than a silently shorter list. */
+  /** One group per MCP server. Connected first — a server that is off or broken is still
+   *  shown, greyed, because "my server is disabled" is the answer the user needs here far
+   *  more than a silently shorter list. A *disabled* server publishes no actions at all,
+   *  so it can only be matched by name and renders as a single explanatory row. */
   const mcpServers = useMemo(() => {
     const rows = (catalog?.mcpServers ?? []).map((server) => ({
       server,
       actions: actionsFor(server, query),
+      nameMatch: matches(query, server.name, 'mcp'),
     }));
     return rows
-      .filter((row) => row.actions.length > 0)
+      .filter((row) => row.actions.length > 0 || (!row.server.enabled && row.nameMatch))
       .sort((a, b) => Number(b.server.connected) - Number(a.server.connected));
   }, [catalog, query]);
 
@@ -249,16 +251,23 @@ export default function StepPickerDialog({
                   {!server.enabled ? ' · disabled' : server.lastError ? ' · not reachable' : ''}
                 </span>
               </SectionLabel>
-              {actions.map((action) => (
-                <StepPickerItem
-                  key={action.name}
-                  icon={<NodeIcon kind="action" integration={action.integration} />}
-                  title={action.label}
-                  description={action.description}
-                  disabled={!server.connected}
-                  onSelect={() => void insert(newActionStep(action))}
-                />
-              ))}
+              {actions.length === 0 ? (
+                <p className="px-2.5 py-2 text-[11px] text-[color:var(--muted-foreground)]">
+                  This server is disabled, so its tools aren&apos;t available. Turn it back on from
+                  the Tools page.
+                </p>
+              ) : (
+                actions.map((action) => (
+                  <StepPickerItem
+                    key={action.name}
+                    icon={<NodeIcon kind="action" integration={action.integration} />}
+                    title={action.label}
+                    description={action.description}
+                    disabled={!server.connected}
+                    onSelect={() => void insert(newActionStep(action))}
+                  />
+                ))
+              )}
             </div>
           ))}
 

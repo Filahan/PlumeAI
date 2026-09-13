@@ -11,12 +11,14 @@ import {
 } from '@/lib/automations/types';
 import { mcp } from '@/lib/api/endpoints';
 import { DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import McpNameField from '@/components/tools/mcp-name-field';
 import McpTestResultPanel from '@/components/tools/mcp-test-result';
 import McpTransportFields, { type TransportValues } from '@/components/tools/mcp-transport-fields';
 import {
   apiMessage,
   formatArgs,
   parseArgs,
+  parseArgsLenient,
   rowsFromNames,
   secretsFromRows,
   unfilledNames,
@@ -37,15 +39,26 @@ function initialForm(server: McpServerView | null): Form {
   };
 }
 
-function buildConfig(form: Form): McpServerConfigInput {
+/** `lenientArgs` is only ever true for a brand-new server: a single line of
+ *  space-separated arguments is what people paste from a README, but applying the same
+ *  rule while editing would rewrite a stored `args` the user merely looked at. */
+function buildConfig(form: Form, lenientArgs: boolean): McpServerConfigInput {
   return form.transport === 'stdio'
-    ? { command: form.command.trim(), args: parseArgs(form.argsText), env: secretsFromRows(form.env) }
+    ? {
+        command: form.command.trim(),
+        args: lenientArgs ? parseArgsLenient(form.argsText) : parseArgs(form.argsText),
+        env: secretsFromRows(form.env),
+      }
     : { url: form.url.trim(), headers: secretsFromRows(form.headers) };
 }
 
 /** Whether anything the *connection* depends on differs from what is stored. Only then
  *  may a PUT carry a `config` — the API replaces it wholesale, so an unnecessary one
- *  would wipe every secret the user did not retype. */
+ *  would wipe every secret the user did not retype.
+ *
+ *  Arguments are compared as *text* against `formatArgs(server.args)`, never as parsed
+ *  lists: the textarea is seeded with exactly that string, so opening Edit and changing
+ *  nothing can never report a change. */
 function configChanged(form: Form, server: McpServerView): boolean {
   if (form.transport !== server.transport) return true;
   const rows = form.transport === 'stdio' ? form.env : form.headers;
@@ -54,7 +67,7 @@ function configChanged(form: Form, server: McpServerView): boolean {
   if (rows.map((r) => r.key.trim()).join('\n') !== names.join('\n')) return true;
   return form.transport === 'stdio'
     ? form.command.trim() !== (server.command ?? '') ||
-        parseArgs(form.argsText).join('\n') !== server.args.join('\n')
+        form.argsText !== formatArgs(server.args)
     : form.url.trim() !== (server.url ?? '');
 }
 
@@ -80,7 +93,8 @@ export default function McpServerDialog({
     setTest(null);
   };
 
-  const nameOk = MCP_SERVER_NAME_RE.test(form.name);
+  const name = form.name.trim();
+  const nameOk = MCP_SERVER_NAME_RE.test(name);
   const targetOk = form.transport === 'stdio' ? !!form.command.trim() : !!form.url.trim();
   const dirtyConfig = server === null || configChanged(form, server);
   const dropped = dirtyConfig ? unfilledNames(form.transport === 'stdio' ? form.env : form.headers) : [];
@@ -92,7 +106,7 @@ export default function McpServerDialog({
       setTest(
         await mcp.test({
           transport: form.transport,
-          config: buildConfig(form),
+          config: buildConfig(form, server === null),
           allowPrivateNetwork: form.allowPrivateNetwork,
         })
       );
@@ -110,16 +124,16 @@ export default function McpServerDialog({
       const saved =
         server === null
           ? await mcp.create({
-              name: form.name,
+              name,
               transport: form.transport,
-              config: buildConfig(form),
+              config: buildConfig(form, true),
               allowPrivateNetwork: form.allowPrivateNetwork,
             })
           : await mcp.update(server.id, {
-              name: form.name,
+              name,
               transport: form.transport,
               allowPrivateNetwork: form.allowPrivateNetwork,
-              ...(dirtyConfig ? { config: buildConfig(form) } : {}),
+              ...(dirtyConfig ? { config: buildConfig(form, false) } : {}),
             });
       onSaved(saved);
       onClose();
@@ -135,44 +149,21 @@ export default function McpServerDialog({
       <DialogHeader>
         <DialogTitle>{server ? `Edit ${server.name}` : 'Add MCP server'}</DialogTitle>
         <DialogDescription>
-          Its tools become steps you can use in automations, under <code className="font-mono">mcp:{form.name || '<name>'}</code>.
+          Its tools become steps you can use in automations, under <code className="font-mono">mcp:{name || '<name>'}</code>.
         </DialogDescription>
       </DialogHeader>
 
       <div className="overflow-y-auto max-h-[60vh] space-y-4 pr-1">
-        <div>
-          <label htmlFor="mcp-name" className="block text-[11px] font-medium text-[color:var(--foreground)] mb-1">
-            Name
-          </label>
-          <input
-            id="mcp-name"
-            value={form.name}
-            onChange={(e) => patch({ name: e.target.value.toLowerCase() })}
-            placeholder="notion"
-            autoComplete="off"
-            spellCheck={false}
-            aria-invalid={form.name.length > 0 && !nameOk}
-            className="w-full h-9 rounded-lg border border-[color:var(--border)] bg-white px-2.5 text-[12px] font-mono outline-none placeholder:text-[#A8A8B0] focus:border-[#111111] focus:ring-2 focus:ring-black/5 transition"
-          />
-          <p
-            className={`mt-1 text-[10px] leading-relaxed ${
-              form.name.length > 0 && !nameOk ? 'text-[#D4183D]' : 'text-[color:var(--muted-foreground)]'
-            }`}
-          >
-            2–31 characters: lowercase letters, digits, <code className="font-mono">-</code> or{' '}
-            <code className="font-mono">_</code>, starting with a letter or digit.
-          </p>
-        </div>
+        <McpNameField value={form.name} onChange={(next) => patch({ name: next })} />
 
         <div>
           <span className="block text-[11px] font-medium text-[color:var(--foreground)] mb-1">Transport</span>
-          <div role="radiogroup" aria-label="Transport" className="inline-flex rounded-xl border border-[color:var(--border)] bg-[color:var(--surface-muted)]/50 p-0.5">
+          <div className="inline-flex rounded-xl border border-[color:var(--border)] bg-[color:var(--surface-muted)]/50 p-0.5">
             {(['stdio', 'http'] as McpTransport[]).map((t) => (
               <button
                 key={t}
                 type="button"
-                role="radio"
-                aria-checked={form.transport === t}
+                aria-pressed={form.transport === t}
                 onClick={() => patch({ transport: t })}
                 className={`h-7 px-3 rounded-lg text-[12px] font-medium transition ${
                   form.transport === t
@@ -186,7 +177,7 @@ export default function McpServerDialog({
           </div>
         </div>
 
-        <McpTransportFields values={form} onChange={patch} />
+        <McpTransportFields values={form} onChange={patch} newServer={server === null} />
 
         {dropped.length > 0 && (
           <p className="rounded-lg border border-[#b45309]/30 bg-[#b45309]/5 px-3 py-2 text-[11px] text-[#b45309] leading-relaxed">

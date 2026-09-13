@@ -16,7 +16,7 @@ export default function McpTestResultPanel({ result }: { result: McpTestResult }
   }
 
   return (
-    <div className="rounded-lg border border-[#10A37F]/30 bg-[#10A37F]/5 px-3 py-2 text-[12px] text-[#0B7F63] leading-relaxed">
+    <div className="rounded-lg border border-[#10A37F]/30 bg-[#10A37F]/5 px-3 py-2 text-[12px] text-[#10A37F] leading-relaxed">
       <span className="inline-flex items-center gap-1.5 font-medium">
         <Check size={13} strokeWidth={2.5} /> Connected · {result.tools.length}{' '}
         {result.tools.length === 1 ? 'tool' : 'tools'}

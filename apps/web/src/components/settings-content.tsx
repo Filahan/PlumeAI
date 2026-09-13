@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { PROVIDER_MODELS, PROVIDER_NAMES, PROVIDER_ACCENT, Provider, Settings, ProviderConfig } from '@/lib/types';
+import { PROVIDER_MODELS, PROVIDER_NAMES, PROVIDER_ACCENT, Provider, Settings, ProviderConfig, SetSettings } from '@/lib/types';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -90,7 +90,9 @@ function maskKey(key: string): string {
 
 interface SettingsContentProps {
   settings: Settings;
-  setSettings: (s: Settings) => void;
+  /** Widened from `(s: Settings) => void` so the timezone section can await the write and
+   *  report a failure. Every existing void-returning caller stays assignable. */
+  setSettings: SetSettings;
   variant?: 'dialog' | 'inline';
 }
 

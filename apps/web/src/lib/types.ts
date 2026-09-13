@@ -55,6 +55,18 @@ export interface Settings {
   timezone?: string;
 }
 
+/** The outcome of a settings write. The setter never *rejects* — a failed PUT is a
+ *  value — so the many callers that fire and forget cause no unhandled rejection, while
+ *  the few that care can show what went wrong. */
+export type SettingsSaveResult = { ok: true } | { ok: false; error: string };
+
+/** A settings setter as a component that wants to report failures sees it.
+ *
+ *  Deliberately a union with `void`: every existing `(s: Settings) => void` prop stays
+ *  assignable, so no call site had to change. A setter that returns nothing simply never
+ *  reports an error. */
+export type SetSettings = (next: Settings) => void | Promise<SettingsSaveResult>;
+
 export function findApiKey(settings: Settings, provider: Provider): string {
   return settings.providers.find((p) => p.provider === provider)?.apiKey ?? '';
 }

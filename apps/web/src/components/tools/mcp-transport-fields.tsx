@@ -31,9 +31,13 @@ export interface TransportValues {
 export default function McpTransportFields({
   values,
   onChange,
+  newServer,
 }: {
   values: TransportValues;
   onChange: (patch: Partial<TransportValues>) => void;
+  /** A brand-new server also accepts a single space-separated line, which is what people
+   *  paste from a README. Editing never splits — see `parseArgs`. */
+  newServer: boolean;
 }) {
   if (values.transport === 'stdio') {
     return (
@@ -67,8 +71,10 @@ export default function McpTransportFields({
             spellCheck={false}
             className="w-full rounded-lg border border-[color:var(--border)] bg-white px-2.5 py-2 text-[12px] font-mono outline-none placeholder:text-[#A8A8B0] focus:border-[#111111] focus:ring-2 focus:ring-black/5 transition resize-y"
           />
-          <p className="mt-1 text-[10px] text-[color:var(--muted-foreground)]">
-            One per line, or a single line of space-separated arguments.
+          <p className="mt-1 text-[10px] text-[color:var(--muted-foreground)] leading-relaxed">
+            One argument per line, taken verbatim — <code className="font-mono">--prompt=hello world</code>{' '}
+            stays a single argument.
+            {newServer && ' A single line is split on spaces, so you can paste a command as-is.'}
           </p>
         </div>
 

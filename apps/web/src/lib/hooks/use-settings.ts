@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Settings } from '@/lib/types';
+import type { Settings, SettingsSaveResult } from '@/lib/types';
 import { settings as settingsApi } from '@/lib/api';
 
 const DEFAULT_SETTINGS: Settings = {
@@ -9,6 +9,9 @@ const DEFAULT_SETTINGS: Settings = {
   defaultModel: { provider: 'openai', model: 'gpt-4o' },
   tools: {},
   toolCredentials: {},
+  // Mirrors the API's own default, so the first PUT from a client that never finished
+  // loading cannot silently rewrite the workspace's zone.
+  timezone: 'UTC',
 };
 
 export function useSettings() {
@@ -31,9 +34,22 @@ export function useSettings() {
     };
   }, []);
 
-  const setSettings = useCallback((next: Settings) => {
+  /** Optimistic: the UI takes `next` immediately and the PUT follows.
+   *
+   *  Never rejects. The outcome comes back as a value so a caller that cares (the
+   *  timezone picker) can surface a failure, while the many that don't stay exactly as
+   *  they were — no unhandled rejection, no behaviour change. */
+  const setSettings = useCallback(async (next: Settings): Promise<SettingsSaveResult> => {
     setSettingsState(next);
-    settingsApi.update(next).catch(() => {});
+    try {
+      await settingsApi.update(next);
+      return { ok: true };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error && e.message ? e.message : "Your settings couldn't be saved.",
+      };
+    }
   }, []);
 
   return { settings, setSettings, loaded };
